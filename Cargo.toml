@@ -1,0 +1,82 @@
+[package]
+name = "blue-onyx-openvino"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Blue Iris compatible object detection service on native OpenVINO (Intel CPU/GPU)"
+repository = "https://github.com/patrickgods1/blue-onyx-openvino"
+default-run = "blue-onyx-openvino"
+
+[lib]
+name = "blue_onyx_openvino"
+path = "src/lib.rs"
+
+[[bin]]
+name = "blue-onyx-openvino"
+path = "src/bin/blue_onyx_openvino.rs"
+
+[[bin]]
+name = "blue-onyx-openvino-service"
+path = "src/bin/blue_onyx_openvino_service.rs"
+
+[[bin]]
+name = "blue-onyx-openvino-benchmark"
+path = "src/bin/blue_onyx_openvino_benchmark.rs"
+
+[[bin]]
+name = "test-blue-onyx-openvino"
+path = "src/bin/test_blue_onyx_openvino.rs"
+
+[dependencies]
+openvino = { version = "0.11", features = ["runtime-linking"] }
+anyhow = "1"
+thiserror = "2"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "multipart", "tokio", "query", "form"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "signal", "fs"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+crossbeam-channel = "0.5"
+askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+uuid = { version = "1", features = ["v4"] }
+mime = "0.3"
+fast_image_resize = { version = "6", features = ["image"] }
+zune-jpeg = "0.5"
+zune-core = "0.5"
+jpeg-encoder = { version = "0.7", features = ["std", "simd"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc = { version = "0.27", default-features = false }
+ab_glyph = "0.2"
+hf-hub = { version = "1", default-features = false, features = ["rustls-tls", "blocking"] }
+indicatif = "0.18"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "webpki-roots", "json", "multipart", "stream", "http2"] }
+futures-util = "0.3"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+num_cpus = "1"
+base64 = "0.22"
+
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+raw-cpuid = "11"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+tracing-layer-win-eventlog = "1"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_LibraryLoader"] }
+
+[dev-dependencies]
+approx = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

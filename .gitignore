@@ -1,0 +1,22 @@
+# Build output
+/target/
+
+# Runtime artifacts that live next to the binary
+/models/
+/cache/
+/openvino/
+*.log
+*_config*.json
+!blue_onyx_openvino_config_example*.json
+
+# Python export environment
+/.venv/
+__pycache__/
+*.pt
+*_openvino_model/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
