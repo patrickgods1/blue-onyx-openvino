@@ -1,0 +1,18 @@
+services:
+  blue-onyx-openvino:
+    image: blue-onyx-openvino:latest
+    build:
+      context: ..
+    container_name: blue-onyx-openvino
+    restart: unless-stopped
+    ports:
+      - "32168:32168"
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "video"
+      - "render"
+    volumes:
+      - ./models:/app/models
+      - ./cache:/app/cache
+      - ./config:/app/config

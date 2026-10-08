@@ -1,0 +1,19 @@
+[Unit]
+Description=Blue Onyx OpenVINO object detection service (Blue Iris / CodeProject.AI compatible)
+After=network.target
+
+[Service]
+Type=simple
+# Install the release bundle (binary + openvino/ + models/) into this directory.
+WorkingDirectory=/opt/blue-onyx-openvino
+ExecStart=/opt/blue-onyx-openvino/blue-onyx-openvino
+Restart=on-failure
+RestartSec=5
+# Needed for Intel GPU inference via /dev/dri (install intel-opencl-icd on the host).
+SupplementaryGroups=render video
+User=blueonyx
+Group=blueonyx
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
