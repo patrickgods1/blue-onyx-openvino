@@ -44,5 +44,9 @@ pub fn exe_dir() -> std::path::PathBuf {
 
 /// Resolve a possibly relative path against the executable directory.
 pub fn resolve_path(p: &std::path::Path) -> std::path::PathBuf {
-    if p.is_absolute() { p.to_path_buf() } else { exe_dir().join(p) }
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        exe_dir().join(p)
+    }
 }

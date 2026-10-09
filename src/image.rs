@@ -116,21 +116,14 @@ fn blend_pixel(img: &mut RgbImage, x: i64, y: i64, color: [u8; 3], coverage: f32
     }
 }
 
-fn draw_text(
-    img: &mut RgbImage,
-    font: &FontArc,
-    px: f32,
-    x: i64,
-    y: i64,
-    max_x: i64,
-    text: &str,
-) {
+fn draw_text(img: &mut RgbImage, font: &FontArc, px: f32, x: i64, y: i64, max_x: i64, text: &str) {
     let scaled = font.as_scaled(PxScale::from(px));
     let mut caret = x as f32;
     let baseline = y as f32 + scaled.ascent();
     for ch in text.chars() {
         let gid = scaled.glyph_id(ch);
-        let glyph = gid.with_scale_and_position(PxScale::from(px), ab_glyph::point(caret, baseline));
+        let glyph =
+            gid.with_scale_and_position(PxScale::from(px), ab_glyph::point(caret, baseline));
         caret += scaled.h_advance(gid);
         if caret as i64 > max_x {
             break;
@@ -154,7 +147,9 @@ fn draw_text(
 /// Boxes outside the image are clamped; degenerate boxes are skipped for the rectangle.
 pub fn draw_predictions(img: &RgbImage, preds: &[Prediction]) -> RgbImage {
     let mut out = img.clone();
-    if out.width == 0 || out.height == 0 || out.rgb.len() != out.width as usize * out.height as usize * 3
+    if out.width == 0
+        || out.height == 0
+        || out.rgb.len() != out.width as usize * out.height as usize * 3
     {
         return out;
     }
@@ -165,9 +160,17 @@ pub fn draw_predictions(img: &RgbImage, preds: &[Prediction]) -> RgbImage {
     let bar_h = font_px as i64;
 
     for p in preds {
-        let (x0, y0, x1, y1) = (p.x_min as i64, p.y_min as i64, p.x_max as i64, p.y_max as i64);
+        let (x0, y0, x1, y1) = (
+            p.x_min as i64,
+            p.y_min as i64,
+            p.x_max as i64,
+            p.y_max as i64,
+        );
         if x1 > x0 && y1 > y0 {
-            let t = thickness.min((x1 - x0 + 1) / 2).min((y1 - y0 + 1) / 2).max(1);
+            let t = thickness
+                .min((x1 - x0 + 1) / 2)
+                .min((y1 - y0 + 1) / 2)
+                .max(1);
             fill_rect(&mut out, x0, y0, x1, y0 + t, BOX_COLOR);
             fill_rect(&mut out, x0, y1 - t, x1, y1, BOX_COLOR);
             fill_rect(&mut out, x0, y0, x0 + t, y1, BOX_COLOR);
@@ -224,7 +227,11 @@ mod tests {
                 rgb.extend_from_slice(&[(x * 4) as u8, (y * 4) as u8, 128]);
             }
         }
-        RgbImage { width: w, height: h, rgb }
+        RgbImage {
+            width: w,
+            height: h,
+            rgb,
+        }
     }
 
     #[test]
@@ -255,10 +262,38 @@ mod tests {
     fn draw_with_out_of_range_boxes() {
         let img = synthetic(32, 32);
         let preds = vec![
-            Prediction { x_min: 0, y_min: 0, x_max: 5000, y_max: 5000, confidence: 0.9, label: "big".into() },
-            Prediction { x_min: 100, y_min: 100, x_max: 200, y_max: 200, confidence: 0.5, label: "off".into() },
-            Prediction { x_min: 10, y_min: 10, x_max: 10, y_max: 10, confidence: 0.1, label: "empty".into() },
-            Prediction { x_min: 20, y_min: 20, x_max: 5, y_max: 5, confidence: 0.1, label: "inverted".into() },
+            Prediction {
+                x_min: 0,
+                y_min: 0,
+                x_max: 5000,
+                y_max: 5000,
+                confidence: 0.9,
+                label: "big".into(),
+            },
+            Prediction {
+                x_min: 100,
+                y_min: 100,
+                x_max: 200,
+                y_max: 200,
+                confidence: 0.5,
+                label: "off".into(),
+            },
+            Prediction {
+                x_min: 10,
+                y_min: 10,
+                x_max: 10,
+                y_max: 10,
+                confidence: 0.1,
+                label: "empty".into(),
+            },
+            Prediction {
+                x_min: 20,
+                y_min: 20,
+                x_max: 5,
+                y_max: 5,
+                confidence: 0.1,
+                label: "inverted".into(),
+            },
         ];
         let out = draw_predictions(&img, &preds);
         assert_eq!(out.rgb.len(), img.rgb.len());

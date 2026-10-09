@@ -5,7 +5,9 @@ use crate::model::ModelFamilyKind;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, reload, util::SubscriberInitExt};
+use tracing_subscriber::{
+    EnvFilter, Registry, layer::SubscriberExt, reload, util::SubscriberInitExt,
+};
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
@@ -275,7 +277,8 @@ mod tests {
         assert_eq!(cli.family, Some(ModelFamilyKind::Yolo5));
         assert!(cli.force_cpu);
         assert_eq!(cli.object_filter.unwrap(), vec!["person", "car"]);
-        let cli = Cli::try_parse_from(["x", "download-models", "--name", "a", "--name", "b"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["x", "download-models", "--name", "a", "--name", "b"]).unwrap();
         match cli.command {
             Some(Command::DownloadModels { name, all, .. }) => {
                 assert_eq!(name, vec!["a", "b"]);

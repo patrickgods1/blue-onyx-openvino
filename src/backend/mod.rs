@@ -68,8 +68,9 @@ pub struct OvCore {
 impl OvCore {
     pub fn new(opts: &CoreOptions) -> Result<Self> {
         libs::prepare_environment(opts.openvino_dir.as_deref());
-        let core = openvino::Core::new()
-            .map_err(|e| anyhow::anyhow!("OpenVINO Core::new failed: {e:?}. {}", libs::diagnostics()))?;
+        let core = openvino::Core::new().map_err(|e| {
+            anyhow::anyhow!("OpenVINO Core::new failed: {e:?}. {}", libs::diagnostics())
+        })?;
         let available = core
             .available_devices()
             .map(|v| v.iter().map(|d| d.to_string()).collect())

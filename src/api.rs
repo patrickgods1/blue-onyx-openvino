@@ -159,7 +159,10 @@ mod tests {
         let b = VersionInfo::parse("v1.2.4", None).unwrap();
         let c = VersionInfo::parse("2.0.0", None).unwrap();
         assert!(a < b && b < c);
-        assert_eq!(a, VersionInfo::parse("1.2.3", Some("notes".into())).unwrap());
+        assert_eq!(
+            a,
+            VersionInfo::parse("1.2.3", Some("notes".into())).unwrap()
+        );
         assert!(VersionInfo::parse("1.2", None).is_err());
     }
 }

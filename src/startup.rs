@@ -24,7 +24,10 @@ impl StateHandle {
         Self(Arc::new(RwLock::new(ModelState::Initializing)))
     }
     pub fn get(&self) -> ModelState {
-        self.0.read().map(|s| s.clone()).unwrap_or(ModelState::Failed("poisoned".into()))
+        self.0
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or(ModelState::Failed("poisoned".into()))
     }
     pub fn set(&self, s: ModelState) {
         if let Ok(mut g) = self.0.write() {

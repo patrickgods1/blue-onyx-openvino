@@ -5,8 +5,8 @@
 
 use crate::model::ModelFamilyKind;
 use anyhow::{Context, Result, anyhow, bail};
-use hf_hub::progress::{DownloadEvent, Progress, ProgressEvent, ProgressHandler};
 use hf_hub::HFClientSync;
+use hf_hub::progress::{DownloadEvent, Progress, ProgressEvent, ProgressHandler};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 
@@ -175,9 +175,7 @@ pub fn download(names: &[String], all: bool, dest_dir: &Path) -> Result<Vec<Path
     } else {
         for n in names {
             let e = find(n).ok_or_else(|| {
-                anyhow!(
-                    "unknown model '{n}'; run `list-models` to see available names"
-                )
+                anyhow!("unknown model '{n}'; run `list-models` to see available names")
             })?;
             if !entries.iter().any(|x| x.name == e.name) {
                 entries.push(e);
@@ -272,7 +270,11 @@ mod tests {
         for e in catalog() {
             assert_eq!(e.files.len(), 2);
             assert!(e.files[0].ends_with(".onnx") && e.files[1].ends_with(".yaml"));
-            assert!(e.files.iter().all(|f| !f.contains('/') && !f.contains("..")));
+            assert!(
+                e.files
+                    .iter()
+                    .all(|f| !f.contains('/') && !f.contains(".."))
+            );
         }
     }
 
