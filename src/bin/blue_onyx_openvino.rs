@@ -16,7 +16,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 fn main() -> ExitCode {
+    // Paths typed on the command line are relative to the cwd (config-file paths are
+    // relative to the exe dir), so make them absolute before anything uses them.
     let cli = Cli::parse();
+    let cli = match std::env::current_dir() {
+        Ok(cwd) => cli.absolutized(&cwd),
+        Err(_) => cli,
+    };
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

@@ -112,11 +112,67 @@ pub fn resolve_config(cli: &Cli) -> Result<(Config, PathBuf)> {
     } else {
         Config::default()
     };
-    merge_cli(&mut config, cli);
+    let base = std::env::current_dir().context("reading current directory")?;
+    merge_cli(&mut config, &cli.absolutized(&base));
     if let Err(e) = config.save(&path) {
         tracing::warn!("could not save merged config: {e:#}");
     }
     Ok((config, path))
+}
+
+/// `p` joined onto `base` when relative (no filesystem access, no canonicalization).
+fn absolutize(p: &Path, base: &Path) -> PathBuf {
+    if p.is_absolute() || p.as_os_str().is_empty() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    }
+}
+
+impl Cli {
+    /// Copy of the CLI with every user-typed path made absolute against `base` (the current
+    /// working directory). Paths typed on the command line are relative to where the user ran
+    /// the command, whereas relative paths in the JSON config file resolve against the exe dir
+    /// (`crate::resolve_path`); absolutizing here keeps the two rules apart, and the merged
+    /// config is written back with absolute paths. An empty `--cache-dir` (disable caching)
+    /// stays empty.
+    pub fn absolutized(&self, base: &Path) -> Cli {
+        let abs = |p: &Option<PathBuf>| p.as_deref().map(|p| absolutize(p, base));
+        let mut c = self.clone();
+        c.config = abs(&self.config);
+        c.model = abs(&self.model);
+        c.classes = abs(&self.classes);
+        c.log_path = abs(&self.log_path);
+        c.save_image_path = abs(&self.save_image_path);
+        c.openvino_dir = abs(&self.openvino_dir);
+        c.cache_dir = self.cache_dir.as_ref().map(|d| {
+            if d.trim().is_empty() {
+                d.clone()
+            } else {
+                absolutize(Path::new(d), base)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        });
+        c.command = self.command.clone().map(|cmd| match cmd {
+            Command::SetupOpenvino {
+                dest,
+                version,
+                archive,
+            } => Command::SetupOpenvino {
+                dest: abs(&dest),
+                version,
+                archive: abs(&archive),
+            },
+            Command::DownloadModels { all, name, dir } => Command::DownloadModels {
+                all,
+                name,
+                dir: abs(&dir),
+            },
+            Command::ListModels { dir } => Command::ListModels { dir: abs(&dir) },
+        });
+        c
+    }
 }
 
 fn merge_cli(config: &mut Config, cli: &Cli) {
@@ -349,10 +405,11 @@ mod tests {
             ..Default::default()
         };
         let (c, _) = resolve_config(&cli).unwrap();
+        let cwd = std::env::current_dir().unwrap();
         assert_eq!(c.models.len(), 1);
-        assert_eq!(c.models[0].path, PathBuf::from("models/new.onnx"));
+        assert_eq!(c.models[0].path, cwd.join("models/new.onnx"));
         assert_eq!(c.models[0].family, ModelFamilyKind::Yolo5);
-        assert_eq!(c.models[0].classes, Some(PathBuf::from("c.yaml")));
+        assert_eq!(c.models[0].classes, Some(cwd.join("c.yaml")));
 
         // Already present: list is untouched.
         let cli = Cli {
@@ -362,6 +419,84 @@ mod tests {
         };
         let (c2, _) = resolve_config(&cli).unwrap();
         assert_eq!(c2.models, c.models);
+    }
+
+    #[test]
+    fn cli_paths_are_absolutized_against_cwd() {
+        let base = if cfg!(windows) {
+            PathBuf::from(r"C:\work")
+        } else {
+            PathBuf::from("/work")
+        };
+        let other_abs = if cfg!(windows) {
+            PathBuf::from(r"D:\abs\m.xml")
+        } else {
+            PathBuf::from("/abs/m.xml")
+        };
+        let cli = Cli::try_parse_from([
+            "x",
+            "--model",
+            "target/release/models/ipcam-bird.onnx",
+            "--classes",
+            "c.yaml",
+            "--cache-dir",
+            "target/release/cache",
+            "--log-path",
+            "logs",
+            "--save-image-path",
+            "imgs",
+            "--openvino-dir",
+            "ov",
+            "--config",
+            "cfg.json",
+        ])
+        .unwrap()
+        .absolutized(&base);
+        assert_eq!(
+            cli.model.as_deref(),
+            Some(base.join("target/release/models/ipcam-bird.onnx").as_path())
+        );
+        assert_eq!(cli.classes, Some(base.join("c.yaml")));
+        assert_eq!(
+            cli.cache_dir.as_deref().map(PathBuf::from),
+            Some(base.join("target/release/cache"))
+        );
+        assert_eq!(cli.log_path, Some(base.join("logs")));
+        assert_eq!(cli.save_image_path, Some(base.join("imgs")));
+        assert_eq!(cli.openvino_dir, Some(base.join("ov")));
+        assert_eq!(cli.config, Some(base.join("cfg.json")));
+
+        // Absolute paths, empty cache dir (= disabled) and absent options are unchanged.
+        let cli = Cli {
+            model: Some(other_abs.clone()),
+            cache_dir: Some(String::new()),
+            ..Default::default()
+        }
+        .absolutized(&base);
+        assert_eq!(cli.model, Some(other_abs));
+        assert_eq!(cli.cache_dir.as_deref(), Some(""));
+        assert_eq!(cli.log_path, None);
+
+        // Merged into the config, the absolute path survives `resolve_path` (no exe-dir join).
+        let mut cfg = Config::default();
+        let cli = Cli::try_parse_from(["x", "--model", "m/a.onnx", "--cache-dir", "cache"])
+            .unwrap()
+            .absolutized(&base);
+        merge_cli(&mut cfg, &cli);
+        assert_eq!(
+            crate::resolve_path(&cfg.models[0].path),
+            base.join("m/a.onnx")
+        );
+        assert_eq!(cfg.cache_dir_path(), Some(base.join("cache")));
+
+        // Subcommand paths too.
+        let cli = Cli::try_parse_from(["x", "download-models", "--name", "a", "--dir", "d"])
+            .unwrap()
+            .absolutized(&base);
+        match cli.command {
+            Some(Command::DownloadModels { dir, .. }) => assert_eq!(dir, Some(base.join("d"))),
+            _ => panic!("wrong command"),
+        }
     }
 
     #[test]

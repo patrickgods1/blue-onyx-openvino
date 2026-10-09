@@ -71,17 +71,36 @@ struct Selection {
     tbb_dir: &'static str,
 }
 
-/// Libraries copied on every OS (base names without prefix/suffix).
+/// Libraries copied on every OS (base names without prefix/suffix) when the archive has them.
+/// Plugins on macOS use a `.so` suffix while the other libs are `.dylib`; both are matched.
 const CORE_LIBS: &[&str] = &[
     "openvino",
     "openvino_c",
-    "openvino_intel_cpu_plugin",
-    "openvino_intel_gpu_plugin",
+    CPU_PLUGIN_X86,
+    CPU_PLUGIN_ARM,
+    GPU_PLUGIN,
     "openvino_auto_plugin",
     "openvino_hetero_plugin",
     "openvino_ir_frontend",
     "openvino_onnx_frontend",
 ];
+/// x86 CPU plugin (Windows, Linux x86_64).
+const CPU_PLUGIN_X86: &str = "openvino_intel_cpu_plugin";
+/// ARM CPU plugin (macOS arm64, Linux aarch64).
+const CPU_PLUGIN_ARM: &str = "openvino_arm_cpu_plugin";
+/// Intel GPU plugin (only shipped for Windows and Linux x86_64).
+const GPU_PLUGIN: &str = "openvino_intel_gpu_plugin";
+/// Libraries whose absence only deserves a warning (the CPU and GPU plugins are checked
+/// separately because which ones exist depends on the platform).
+const EXPECTED_LIBS: &[&str] = &[
+    "openvino",
+    "openvino_auto_plugin",
+    "openvino_hetero_plugin",
+    "openvino_ir_frontend",
+    "openvino_onnx_frontend",
+];
+/// Plugin registry files. Shipped in the Windows archive; 2026.x macOS/Linux archives do not
+/// have them (OpenVINO then discovers plugins by file name), so they are optional there.
 const EXTRA_FILES: &[&str] = &["plugins.xml", "cache.json"];
 const WINDOWS_TBB: &[&str] = &["tbb12.dll", "tbbbind_2_5.dll"];
 
@@ -145,7 +164,8 @@ impl Selection {
             let keep = if self.os == "windows" {
                 WINDOWS_TBB.contains(&name)
             } else {
-                name.starts_with("libtbb")
+                // libhwloc is a dependency of libtbbbind.
+                (name.starts_with("libtbb") || name.starts_with("libhwloc"))
                     && !name.contains("debug")
                     && unix_lib_base(name).is_some()
             };
@@ -154,8 +174,9 @@ impl Selection {
         None
     }
 
-    /// Warn about missing expected files; fail if `openvino_c` is missing.
-    fn check(&self, got: &BTreeSet<String>) -> Result<()> {
+    /// Warn about missing expected files; fail if `openvino_c` is missing. Returns the
+    /// warnings (also printed) so tests can inspect them.
+    fn check(&self, arch: &str, got: &BTreeSet<String>) -> Result<Vec<String>> {
         let names: Vec<&str> = got
             .iter()
             .filter_map(|p| p.rsplit_once('/').map(|(_, n)| n))
@@ -175,26 +196,53 @@ impl Selection {
                 self.lib_dirs
             );
         }
-        for base in CORE_LIBS {
+        let mut warnings = Vec::new();
+        for base in EXPECTED_LIBS {
             if !has_lib(base) {
-                tracing::warn!("OpenVINO archive is missing library '{base}'");
-                eprintln!("warning: OpenVINO archive is missing library '{base}'");
+                warnings.push(format!("OpenVINO archive is missing library '{base}'"));
             }
         }
-        for f in EXTRA_FILES.iter().chain(if self.os == "windows" {
-            WINDOWS_TBB.iter()
+        if !has_lib(CPU_PLUGIN_X86) && !has_lib(CPU_PLUGIN_ARM) {
+            warnings.push(format!(
+                "OpenVINO archive has no CPU plugin ('{CPU_PLUGIN_X86}' or '{CPU_PLUGIN_ARM}'); \
+                 CPU inference will not work"
+            ));
+        }
+        let gpu_expected = matches!((self.os, arch), ("windows", "x86_64") | ("linux", "x86_64"));
+        if gpu_expected && !has_lib(GPU_PLUGIN) {
+            warnings.push(format!(
+                "OpenVINO archive is missing library '{GPU_PLUGIN}'; GPU inference will not work"
+            ));
+        }
+        let tbb: &[&str] = if self.os == "windows" {
+            WINDOWS_TBB
         } else {
-            [].iter()
-        }) {
+            &[]
+        };
+        for f in tbb {
             if !names.contains(f) {
-                tracing::warn!("OpenVINO archive is missing '{f}' (continuing)");
-                eprintln!("warning: OpenVINO archive is missing '{f}' (continuing)");
+                warnings.push(format!("OpenVINO archive is missing '{f}' (continuing)"));
+            }
+        }
+        for f in EXTRA_FILES {
+            if !names.contains(f) {
+                if self.os == "windows" {
+                    warnings.push(format!("OpenVINO archive is missing '{f}' (continuing)"));
+                } else {
+                    tracing::debug!("OpenVINO archive has no '{f}' (not needed on {})", self.os);
+                }
             }
         }
         if self.os != "windows" && !names.iter().any(|n| n.starts_with("libtbb")) {
-            tracing::warn!("OpenVINO archive has no bundled TBB; the system libtbb will be used");
+            warnings.push(
+                "OpenVINO archive has no bundled TBB; the system libtbb will be used".to_string(),
+            );
         }
-        Ok(())
+        for w in &warnings {
+            tracing::warn!("{w}");
+            eprintln!("warning: {w}");
+        }
+        Ok(warnings)
     }
 }
 
@@ -213,6 +261,33 @@ fn strip_top(entry: &str) -> Option<String> {
         return None;
     }
     Some(rest.join("/"))
+}
+
+/// File name of the target of a tar link entry at `rel` (top folder already stripped) when the
+/// target lives in the same directory; None otherwise. Symlink targets are relative to the
+/// link's directory (`libfoo.so -> libfoo.so.2026.4.0`); hard-link targets are full archive
+/// paths (`openvino_toolkit_.../runtime/lib/.../libfoo.2026.4.0.dylib`) and go through
+/// [`strip_top`] like regular entries.
+fn same_dir_link_target(rel: &str, target: &str, hard: bool) -> Option<String> {
+    let (dir, _) = rel.rsplit_once('/')?;
+    let t = target.replace('\\', "/");
+    let t = t.strip_prefix("./").unwrap_or(&t);
+    let name = if !t.contains('/') {
+        t.to_string()
+    } else if hard {
+        let stripped = strip_top(t)?;
+        let (tdir, name) = stripped.rsplit_once('/')?;
+        if tdir != dir {
+            return None;
+        }
+        name.to_string()
+    } else {
+        return None;
+    };
+    if name.is_empty() || name.starts_with('.') || name.contains(':') {
+        return None;
+    }
+    Some(name)
 }
 
 fn write_entry(dest: &Path, rel: &str, reader: &mut dyn Read) -> Result<u64> {
@@ -276,12 +351,13 @@ fn extract_tgz(archive: &Path, sel: &Selection, dest: &Path) -> Result<BTreeSet<
             continue;
         };
         let ty = entry.header().entry_type();
-        if ty.is_symlink() {
+        if ty.is_symlink() || ty.is_hard_link() {
             if let Some(target) = entry.link_name()? {
                 let t = target.to_string_lossy().into_owned();
-                // Only same-directory links like libfoo.so -> libfoo.so.2026.4.0.
-                if !t.contains('/') && !t.contains('\\') && !t.starts_with('.') {
-                    links.push((rel, t));
+                if let Some(name) = same_dir_link_target(&rel, &t, ty.is_hard_link()) {
+                    links.push((rel, name));
+                } else {
+                    tracing::debug!("skipping link {path} -> {t} (not a same-directory link)");
                 }
             }
             continue;
@@ -322,6 +398,71 @@ fn extract_tgz(archive: &Path, sel: &Selection, dest: &Path) -> Result<BTreeSet<
         }
     }
     Ok(got)
+}
+
+/// On macOS, `(source rel, destination rel)` pairs that copy the bundled TBB/hwloc libraries
+/// next to `libopenvino_c` (empty elsewhere).
+///
+/// `libopenvino.dylib` and the plugins reference `@rpath/libtbb.12.dylib`; the only LC_RPATH of
+/// libopenvino is `@loader_path/../../../3rdparty/tbb` (not the `tbb/lib` folder the archive
+/// actually uses), while `libopenvino_c` has `@loader_path/`. Having TBB in the lib dir makes
+/// `@rpath` resolve through `libopenvino_c` (which is what we load first).
+fn tbb_mirror_plan(sel: &Selection, got: &BTreeSet<String>) -> Vec<(String, String)> {
+    if sel.os != "macos" {
+        return Vec::new();
+    }
+    let Some(lib_dir) = got.iter().find_map(|rel| {
+        let (dir, name) = rel.rsplit_once('/')?;
+        (sel.lib_dirs.contains(&dir) && unix_lib_base(name) == Some("openvino_c")).then_some(dir)
+    }) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}/", sel.tbb_dir);
+    got.iter()
+        .filter_map(|rel| {
+            let name = rel.strip_prefix(&prefix)?;
+            (!name.contains('/')).then(|| (rel.clone(), format!("{lib_dir}/{name}")))
+        })
+        .collect()
+}
+
+/// Apply [`tbb_mirror_plan`]: regular files are copied, symlinks recreated with the same
+/// (same-directory) target.
+fn mirror_tbb_into_lib_dir(sel: &Selection, dest: &Path, got: &mut BTreeSet<String>) -> Result<()> {
+    let plan = tbb_mirror_plan(sel, got);
+    // Regular files first so symlinks never dangle, even transiently.
+    let is_link = |rel: &str| {
+        dest.join(rel)
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    };
+    let (links, files): (Vec<_>, Vec<_>) = plan.into_iter().partition(|(src, _)| is_link(src));
+    for (src, dst) in files.iter().chain(links.iter()) {
+        let from = dest.join(src);
+        let to = dest.join(dst);
+        if to.symlink_metadata().is_ok() {
+            std::fs::remove_file(&to).with_context(|| format!("replacing {}", to.display()))?;
+        }
+        let link_target = std::fs::read_link(&from).ok();
+        match link_target {
+            #[cfg(unix)]
+            Some(target) => std::os::unix::fs::symlink(&target, &to)
+                .with_context(|| format!("creating symlink {}", to.display()))?,
+            _ => {
+                std::fs::copy(&from, &to)
+                    .with_context(|| format!("copying {} to {}", from.display(), to.display()))?;
+            }
+        }
+        got.insert(dst.clone());
+    }
+    if !files.is_empty() {
+        tracing::debug!(
+            "installed {} TBB libraries next to libopenvino for @rpath resolution",
+            files.len() + links.len()
+        );
+    }
+    Ok(())
 }
 
 fn run_async<F, T>(fut: F) -> Result<T>
@@ -486,7 +627,9 @@ pub fn run(opts: &SetupOptions) -> Result<PathBuf> {
         ArchiveKind::Zip => extract_zip(&archive, &sel, &dest)?,
         ArchiveKind::TarGz => extract_tgz(&archive, &sel, &dest)?,
     };
-    sel.check(&got)?;
+    let mut got = got;
+    mirror_tbb_into_lib_dir(&sel, &dest, &mut got)?;
+    sel.check(arch, &got)?;
     std::fs::write(dest.join("VERSION"), format!("{version}\n"))
         .with_context(|| format!("writing {}", dest.join("VERSION").display()))?;
 
@@ -578,5 +721,112 @@ mod tests {
             Some("openvino")
         );
         assert_eq!(unix_lib_base("libopenvino_c.so.2640"), Some("openvino_c"));
+        // macOS plugins are `.so`, the ARM CPU plugin is selected; hwloc (tbbbind dep) too.
+        let mw = |p: &str| strip_top(&format!("top/{p}")).and_then(|r| m.wanted(&r));
+        assert!(mw("runtime/lib/arm64/Release/libopenvino_arm_cpu_plugin.so").is_some());
+        assert!(mw("runtime/lib/arm64/Release/libopenvino_auto_batch_plugin.so").is_none());
+        assert!(mw("runtime/lib/arm64/Release/libopenvino_pytorch_frontend.2640.dylib").is_none());
+        assert!(mw("runtime/3rdparty/tbb/lib/libhwloc.15.dylib").is_some());
+        assert!(mw("runtime/3rdparty/tbb/lib/pkgconfig/tbb.pc").is_none());
+        assert!(w("runtime/lib/aarch64/libopenvino_arm_cpu_plugin.so").is_some());
+    }
+
+    #[test]
+    fn link_targets() {
+        let rel = "runtime/lib/arm64/Release/libopenvino.2640.dylib";
+        // Symlinks: bare same-dir names only.
+        assert_eq!(
+            same_dir_link_target(rel, "libopenvino.2026.4.0.dylib", false).as_deref(),
+            Some("libopenvino.2026.4.0.dylib")
+        );
+        assert_eq!(same_dir_link_target(rel, "../x.dylib", false), None);
+        assert_eq!(same_dir_link_target(rel, "/usr/lib/x.dylib", false), None);
+        // Hard links: full archive path, mapped through strip_top and required in the same dir.
+        assert_eq!(
+            same_dir_link_target(
+                rel,
+                "openvino_toolkit_macos_12_6_2026.4.0_arm64/runtime/lib/arm64/Release/libopenvino.2026.4.0.dylib",
+                true
+            )
+            .as_deref(),
+            Some("libopenvino.2026.4.0.dylib")
+        );
+        assert_eq!(
+            same_dir_link_target(rel, "top/runtime/3rdparty/tbb/lib/libtbb.12.dylib", true),
+            None
+        );
+        assert_eq!(
+            same_dir_link_target(rel, "top/runtime/lib/arm64/Release/../../../../evil", true),
+            None
+        );
+    }
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn check_warnings_per_platform() {
+        let mac = set(&[
+            "runtime/lib/arm64/Release/libopenvino.2640.dylib",
+            "runtime/lib/arm64/Release/libopenvino_c.2640.dylib",
+            "runtime/lib/arm64/Release/libopenvino_arm_cpu_plugin.so",
+            "runtime/lib/arm64/Release/libopenvino_auto_plugin.so",
+            "runtime/lib/arm64/Release/libopenvino_hetero_plugin.so",
+            "runtime/lib/arm64/Release/libopenvino_ir_frontend.2640.dylib",
+            "runtime/lib/arm64/Release/libopenvino_onnx_frontend.2640.dylib",
+            "runtime/3rdparty/tbb/lib/libtbb.12.dylib",
+        ]);
+        let m = selection_for("macos").unwrap();
+        assert!(m.check("aarch64", &mac).unwrap().is_empty());
+        // Without any CPU plugin there is a warning.
+        let mut no_cpu = mac.clone();
+        no_cpu.remove("runtime/lib/arm64/Release/libopenvino_arm_cpu_plugin.so");
+        let w = m.check("aarch64", &no_cpu).unwrap();
+        assert!(w.len() == 1 && w[0].contains("CPU plugin"), "{w:?}");
+        // openvino_c is mandatory.
+        let mut no_c = mac.clone();
+        no_c.remove("runtime/lib/arm64/Release/libopenvino_c.2640.dylib");
+        assert!(m.check("aarch64", &no_c).is_err());
+
+        // Linux x86_64 expects the GPU plugin; aarch64 does not.
+        let lin = set(&[
+            "runtime/lib/intel64/libopenvino.so.2640",
+            "runtime/lib/intel64/libopenvino_c.so.2640",
+            "runtime/lib/intel64/libopenvino_intel_cpu_plugin.so",
+            "runtime/lib/intel64/libopenvino_auto_plugin.so",
+            "runtime/lib/intel64/libopenvino_hetero_plugin.so",
+            "runtime/lib/intel64/libopenvino_ir_frontend.so.2640",
+            "runtime/lib/intel64/libopenvino_onnx_frontend.so.2640",
+            "runtime/3rdparty/tbb/lib/libtbb.so.12",
+        ]);
+        let l = selection_for("linux").unwrap();
+        let w = l.check("x86_64", &lin).unwrap();
+        assert!(w.len() == 1 && w[0].contains(GPU_PLUGIN), "{w:?}");
+        assert!(l.check("aarch64", &lin).unwrap().is_empty());
+    }
+
+    #[test]
+    fn macos_tbb_is_mirrored_next_to_libopenvino() {
+        let got = set(&[
+            "runtime/lib/arm64/Release/libopenvino_c.2640.dylib",
+            "runtime/3rdparty/tbb/lib/libtbb.12.13.dylib",
+            "runtime/3rdparty/tbb/lib/libtbb.12.dylib",
+        ]);
+        let plan = tbb_mirror_plan(&selection_for("macos").unwrap(), &got);
+        assert_eq!(
+            plan,
+            vec![
+                (
+                    "runtime/3rdparty/tbb/lib/libtbb.12.13.dylib".to_string(),
+                    "runtime/lib/arm64/Release/libtbb.12.13.dylib".to_string()
+                ),
+                (
+                    "runtime/3rdparty/tbb/lib/libtbb.12.dylib".to_string(),
+                    "runtime/lib/arm64/Release/libtbb.12.dylib".to_string()
+                ),
+            ]
+        );
+        assert!(tbb_mirror_plan(&selection_for("linux").unwrap(), &got).is_empty());
     }
 }
