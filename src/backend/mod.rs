@@ -45,6 +45,8 @@ pub struct LoadRequest {
 /// into a worker thread; the `InferRequest` must be created there.
 pub struct LoadedModel {
     pub compiled: openvino::CompiledModel,
+    /// Model file this was loaded from (used for error context).
+    pub path: PathBuf,
     pub inputs: Vec<PortSpec>,
     pub outputs: Vec<PortSpec>,
     pub device: DeviceInfo,
