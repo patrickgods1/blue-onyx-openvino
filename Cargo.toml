@@ -67,6 +67,10 @@ base64 = "0.22"
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 raw-cpuid = "11"
 
+[target.'cfg(unix)'.dependencies]
+# Same major as openvino-sys's runtime-linking dependency; used to preload libtbb/libopenvino.
+libloading = "0.8"
+
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
 tracing-layer-win-eventlog = "1"

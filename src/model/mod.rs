@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
+#[clap(rename_all = "lowercase")]
 pub enum ModelFamilyKind {
     /// Pick from the model's output shapes at load time.
     #[default]
@@ -314,21 +315,43 @@ mod tests {
     #[test]
     fn family_detection() {
         assert_eq!(
-            detect_family(&[port("images", &[1, 3, 640, 640])], &[port("output0", &[1, 300, 6])], 80).unwrap(),
+            detect_family(
+                &[port("images", &[1, 3, 640, 640])],
+                &[port("output0", &[1, 300, 6])],
+                80
+            )
+            .unwrap(),
             ModelFamilyKind::Yolo26
         );
         assert_eq!(
-            detect_family(&[port("images", &[1, 3, 640, 640])], &[port("output0", &[1, 84, 8400])], 80).unwrap(),
+            detect_family(
+                &[port("images", &[1, 3, 640, 640])],
+                &[port("output0", &[1, 84, 8400])],
+                80
+            )
+            .unwrap(),
             ModelFamilyKind::Yolo8
         );
         assert_eq!(
-            detect_family(&[port("images", &[1, 3, 640, 640])], &[port("output", &[1, 25200, 8])], 3).unwrap(),
+            detect_family(
+                &[port("images", &[1, 3, 640, 640])],
+                &[port("output", &[1, 25200, 8])],
+                3
+            )
+            .unwrap(),
             ModelFamilyKind::Yolo5
         );
         assert_eq!(
             detect_family(
-                &[port("images", &[1, 3, 640, 640]), port("orig_target_sizes", &[1, 2])],
-                &[port("labels", &[1, 300]), port("boxes", &[1, 300, 4]), port("scores", &[1, 300])],
+                &[
+                    port("images", &[1, 3, 640, 640]),
+                    port("orig_target_sizes", &[1, 2])
+                ],
+                &[
+                    port("labels", &[1, 300]),
+                    port("boxes", &[1, 300, 4]),
+                    port("scores", &[1, 300])
+                ],
                 80
             )
             .unwrap(),
@@ -367,8 +390,22 @@ mod tests {
             pad_y: 0.0,
         };
         let dets = vec![
-            Detection { x1: -5.0, y1: 1.0, x2: 20.0, y2: 80.0, score: 0.9, class_id: 0 },
-            Detection { x1: 1.0, y1: 1.0, x2: 2.0, y2: 2.0, score: 0.8, class_id: 1 },
+            Detection {
+                x1: -5.0,
+                y1: 1.0,
+                x2: 20.0,
+                y2: 80.0,
+                score: 0.9,
+                class_id: 0,
+            },
+            Detection {
+                x1: 1.0,
+                y1: 1.0,
+                x2: 2.0,
+                y2: 2.0,
+                score: 0.8,
+                class_id: 1,
+            },
         ];
         let names = vec!["person".to_string(), "car".to_string()];
         let filt = vec!["Person".to_string()];

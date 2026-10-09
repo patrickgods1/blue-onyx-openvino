@@ -68,6 +68,15 @@ This writes `models/yolo26{n,s,m}.{xml,bin,yaml}` and prints the `"models"` snip
 file. YOLO26 weights are AGPL-3.0 and are never committed; `models/`, `cache/` and `openvino/` are
 git-ignored.
 
+### Converting ONNX models to OpenVINO IR
+
+ONNX models (the YOLOv5 ipcam and RT-DETRv2 catalogs) load directly. If one fails on the ONNX
+frontend, or to ship FP16 weights, convert it with the same venv:
+
+```sh
+.venv/bin/python scripts/convert_onnx_to_ir.py models/rt-detrv2-s.onnx   # -> models/rt-detrv2-s.{xml,bin}
+```
+
 ### Repository layout
 
 - `src/` Rust crate (see CLAUDE.md for the module map)

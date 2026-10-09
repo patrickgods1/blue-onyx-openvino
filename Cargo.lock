@@ -325,6 +325,7 @@ dependencies = [
  "imageproc",
  "indicatif",
  "jpeg-encoder",
+ "libloading",
  "mime",
  "num_cpus",
  "openvino",
