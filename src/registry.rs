@@ -5,7 +5,7 @@
 
 use crate::backend::{CoreOptions, LoadRequest, OvCore};
 use crate::config::{Config, ModelConfig};
-use crate::metrics::{Metrics, ModelMetrics};
+use crate::metrics::{Metrics, ModelGauges, ModelMetrics};
 use crate::worker::{LoadGate, WorkerConfig, WorkerHandle, spawn_worker_after};
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -66,6 +66,25 @@ pub fn load_request(config: &Config, m: &ModelConfig, path: PathBuf) -> LoadRequ
         device,
         gpu_precision: m.gpu_precision.clone(),
         allow_cpu_fallback,
+    }
+}
+
+/// Index of the model serving `/v1/vision/detection`: `default_model` matched with the same
+/// normalization as `/v1/vision/custom/{model}` (case-insensitive, `.onnx`/`.xml` ignored), else
+/// the first model.
+fn resolve_default(config: &Config, by_name: &HashMap<String, usize>) -> Option<usize> {
+    if config.models.is_empty() {
+        return None;
+    }
+    match &config.default_model {
+        Some(name) if !name.trim().is_empty() => match by_name.get(&normalize_name(name)) {
+            Some(&i) => Some(i),
+            None => {
+                warn!("default_model '{name}' is not configured; using the first model");
+                Some(0)
+            }
+        },
+        _ => Some(0),
     }
 }
 
@@ -176,14 +195,7 @@ impl ModelRegistry {
             workers.push(handle);
         }
 
-        let default_idx = match (&config.default_model, config.default_model_index()) {
-            (_, Some(i)) => Some(i),
-            (Some(name), None) => {
-                warn!("default_model '{name}' is not configured; using the first model");
-                Some(0)
-            }
-            (None, None) => None,
-        };
+        let default_idx = resolve_default(config, &by_name);
         if let Some(i) = default_idx {
             info!(model = %workers[i].name, "default model for /v1/vision/detection");
         }
@@ -194,6 +206,11 @@ impl ModelRegistry {
             default_idx,
             core_info,
         })
+    }
+
+    /// Live per-model gauges (state, device, queue) for `/prometheus`, in config order.
+    pub fn gauges(&self) -> Vec<ModelGauges> {
+        self.workers.iter().map(WorkerHandle::gauges).collect()
     }
 
     pub fn default_model(&self) -> Option<&WorkerHandle> {
@@ -277,6 +294,36 @@ mod tests {
             .err()
             .expect("must fail");
         assert!(format!("{err:#}").contains("duplicate"));
+    }
+
+    #[test]
+    fn default_model_resolution() {
+        let mut c = Config::default();
+        for p in ["models/yolo26s.xml", "models/IPcam-general.onnx"] {
+            c.models.push(ModelConfig {
+                path: p.into(),
+                ..Default::default()
+            });
+        }
+        let by_name: HashMap<String, usize> = c
+            .models
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (normalize_name(&m.effective_name()), i))
+            .collect();
+        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        for name in ["IPcam-general", "ipcam-GENERAL.onnx", " ipcam-general "] {
+            c.default_model = Some(name.into());
+            assert_eq!(resolve_default(&c, &by_name), Some(1), "{name}");
+        }
+        c.default_model = Some("yolo26s.XML".into());
+        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        c.default_model = Some("nope".into());
+        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        c.default_model = Some(String::new());
+        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        c.models.clear();
+        assert_eq!(resolve_default(&c, &HashMap::new()), None);
     }
 
     #[test]

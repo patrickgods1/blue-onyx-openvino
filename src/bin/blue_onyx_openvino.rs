@@ -69,7 +69,12 @@ fn run(cli: Cli) -> Result<()> {
             println!("OpenVINO runtime installed in {}", dir.display());
             return Ok(());
         }
-        Some(Command::DownloadModels { all, name, dir }) => {
+        Some(Command::DownloadModels {
+            all,
+            name,
+            dir,
+            add_to_config,
+        }) => {
             let _log = cli::init_logging(LogLevel::Info, None)?;
             if !all && name.is_empty() {
                 anyhow::bail!("specify --name <model> (repeatable) or --all; see `list-models`");
@@ -78,6 +83,30 @@ fn run(cli: Cli) -> Result<()> {
             let files = download::download(&name, all, &dir)?;
             for f in &files {
                 println!("{}", f.display());
+            }
+            if add_to_config {
+                let path = cli
+                    .config
+                    .clone()
+                    .unwrap_or_else(Config::default_config_path);
+                let mut cfg = if path.exists() {
+                    Config::load(&path)?
+                } else {
+                    Config::default()
+                };
+                let mut changed = false;
+                for m in download::model_configs(&files, &blue_onyx_openvino::exe_dir()) {
+                    let name = m.effective_name();
+                    if cfg.add_model_if_absent(m) {
+                        println!("added '{name}' to {}", path.display());
+                        changed = true;
+                    } else {
+                        println!("'{name}' already in {}, skipped", path.display());
+                    }
+                }
+                if changed {
+                    cfg.save(&path)?;
+                }
             }
             return Ok(());
         }

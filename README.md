@@ -89,8 +89,39 @@ frontend, or to ship FP16 weights, convert it with the same venv:
 ## Blue Iris configuration
 
 Settings -> AI: enable "Use AI server", address `127.0.0.1`, port `32168`. Per camera -> Alerts -> AI:
-either default object detection (served by the default model via `/v1/vision/detection`) or custom
-models by name (served via `/v1/vision/custom/{name}`). Details follow once phase 3 lands.
+default object detection is served by the default model via `/v1/vision/detection`. For custom models
+enter their names comma separated in the custom models field, e.g. `yolo26s,ipcam-general`; each name
+is served via `/v1/vision/custom/{name}`.
+
+## Multiple models
+
+List any number of models in `models[]` of the config file:
+
+```json
+{
+  "default_model": "yolo26s",
+  "models": [
+    { "name": "yolo26s", "path": "models/yolo26s.xml", "family": "yolo26" },
+    { "path": "models/IPcam-general.onnx", "family": "yolo5", "device": "CPU",
+      "confidence_threshold": 0.4, "object_filter": ["person", "car"] },
+    { "path": "models/rt-detrv2-s.onnx", "family": "rtdetr", "lazy": true, "gpu_precision": "f32" }
+  ]
+}
+```
+
+- Names: `name`, else the file stem. Matching is case-insensitive and a `.onnx`/`.xml` suffix is ignored,
+  so `/v1/vision/custom/IPcam-General.onnx` reaches `IPcam-general`.
+- `default_model` (or `--default-model <name>`) serves `/v1/vision/detection`; default is the first entry.
+- `GET`/`POST /v1/vision/custom/list` returns the loaded model names.
+- An unknown model name returns HTTP 200 with `success: false` and an error message.
+- Per-model overrides: `device` (`GPU`, `GPU.1`, `CPU`), `confidence_threshold`, `object_filter`,
+  `lazy` (compile on first request instead of at startup) and `gpu_precision` (`f16` default, `f32`).
+- `blue-onyx-openvino download-models --name IPcam-general --add-to-config` downloads and appends the
+  model (family and classes file filled in) to the config, skipping names or paths already present.
+
+Each model gets its own worker thread and compiled copy in memory. Expect a few hundred MB per model
+on the iGPU (shared system RAM); use `lazy` for rarely used models and `device: "CPU"` to keep the GPU
+free for the primary model.
 
 ## License
 
