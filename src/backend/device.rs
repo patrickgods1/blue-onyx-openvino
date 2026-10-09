@@ -76,8 +76,28 @@ fn has_device(available: &[String], prefix: &str) -> bool {
     available.iter().any(|d| d.starts_with(prefix))
 }
 
+/// `Core::set_property`, except on Apple arm64 where openvino-sys calls the variadic C function
+/// with the wrong ABI (see `libs::core_set_property_variadic`).
+fn core_set_property(
+    core: &mut openvino::Core,
+    device: &DeviceType,
+    key: &RwPropertyKey,
+    value: &str,
+) -> Result<()> {
+    #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+    {
+        super::libs::core_set_property_variadic(core, device.as_ref(), key.as_ref(), value)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+    #[cfg(not(all(target_vendor = "apple", target_arch = "aarch64")))]
+    {
+        core.set_property(device, key, value)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+}
+
 fn set_prop(core: &mut openvino::Core, device: &DeviceType, key: RwPropertyKey, value: &str) {
-    match core.set_property(device, &key, value) {
+    match core_set_property(core, device, &key, value) {
         Ok(()) => tracing::info!("OpenVINO {device}: {}={value}", key.as_ref()),
         Err(e) => tracing::warn!(
             "OpenVINO {device}: failed to set {}={value}: {e}",
@@ -233,6 +253,20 @@ fn read_model(core: &mut openvino::Core, path: &std::path::Path) -> Result<Model
     }
 }
 
+/// Index of the extra (non-image) input `name`. IR converted from ONNX can keep the ONNX name
+/// only as a tensor alias (e.g. RT-DETR's `orig_target_sizes` shows up as
+/// `/postprocessor/Expand_output_0`), so fall back to the sole other input when it is 2-D.
+fn extra_input_index(inputs: &[PortSpec], image_idx: usize, name: &str) -> Option<usize> {
+    if let Some(i) = inputs.iter().position(|p| p.name == name) {
+        return Some(i);
+    }
+    let mut others = (0..inputs.len()).filter(|&i| i != image_idx);
+    match (others.next(), others.next()) {
+        (Some(i), None) if inputs[i].shape.is_empty() || inputs[i].shape.len() == 2 => Some(i),
+        _ => None,
+    }
+}
+
 /// Reshape dynamic image / `orig_target_sizes` inputs to static shapes. Returns true if reshaped.
 fn make_static(
     model: &mut Model,
@@ -260,7 +294,7 @@ fn make_static(
             .collect();
         targets.push((image_idx, dims));
     }
-    if let Some(i) = inputs.iter().position(|p| p.name == "orig_target_sizes")
+    if let Some(i) = extra_input_index(inputs, image_idx, "orig_target_sizes")
         && (inputs[i].shape.is_empty() || inputs[i].shape.iter().any(|&d| d < 0))
     {
         targets.push((i, DEFAULT_TARGET_SIZES_SHAPE.to_vec()));
@@ -307,10 +341,13 @@ fn compile_on(
 ) -> Result<openvino::CompiledModel> {
     let dt = DeviceType::from(device);
     if device.to_ascii_uppercase().starts_with("GPU") {
-        core.set_property(&dt, &RwPropertyKey::HintInferencePrecision, gpu_precision)
-            .with_context(|| {
-                format!("setting INFERENCE_PRECISION_HINT={gpu_precision} on {device}")
-            })?;
+        core_set_property(
+            core,
+            &dt,
+            &RwPropertyKey::HintInferencePrecision,
+            gpu_precision,
+        )
+        .with_context(|| format!("setting INFERENCE_PRECISION_HINT={gpu_precision} on {device}"))?;
         tracing::info!("OpenVINO {device}: INFERENCE_PRECISION_HINT={gpu_precision}");
     }
     core.compile_model(model, dt)
@@ -657,18 +694,14 @@ pub fn run_inference(
     // Keep extra tensors alive until inference completes.
     let mut extras = Vec::with_capacity(extra.len());
     for e in extra {
-        let i = model
-            .inputs
-            .iter()
-            .position(|p| p.name == e.name)
-            .with_context(|| {
-                format!(
-                    "{}: extra input '{}' not among model inputs {:?}",
-                    where_(),
-                    e.name,
-                    model.inputs.iter().map(|p| &p.name).collect::<Vec<_>>()
-                )
-            })?;
+        let i = extra_input_index(&model.inputs, idx, &e.name).with_context(|| {
+            format!(
+                "{}: extra input '{}' not among model inputs {:?}",
+                where_(),
+                e.name,
+                model.inputs.iter().map(|p| &p.name).collect::<Vec<_>>()
+            )
+        })?;
         let t = extra_tensor(model, &model.inputs[i], e)?;
         request
             .set_input_tensor_by_index(i, &t)
@@ -719,6 +752,38 @@ mod tests {
             info.execution_provider(),
             "OpenVINO GPU (Intel(R) UHD Graphics 630)"
         );
+    }
+
+    #[test]
+    fn extra_input_lookup() {
+        use crate::model::{PortElem, PortSpec};
+        let port = |name: &str, shape: &[i64]| PortSpec {
+            name: name.into(),
+            shape: shape.to_vec(),
+            elem: PortElem::F32,
+        };
+        let onnx = [
+            port("images", &[1, 3, 640, 640]),
+            port("orig_target_sizes", &[1, 2]),
+        ];
+        assert_eq!(extra_input_index(&onnx, 0, "orig_target_sizes"), Some(1));
+        let ir = [
+            port("images", &[1, 3, 640, 640]),
+            port("/postprocessor/Expand_output_0", &[-1, 2]),
+        ];
+        assert_eq!(extra_input_index(&ir, 0, "orig_target_sizes"), Some(1));
+        assert_eq!(extra_input_index(&ir[..1], 0, "orig_target_sizes"), None);
+        let ambiguous = [
+            port("a", &[1, 2]),
+            port("images", &[1, 3, 640, 640]),
+            port("b", &[1, 2]),
+        ];
+        assert_eq!(extra_input_index(&ambiguous, 1, "orig_target_sizes"), None);
+        let not_2d = [
+            port("images", &[1, 3, 640, 640]),
+            port("mask", &[1, 1, 640, 640]),
+        ];
+        assert_eq!(extra_input_index(&not_2d, 0, "orig_target_sizes"), None);
     }
 
     #[test]

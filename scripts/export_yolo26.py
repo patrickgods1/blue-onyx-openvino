@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import xml.etree.ElementTree as ET
@@ -40,14 +41,13 @@ def export_one(size: str, args: argparse.Namespace) -> Path:
     from ultralytics import YOLO
 
     name = f"yolo26{size}"
+    args.work = args.work.resolve()
     args.work.mkdir(parents=True, exist_ok=True)
+    # Ultralytics downloads `<name>.pt` and writes `<name>_openvino_model/` into the current
+    # directory; run inside the work dir so the repo root stays clean and reruns are offline.
+    os.chdir(args.work)
     weights = args.work / f"{name}.pt"
     model = YOLO(str(weights) if weights.exists() else f"{name}.pt")
-    # Keep the downloaded .pt inside the work dir so repeated runs are offline.
-    if not weights.exists():
-        src = Path(model.ckpt_path) if getattr(model, "ckpt_path", None) else Path(f"{name}.pt")
-        if src.exists() and src.resolve() != weights.resolve():
-            shutil.copy2(src, weights)
 
     kwargs = dict(format="openvino", imgsz=args.imgsz, dynamic=False, nms=False, batch=1)
     if args.int8:
@@ -93,6 +93,7 @@ def names_from_metadata(export_dir: Path) -> list[str]:
 
 def main() -> int:
     args = parse_args()
+    args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     snippets = []
     for size in args.sizes:
