@@ -178,12 +178,28 @@ impl Config {
     /// The model that serves `/v1/vision/detection`.
     pub fn default_model_index(&self) -> Option<usize> {
         match &self.default_model {
-            Some(name) => self
-                .models
-                .iter()
-                .position(|m| m.effective_name().eq_ignore_ascii_case(name)),
+            Some(name) => self.models.iter().position(|m| {
+                crate::registry::normalize_name(&m.effective_name())
+                    == crate::registry::normalize_name(name)
+            }),
             None => (!self.models.is_empty()).then_some(0),
         }
+    }
+
+    /// Append `model` unless an entry with the same normalized name or the same path already
+    /// exists. Returns whether it was added.
+    pub fn add_model_if_absent(&mut self, model: ModelConfig) -> bool {
+        let norm = |m: &ModelConfig| crate::registry::normalize_name(&m.effective_name());
+        let new_name = norm(&model);
+        let new_path = crate::resolve_path(&model.path);
+        let exists = self
+            .models
+            .iter()
+            .any(|m| norm(m) == new_name || crate::resolve_path(&m.path) == new_path);
+        if !exists {
+            self.models.push(model);
+        }
+        !exists
     }
 
     pub fn request_timeout(&self) -> std::time::Duration {
@@ -231,8 +247,31 @@ mod tests {
         assert_eq!(c, back);
         assert_eq!(back.models[0].effective_name(), "yolo26s");
         assert_eq!(back.default_model_index(), Some(0));
+        let named = Config {
+            default_model: Some("YOLO26S.xml".into()),
+            ..back.clone()
+        };
+        assert_eq!(named.default_model_index(), Some(0));
         let empty: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.port, crate::DEFAULT_PORT);
+    }
+
+    #[test]
+    fn add_model_if_absent_skips_duplicates() {
+        let mut c = Config::default();
+        let m = |name: &str, path: &str| ModelConfig {
+            name: Some(name.into()),
+            path: path.into(),
+            ..Default::default()
+        };
+        assert!(c.add_model_if_absent(m("IPcam-general", "models/IPcam-general.onnx")));
+        assert!(!c.add_model_if_absent(m("ipcam-general.onnx", "other/x.onnx")));
+        assert!(!c.add_model_if_absent(m("different", "models/IPcam-general.onnx")));
+        assert!(c.add_model_if_absent(ModelConfig {
+            path: "models/delivery.onnx".into(),
+            ..Default::default()
+        }));
+        assert_eq!(c.models.len(), 2);
     }
 
     #[test]

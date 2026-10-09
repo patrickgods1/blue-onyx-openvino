@@ -34,6 +34,9 @@ pub enum Command {
         /// Destination directory (default: the configured models dir).
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// Append the downloaded models to the config file's `models` list.
+        #[arg(long)]
+        add_to_config: bool,
     },
     /// List downloadable models and whether they are present locally.
     ListModels {
@@ -65,6 +68,9 @@ pub struct Cli {
     /// Class names YAML for --model.
     #[arg(long)]
     pub classes: Option<PathBuf>,
+    /// Name of the model that serves `/v1/vision/detection`.
+    #[arg(long)]
+    pub default_model: Option<String>,
     /// Inference device: GPU, GPU.N or CPU.
     #[arg(long)]
     pub device: Option<String>,
@@ -164,10 +170,16 @@ impl Cli {
                 version,
                 archive: abs(&archive),
             },
-            Command::DownloadModels { all, name, dir } => Command::DownloadModels {
+            Command::DownloadModels {
+                all,
+                name,
+                dir,
+                add_to_config,
+            } => Command::DownloadModels {
                 all,
                 name,
                 dir: abs(&dir),
+                add_to_config,
             },
             Command::ListModels { dir } => Command::ListModels { dir: abs(&dir) },
         });
@@ -178,6 +190,9 @@ impl Cli {
 fn merge_cli(config: &mut Config, cli: &Cli) {
     if let Some(v) = cli.port {
         config.port = v;
+    }
+    if let Some(v) = &cli.default_model {
+        config.default_model = Some(v.clone());
     }
     if let Some(v) = &cli.device {
         config.device = v.clone();
@@ -342,6 +357,29 @@ mod tests {
             }
             _ => panic!("wrong command"),
         }
+    }
+
+    #[test]
+    fn default_model_flag_is_merged() {
+        let cli = Cli::try_parse_from(["x", "--default-model", "yolo26s"]).unwrap();
+        let mut cfg = Config::default();
+        merge_cli(&mut cfg, &cli);
+        assert_eq!(cfg.default_model.as_deref(), Some("yolo26s"));
+        let mut cfg = Config {
+            default_model: Some("a".into()),
+            ..Default::default()
+        };
+        merge_cli(&mut cfg, &Cli::default());
+        assert_eq!(cfg.default_model.as_deref(), Some("a"));
+        let cli =
+            Cli::try_parse_from(["x", "download-models", "--all", "--add-to-config"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::DownloadModels {
+                add_to_config: true,
+                ..
+            })
+        ));
     }
 
     #[test]

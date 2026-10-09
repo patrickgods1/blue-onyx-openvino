@@ -10,7 +10,7 @@
 use crate::api::{VisionDetectionRequest, VisionDetectionResponse};
 use crate::backend::{DeviceInfo, LoadRequest, OvBackend, OvCore};
 use crate::config::ModelConfig;
-use crate::metrics::ModelMetrics;
+use crate::metrics::{ModelGauges, ModelMetrics, ModelStateLabel};
 use crate::model::preprocess::Preprocessor;
 use crate::model::{Family, PostParams};
 use crate::startup::{ModelState, StateHandle};
@@ -158,6 +158,28 @@ impl WorkerHandle {
         self.lazy && !self.load_started.load(Ordering::Relaxed)
     }
 
+    /// Lifecycle state for metrics: a lazy model that has not started compiling is `Lazy`.
+    pub fn state_label(&self) -> ModelStateLabel {
+        match self.state.get() {
+            ModelState::Ready => ModelStateLabel::Ready,
+            ModelState::Failed(_) => ModelStateLabel::Failed,
+            ModelState::Initializing if self.accepts_while_initializing() => ModelStateLabel::Lazy,
+            ModelState::Initializing => ModelStateLabel::Initializing,
+        }
+    }
+
+    /// Snapshot of the live per-model values exported to Prometheus.
+    pub fn gauges(&self) -> ModelGauges {
+        ModelGauges {
+            name: self.name.clone(),
+            device: self.metrics.device(),
+            provider: self.metrics.execution_provider(),
+            state: self.state_label(),
+            queue_length: self.sender.len(),
+            queue_capacity: self.queue_capacity(),
+        }
+    }
+
     /// Execution provider string of the loaded model, or a placeholder before load.
     pub fn execution_provider(&self) -> String {
         self.device
@@ -206,6 +228,11 @@ pub fn spawn_worker(
 
 /// Spawn a worker that waits for `after` to open before touching the `Core`, so models
 /// compile in a deterministic order.
+///
+/// A lazy worker does not take part in the startup order: it starts serving its channel at once
+/// (so its first request compiles it as soon as the `Core` mutex is free, without waiting for
+/// every earlier model) and its handle's [`WorkerHandle::load_gate`] simply forwards `after`, so
+/// the next model in the config still waits for the previous non-lazy one.
 pub fn spawn_worker_after(
     core: Arc<Mutex<OvCore>>,
     cfg: WorkerConfig,
@@ -223,6 +250,16 @@ pub fn spawn_worker_after(
     let device = Arc::new(RwLock::new(None));
     let soft_capacity = Arc::new(AtomicUsize::new(hard_cap));
     let gate = LoadGate::new();
+    let handle_gate = if cfg.lazy {
+        after.clone().unwrap_or_else(|| {
+            let g = LoadGate::new();
+            g.open();
+            g
+        })
+    } else {
+        gate.clone()
+    };
+    let after = if cfg.lazy { None } else { after };
     let load_started = Arc::new(AtomicBool::new(false));
 
     let ctx = WorkerCtx {
@@ -259,7 +296,7 @@ pub fn spawn_worker_after(
         join,
         lazy: cfg.lazy,
         soft_capacity,
-        gate,
+        gate: handle_gate,
         load_started,
     }
 }
@@ -440,6 +477,8 @@ impl WorkerCtx {
         if let Ok(mut d) = self.device.write() {
             *d = Some(dev.clone());
         }
+        self.metrics
+            .set_loaded(dev.actual.clone(), provider.clone());
         info!(
             model = %name,
             family = %family.kind(),

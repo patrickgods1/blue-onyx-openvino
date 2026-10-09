@@ -3,6 +3,7 @@
 //! Downloaded files are untrusted data: file names come only from the static catalog below
 //! and everything is written strictly under the destination directory.
 
+use crate::config::ModelConfig;
 use crate::model::ModelFamilyKind;
 use anyhow::{Context, Result, anyhow, bail};
 use hf_hub::HFClientSync;
@@ -239,6 +240,39 @@ pub fn download(names: &[String], all: bool, dest_dir: &Path) -> Result<Vec<Path
     Ok(written)
 }
 
+/// Build config entries for the downloaded `.onnx` files (name = catalog name, family from the
+/// catalog, classes = the sibling `.yaml` when it was downloaded). Paths under `exe_dir` are
+/// stored relative to it, others absolute. Files not in the catalog are ignored.
+pub fn model_configs(files: &[PathBuf], exe_dir: &Path) -> Vec<ModelConfig> {
+    let exe_canon = exe_dir.canonicalize().ok();
+    let rel = |p: &Path| -> PathBuf {
+        for base in [Some(exe_dir), exe_canon.as_deref()].into_iter().flatten() {
+            if let Ok(r) = p.strip_prefix(base) {
+                return r.to_path_buf();
+            }
+        }
+        p.to_path_buf()
+    };
+    let mut out = Vec::new();
+    for f in files {
+        if f.extension().and_then(|e| e.to_str()) != Some("onnx") {
+            continue;
+        }
+        let Some(entry) = f.file_stem().and_then(|s| s.to_str()).and_then(find) else {
+            continue;
+        };
+        let yaml = f.with_extension("yaml");
+        out.push(ModelConfig {
+            name: Some(entry.name.to_string()),
+            path: rel(f),
+            family: entry.family,
+            classes: files.contains(&yaml).then(|| rel(&yaml)),
+            ..Default::default()
+        });
+    }
+    out
+}
+
 /// Print the catalog and whether each model is already in `dest_dir`.
 pub fn print_list(dest_dir: &Path) {
     println!("Available models (destination: {})", dest_dir.display());
@@ -284,6 +318,29 @@ mod tests {
         assert_eq!(find("IPCAM-BIRD.onnx").unwrap().name, "ipcam-bird");
         assert_eq!(find("RT-DETRV2-S").unwrap().family, ModelFamilyKind::RtDetr);
         assert!(find("nope").is_none());
+    }
+
+    #[test]
+    fn model_configs_from_files() {
+        let exe = Path::new("/exe");
+        let files = vec![
+            PathBuf::from("/exe/models/IPcam-general.onnx"),
+            PathBuf::from("/exe/models/IPcam-general.yaml"),
+            PathBuf::from("/elsewhere/rt-detrv2-s.onnx"),
+            PathBuf::from("/elsewhere/unknown.onnx"),
+        ];
+        let c = model_configs(&files, exe);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].name.as_deref(), Some("IPcam-general"));
+        assert_eq!(c[0].path, Path::new("models/IPcam-general.onnx"));
+        assert_eq!(c[0].family, ModelFamilyKind::Yolo5);
+        assert_eq!(
+            c[0].classes.as_deref(),
+            Some(Path::new("models/IPcam-general.yaml"))
+        );
+        assert_eq!(c[1].path, Path::new("/elsewhere/rt-detrv2-s.onnx"));
+        assert_eq!(c[1].family, ModelFamilyKind::RtDetr);
+        assert_eq!(c[1].classes, None);
     }
 
     #[test]

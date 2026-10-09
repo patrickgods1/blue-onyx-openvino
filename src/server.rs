@@ -308,7 +308,7 @@ async fn stats(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
                 "default": default.as_deref() == Some(w.name.as_str()),
                 "state": state_str(&w.state.get()),
                 "lazy": w.lazy,
-                "requestedDevice": m.device,
+                "requestedDevice": m.requested_device,
                 "device": dev.as_ref().map(|d| d.actual.clone()),
                 "deviceName": dev.as_ref().map(|d| d.full_name.clone()),
                 "fellBack": dev.as_ref().map(|d| d.fell_back),
@@ -337,7 +337,7 @@ async fn prometheus(State(state): State<Arc<AppState>>) -> Response {
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        crate::metrics::render_prometheus(&state.metrics),
+        crate::metrics::render_prometheus(&state.metrics, &state.registry.gauges()),
     )
         .into_response()
 }
