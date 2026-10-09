@@ -1,0 +1,6 @@
+# Python environment for scripts/export_yolo26.py (YOLO26 -> OpenVINO IR).
+# Python 3.10-3.12. Create with:  uv venv --python 3.11 .venv && uv pip install -r scripts/requirements-export.txt
+# (or: python -m venv .venv && .venv/bin/pip install -r scripts/requirements-export.txt)
+ultralytics>=8.4,<9
+openvino>=2026.0,<2027
+pyyaml>=6

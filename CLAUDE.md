@@ -20,7 +20,8 @@ cargo fmt --check
 ```
 
 Python export env (YOLO26 -> OpenVINO IR): `.venv` (Python 3.11, `ultralytics`, `openvino`),
-created with `uv venv --python 3.11 .venv`; run `.venv/Scripts/python.exe scripts/export_yolo26.py`.
+created with `uv venv --python 3.11 .venv && uv pip install -r scripts/requirements-export.txt`;
+run `.venv/Scripts/python.exe scripts/export_yolo26.py` (Windows) or `.venv/bin/python scripts/export_yolo26.py`.
 
 OpenVINO libs are discovered through `openvino-finder`: `OPENVINO_INSTALL_DIR` (set at runtime by
 `backend/libs.rs` to `<exe_dir>/openvino` when present) or the OS library path. Pinned version lives in
