@@ -1,13 +1,16 @@
 # Blue Onyx OpenVINO: Linux x86_64 image with Intel GPU support via /dev/dri.
 # Build:  docker build -t blue-onyx-openvino .
 # Run:    docker run --rm -p 32168:32168 --device /dev/dri:/dev/dri \
-#           -v $PWD/models:/app/models -v $PWD/cache:/app/cache -v $PWD/config:/app/config blue-onyx-openvino
+#           -v $PWD/models:/app/models -v $PWD/cache:/app/cache -v $PWD/config:/app/config \
+#           --group-add $(getent group render | cut -d: -f3) blue-onyx-openvino
 
 FROM rust:1-bookworm AS builder
 WORKDIR /src
 COPY . .
 RUN cargo build --release --locked
 
+# Builder glibc 2.36 (bookworm) <= runtime glibc 2.39 (ubuntu24), so the binary runs unchanged.
+# Keep the tag equal to OPENVINO_VERSION in src/setup_openvino.rs.
 # openvino/ubuntu24_runtime ships the OpenVINO runtime, Intel compute runtime (OpenCL) and sets
 # INTEL_OPENVINO_DIR, which openvino-finder honours.
 FROM openvino/ubuntu24_runtime:2026.4.0
@@ -18,6 +21,5 @@ COPY --from=builder /src/target/release/blue-onyx-openvino /app/blue-onyx-openvi
 COPY --from=builder /src/target/release/blue-onyx-openvino-benchmark /app/blue-onyx-openvino-benchmark
 RUN mkdir -p /app/models /app/cache /app/config && chown -R openvino:openvino /app
 USER openvino
-ENV RUST_LOG=info
 EXPOSE 32168
 ENTRYPOINT ["/app/blue-onyx-openvino", "--config", "/app/config/blue_onyx_openvino_config.json", "--cache-dir", "/app/cache"]

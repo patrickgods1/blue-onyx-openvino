@@ -10,6 +10,7 @@
 //! - [`worker`]    per-model inference thread
 //! - [`startup`]   model readiness state shared with the HTTP layer
 //! - [`server`]    axum HTTP server
+//! - [`runner`]    server run loop (generations, restart) shared by the CLI and the service
 //! - [`metrics`]   request/latency counters and Prometheus rendering
 
 pub mod api;
@@ -21,6 +22,7 @@ pub mod image;
 pub mod metrics;
 pub mod model;
 pub mod registry;
+pub mod runner;
 pub mod server;
 pub mod setup_openvino;
 pub mod startup;

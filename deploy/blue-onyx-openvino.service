@@ -4,7 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-# Install the release bundle (binary + openvino/ + models/) into this directory.
+# Install the release bundle (binary + openvino/ + models/) into this directory
+# (scripts/install_systemd.sh does this). Config: <dir>/blue_onyx_openvino_config.json.
 WorkingDirectory=/opt/blue-onyx-openvino
 ExecStart=/opt/blue-onyx-openvino/blue-onyx-openvino
 Restart=on-failure
@@ -13,7 +14,6 @@ RestartSec=5
 SupplementaryGroups=render video
 User=blueonyx
 Group=blueonyx
-Environment=RUST_LOG=info
 
 [Install]
 WantedBy=multi-user.target

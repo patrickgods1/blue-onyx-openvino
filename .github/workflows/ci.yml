@@ -30,8 +30,8 @@ jobs:
         run: cargo test
         env:
           BLUE_ONYX_SKIP_OPENVINO_TESTS: "1"
-      - name: Build release
-        run: cargo build --release
+      - name: Build release (all binaries)
+        run: cargo build --release --bins
       - name: Fetch OpenVINO runtime
         run: cargo run --release -- setup-openvino --dest target/release/openvino
       - name: Download smallest model
@@ -40,19 +40,49 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BIN=target/release/blue-onyx-openvino
-          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
-          "$BIN" --model target/release/models/ipcam-bird.onnx --family yolo5 --force-cpu --port 32168 --cache-dir target/release/cache &
+          EXE=""
+          case "$RUNNER_OS" in Windows) EXE=".exe";; esac
+          BIN="target/release/blue-onyx-openvino$EXE"
+          CLIENT="target/release/test-blue-onyx-openvino$EXE"
+          LOG="$RUNNER_TEMP/blue-onyx-server.log"
+          IMG=tests/data/dog_bike_car.jpg
+          URL=http://127.0.0.1:32168
+
+          "$BIN" --config "$RUNNER_TEMP/smoke_config.json" \
+            --model target/release/models/ipcam-bird.onnx --family yolo5 --force-cpu \
+            --port 32168 --cache-dir target/release/cache >"$LOG" 2>&1 &
           PID=$!
+          cleanup() {
+            kill "$PID" 2>/dev/null || true
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              taskkill //F //IM blue-onyx-openvino.exe >/dev/null 2>&1 || true
+            fi
+            echo "---- server log ----"; tail -n 50 "$LOG" || true
+          }
+          trap cleanup EXIT
+
           for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:32168/ >/dev/null; then break; fi; sleep 2
+            curl -sf "$URL/" >/dev/null && break
+            sleep 2
           done
-          curl -sf -o /tmp/dog.jpg https://raw.githubusercontent.com/xnorpx/blue-onyx/main/assets/dog_bike_car.jpg
+
+          OUT=""
           for i in $(seq 1 60); do
-            OUT=$(curl -s -F image=@/tmp/dog.jpg -F min_confidence=0.2 http://127.0.0.1:32168/v1/vision/detection || true)
+            OUT=$(curl -s -F image=@"$IMG" -F min_confidence=0.2 "$URL/v1/vision/detection" || true)
             echo "$OUT" | grep -q '"success":true' && break
             sleep 2
           done
-          echo "$OUT"
+          echo "detection: $OUT"
           echo "$OUT" | grep -q '"success":true'
-          kill $PID || true
+
+          LIST=$(curl -s -X POST "$URL/v1/vision/custom/list")
+          echo "list: $LIST"
+          echo "$LIST" | grep -q 'ipcam-bird'
+
+          OUT=$(curl -s -F image=@"$IMG" -F min_confidence=0.2 "$URL/v1/vision/custom/ipcam-bird")
+          echo "custom: $OUT"
+          echo "$OUT" | grep -q '"success":true'
+
+          "$CLIENT" --repeat 5 --parallel 2
+          "$CLIENT" --model ipcam-bird --repeat 3
+          "$CLIENT" --list

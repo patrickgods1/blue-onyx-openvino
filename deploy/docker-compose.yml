@@ -9,9 +9,11 @@ services:
       - "32168:32168"
     devices:
       - /dev/dri:/dev/dri
+    # Numeric GID of the host's `render` group (`getent group render | cut -d: -f3`); group names
+    # do not resolve inside the container.
     group_add:
-      - "video"
-      - "render"
+      - "${RENDER_GID:-109}"
+      - "${VIDEO_GID:-44}"
     volumes:
       - ./models:/app/models
       - ./cache:/app/cache
