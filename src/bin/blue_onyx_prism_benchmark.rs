@@ -628,7 +628,7 @@ impl Bench<'_> {
             &info.outputs,
             job.classes.len(),
         )?;
-        let mut pre = Preprocessor::new(in_w, in_h, family.resize_mode());
+        let mut pre = Preprocessor::for_family(in_w, in_h, family.as_ref());
         let filter = (!self.object_filter.is_empty()).then_some(self.object_filter);
 
         // One request exactly as `WorkerCtx::process` runs it, with per-stage timings.

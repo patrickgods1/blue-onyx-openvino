@@ -16,12 +16,23 @@
     <a href="/stats"{% if nav == "stats" %} class="active"{% endif %}>Stats</a>
     <a href="/test"{% if nav == "test" %} class="active"{% endif %}>Test</a>
     <a href="/config"{% if nav == "config" %} class="active"{% endif %}>Config</a>
-    <a href="/prometheus">Prometheus</a>
+    <a href="/logs"{% if nav == "logs" %} class="active"{% endif %}>Logs</a>
   </nav>
 </header>
 <main>
 {% block content %}{% endblock %}
 </main>
-<footer>Blue Onyx Prism {{ version }} &middot; CodeProject.AI compatible API</footer>
+<footer>
+  <div>Blue Onyx Prism {{ version }} &middot; CodeProject.AI compatible API</div>
+  <div class="endpoints">JSON:
+    <a href="/stats.json">stats</a> &middot;
+    <a href="/v1/devices">devices</a> &middot;
+    <a href="/v1/resources">resources</a> &middot;
+    <a href="/v1/vision/custom/list">models</a> &middot;
+    <a href="/logs.json">logs</a> &middot;
+    <a href="/v1/status/updateavailable">update</a> &middot;
+    <a href="/prometheus">Prometheus metrics</a>
+  </div>
+</footer>
 </body>
 </html>

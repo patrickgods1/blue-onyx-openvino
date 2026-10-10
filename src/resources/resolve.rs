@@ -357,6 +357,16 @@ pub fn catalog_model_in(m: &ModelConfig, extra: &[&'static Resource]) -> Option<
         .or_else(|| catalog::model(&file))
 }
 
+/// The catalog model ships a class file (`.yaml` part). D-FINE / RF-DETR use the COCO-80
+/// fallback and have none.
+fn has_class_file(r: &Resource) -> bool {
+    r.parts.iter().any(|p| {
+        std::path::Path::new(p.file_name)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("yaml"))
+    })
+}
+
 /// The class file a model uses by default: `classes`, else `<stem>.yaml` next to it.
 fn classes_path(m: &ModelConfig) -> PathBuf {
     m.classes
@@ -426,7 +436,7 @@ impl Resolver<'_> {
                     return;
                 }
             }
-        } else if entry.is_some()
+        } else if entry.is_some_and(has_class_file)
             && m.classes.is_none()
             && !self.installed.has_file(&classes_path(m))
         {

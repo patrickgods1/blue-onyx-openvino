@@ -1,7 +1,29 @@
 {% extends "base.html" %}
-{% block head %}{% if refresh_secs > 0 %}<meta http-equiv="refresh" content="{{ refresh_secs }};url={{ refresh_url }}">{% endif %}{% endblock %}
+{% block head %}{% if refresh_secs > 0 %}{% if restarting %}<noscript>{% endif %}<meta http-equiv="refresh" content="{{ refresh_secs }};url={{ refresh_url }}">{% if restarting %}</noscript>{% endif %}{% endif %}{% endblock %}
 {% block title %}{{ heading }}{% endblock %}
 {% block content %}
 <h1>{{ heading }}</h1>
-<p>{{ message }}</p>
+<p{% if restarting %} class="notice" id="restart-banner"{% endif %}>{{ message }}</p>
+{% if restarting %}
+<p class="muted" id="restart-status">Waiting for the server&hellip;</p>
+<script>
+// Poll until the restarted server answers, then go back (the old one stops ~250 ms after replying).
+(function () {
+  var target = "{{ refresh_url }}", started = Date.now(), status = document.getElementById("restart-status");
+  function poll() {
+    fetch("/stats.json", {cache: "no-store"}).then(function (r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    }).then(function () {
+      status.textContent = "Server is back; reloading…";
+      location.href = target;
+    }).catch(function () {
+      status.textContent = "Waiting for the server… (" + Math.round((Date.now() - started) / 1000) + " s)";
+      setTimeout(poll, 1000);
+    });
+  }
+  setTimeout(poll, 1500);
+})();
+</script>
+{% endif %}
 {% endblock %}

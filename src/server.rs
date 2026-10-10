@@ -1,5 +1,5 @@
 //! axum HTTP server: CodeProject.AI compatible detection endpoints plus the web UI
-//! (welcome, stats, test, config pages rendered with askama templates from `templates/`).
+//! (welcome, stats, test, config and logs pages rendered with askama templates from `templates/`).
 //! Handler flow and page set modeled on blue-onyx `server.rs` and its templates (MIT).
 
 use crate::api::{VisionCustomListResponse, VisionDetectionRequest, VisionDetectionResponse};
@@ -86,6 +86,11 @@ impl AppState {
     fn config_write(&self) -> RwLockWriteGuard<'_, Config> {
         self.config.write().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// Recent log events for the Logs page (kept by the logging setup's reload handle).
+    fn log_buffer(&self) -> Option<&crate::logbuf::LogBuffer> {
+        self.log_reload.as_ref().map(LogReloadHandle::buffer)
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -108,6 +113,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/config/models", post(config_models))
         .route("/config/restart", post(config_restart))
         .route("/config/loglevel", post(config_loglevel))
+        .route("/logs", get(logs_page))
+        .route("/logs.json", get(logs_json))
         .route("/static/style.css", get(style_css))
         .route("/favicon.ico", get(favicon))
         .fallback(fallback)
@@ -201,10 +208,69 @@ fn render<T: Template>(t: &T) -> Response {
 struct ModelRow {
     name: String,
     is_default: bool,
+    /// Short state text ("Ready", "Loading", "Waiting for download", "Failed:", "Lazy").
     state: String,
+    /// CSS class of the state badge: `ok`, `loading`, `wait`, `fail`, `lazy`.
+    state_class: &'static str,
+    /// Download progress, failure reason, ...
+    state_detail: Option<String>,
     provider: String,
     requests: u64,
     queue: String,
+}
+
+/// Short state, badge class and detail of a worker for the pages. Ready stays exactly
+/// "Ready" and a failure starts with "Failed:" (the HTTP integration tests poll for both).
+fn state_view(w: &WorkerHandle) -> (String, &'static str, Option<String>) {
+    match w.state.get() {
+        ModelState::Ready => ("Ready".into(), "ok", None),
+        ModelState::Failed(m) => ("Failed:".into(), "fail", Some(m)),
+        ModelState::Initializing if w.accepts_while_initializing() => {
+            ("Lazy".into(), "lazy", Some("loads on first request".into()))
+        }
+        ModelState::Initializing => match w.state.detail() {
+            Some(d) => ("Waiting for download".into(), "wait", Some(d)),
+            None => ("Loading".into(), "loading", None),
+        },
+    }
+}
+
+/// Distinct execution providers of the loaded models, in config order.
+fn providers_in_use(reg: &ModelRegistry) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in reg.workers() {
+        let p = w
+            .device
+            .read()
+            .ok()
+            .and_then(|d| d.as_ref().map(|d| d.execution_provider()));
+        if let Some(p) = p
+            && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// "Force CPU is on — overrides device auto (would use ort:coreml)" when `force_cpu` is set.
+fn force_cpu_note(cfg: &Config, snap: &DevicesSnapshot) -> Option<String> {
+    if !cfg.force_cpu {
+        return None;
+    }
+    let would = match spec::parse(&cfg.device) {
+        Ok(DeviceSpec::Auto) => snap
+            .selection
+            .auto_pick()
+            .map_or_else(|| "nothing runnable".to_string(), |o| o.spec.to_string()),
+        Ok(d) => d.with_default_index(cfg.gpu_index).to_string(),
+        Err(_) => cfg.device.trim().to_string(),
+    };
+    Some(format!(
+        "Force CPU is on \u{2014} overrides device {} (would use {would}). Uncheck Force CPU on \
+         the Config page to use it.",
+        cfg.device.trim()
+    ))
 }
 
 #[derive(Template)]
@@ -217,6 +283,9 @@ struct WelcomeTemplate {
     devices: String,
     gpus: Vec<String>,
     auto_pick: String,
+    /// Distinct execution providers of the loaded models.
+    in_use: String,
+    force_cpu_note: Option<String>,
     uptime: String,
     port: u16,
     default_model: String,
@@ -341,15 +410,22 @@ async fn welcome(State(state): State<Arc<AppState>>) -> Response {
     let models = reg
         .workers()
         .iter()
-        .map(|w| ModelRow {
-            name: w.name.clone(),
-            is_default: w.name == default,
-            state: state_label(w),
-            provider: w.execution_provider(),
-            requests: w.metrics.requests.load(Ordering::Relaxed),
-            queue: format!("{}/{}", w.sender.len(), w.queue_capacity()),
+        .map(|w| {
+            let (state, state_class, state_detail) = state_view(w);
+            ModelRow {
+                name: w.name.clone(),
+                is_default: w.name == default,
+                state,
+                state_class,
+                state_detail,
+                provider: w.execution_provider(),
+                requests: w.metrics.requests.load(Ordering::Relaxed),
+                queue: format!("{}/{}", w.sender.len(), w.queue_capacity()),
+            }
         })
         .collect();
+    let in_use = providers_in_use(reg);
+    let force_cpu_note = force_cpu_note(&state.config_read(), &snap);
     render(&WelcomeTemplate {
         nav: "home",
         version: crate::VERSION,
@@ -366,6 +442,12 @@ async fn welcome(State(state): State<Arc<AppState>>) -> Response {
         },
         gpus: snap.hardware.gpus.iter().map(|g| g.to_string()).collect(),
         auto_pick: snap.auto_pick_label(),
+        in_use: if in_use.is_empty() {
+            "nothing loaded yet".to_string()
+        } else {
+            in_use.join("; ")
+        },
+        force_cpu_note,
         uptime: format_uptime(state.started.elapsed()),
         port: state.config_read().port,
         default_model: default,
@@ -593,8 +675,11 @@ struct StatsRow {
     name: String,
     is_default: bool,
     state: String,
+    state_class: &'static str,
     device: String,
     provider: String,
+    /// "OpenVINO 2026.0.0", "ONNX Runtime 1.24.4"; "-" before the model has loaded.
+    runtime: String,
     fell_back: &'static str,
     requests: u64,
     dropped: u64,
@@ -608,14 +693,42 @@ struct StatsRow {
 struct StatsTemplate {
     nav: &'static str,
     version: &'static str,
-    openvino_version: String,
     uptime: String,
     models: Vec<StatsRow>,
+}
+
+/// Runtime name and version a loaded model runs on ("OpenVINO 2026.0.0").
+fn runtime_text(
+    reg: &ModelRegistry,
+    ort_version: &Option<String>,
+    dev: Option<&crate::backend::DeviceInfo>,
+) -> String {
+    use crate::backend::spec::Runtime;
+    match dev.map(|d| d.runtime) {
+        None => "-".to_string(),
+        Some(Runtime::OpenVino) => {
+            // "2026.4.0-22959-99c81491cc3-releases/2026/4 (OpenVINO Runtime)" -> "2026.4.0".
+            let v = &reg.runtime_info.openvino_version;
+            let short = v.split(['-', ' ']).next().unwrap_or(v);
+            format!("OpenVINO {short}").trim().to_string()
+        }
+        Some(Runtime::Ort) => match ort_version {
+            Some(v) => format!("ONNX Runtime {v}"),
+            None => "ONNX Runtime".to_string(),
+        },
+    }
+}
+
+/// Version of the loaded ONNX Runtime, when the shared runtimes are free to ask.
+fn ort_version(reg: &ModelRegistry) -> Option<String> {
+    let rt = reg.runtimes()?.try_lock().ok()?;
+    rt.onnxruntime_version()
 }
 
 async fn stats_page(State(state): State<Arc<AppState>>) -> Response {
     let reg = &state.registry;
     let default = default_name(reg);
+    let ortv = ort_version(reg);
     let models = reg
         .workers()
         .iter()
@@ -626,6 +739,8 @@ async fn stats_page(State(state): State<Arc<AppState>>) -> Response {
                 name: w.name.clone(),
                 is_default: w.name == default,
                 state: state_label(w),
+                state_class: state_view(w).1,
+                runtime: runtime_text(reg, &ortv, dev.as_ref()),
                 device: dev
                     .as_ref()
                     .map(|d| d.actual.clone())
@@ -650,7 +765,6 @@ async fn stats_page(State(state): State<Arc<AppState>>) -> Response {
     render(&StatsTemplate {
         nav: "stats",
         version: crate::VERSION,
-        openvino_version: reg.runtime_info.openvino_version.clone(),
         uptime: format_uptime(state.started.elapsed()),
         models,
     })
@@ -659,6 +773,7 @@ async fn stats_page(State(state): State<Arc<AppState>>) -> Response {
 async fn stats_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let reg = &state.registry;
     let default = reg.default_model().map(|w| w.name.clone());
+    let ortv = ort_version(reg);
     let models: Vec<serde_json::Value> = reg
         .workers()
         .iter()
@@ -673,6 +788,9 @@ async fn stats_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Valu
                 "default": default.as_deref() == Some(w.name.as_str()),
                 "state": w.state.describe(),
                 "stateDetail": w.state.detail(),
+                "stateText": state_label(w),
+                "stateClass": state_view(w).1,
+                "runtime": runtime_text(reg, &ortv, dev.as_ref()),
                 "lazy": w.lazy,
                 "requestedDevice": m.requested_device,
                 "device": dev.as_ref().map(|d| d.actual.clone()),
@@ -692,6 +810,7 @@ async fn stats_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Valu
     Json(serde_json::json!({
         "version": crate::VERSION,
         "uptimeSecs": state.metrics.uptime().as_secs(),
+        "uptime": format_uptime(state.started.elapsed()),
         "openvino": reg.runtime_info,
         "models": models,
     }))
@@ -729,6 +848,7 @@ async fn resources_json(State(state): State<Arc<AppState>>) -> Json<serde_json::
         "downloadRoot": cfg.data_root().display().to_string(),
         "manualMessage": manual,
         "resources": rows,
+        "localModels": crate::resources::status::local_models(state.resources.as_ref(), &cfg),
     }))
 }
 
@@ -1118,9 +1238,14 @@ struct ConfigTemplate {
     device_choices: Vec<DeviceChoice>,
     message: Option<String>,
     error: Option<String>,
-    /// Resources card rows (empty when the server runs without a download manager).
-    resources: Vec<crate::resources::status::ResourceRow>,
+    /// Resources card, grouped (Runtimes, GPU libraries, Models by family).
+    resource_groups: Vec<crate::resources::status::ResourceGroup>,
+    /// Model files in `models_dir` that no config entry uses.
+    local_models: Vec<crate::resources::status::LocalModel>,
     resources_enabled: bool,
+    /// Resolved `models_dir` (where YOLO26 exports go).
+    models_dir: String,
+    force_cpu_note: Option<String>,
 }
 
 /// One `<option>` of the Device select.
@@ -1205,26 +1330,26 @@ fn config_template(
     if let Some(form) = submitted {
         c.overlay(form);
     }
-    let log_levels = [
-        LogLevel::Trace,
-        LogLevel::Debug,
-        LogLevel::Info,
-        LogLevel::Warn,
-        LogLevel::Error,
-    ]
-    .iter()
-    .map(|l| LevelChoice {
-        value: l.as_str(),
-        selected: l.as_str().eq_ignore_ascii_case(c.log_level.trim()),
-    })
-    .collect();
-    let device_choices = device_choices(&devices_snapshot(state), &c.device, &c.gpu_index);
-    let resources = {
+    let log_levels = level_choices(&c.log_level);
+    let snap = devices_snapshot(state);
+    let device_choices = device_choices(&snap, &c.device, &c.gpu_index);
+    let (resource_groups, local_models, models_dir, force_cpu_note) = {
         let cfg = state.config_read();
-        crate::resources::status::rows(state.resources.as_ref(), &cfg)
+        (
+            crate::resources::status::grouped(crate::resources::status::rows(
+                state.resources.as_ref(),
+                &cfg,
+            )),
+            crate::resources::status::local_models(state.resources.as_ref(), &cfg),
+            cfg.data_path(&cfg.models_dir).display().to_string(),
+            force_cpu_note(&cfg, &snap),
+        )
     };
     ConfigTemplate {
-        resources,
+        resource_groups,
+        local_models,
+        models_dir,
+        force_cpu_note,
         resources_enabled: state.resources.is_some(),
         nav: "config",
         version: crate::VERSION,
@@ -1400,6 +1525,9 @@ struct MessageTemplate {
     message: String,
     refresh_secs: u32,
     refresh_url: String,
+    /// The server is restarting: poll until it answers, then go to `refresh_url` (the meta
+    /// refresh stays as the no-JS fallback).
+    restarting: bool,
 }
 
 /// Stops the HTTP server and the workers of this generation; the main binary then reloads the
@@ -1414,7 +1542,7 @@ fn restart_response(state: &AppState) -> Response {
     restart_response_with(
         state,
         "The server is reloading its config and recompiling the enabled models. This page \
-         returns to the home page in a few seconds."
+         reloads as soon as the server answers again."
             .into(),
     )
 }
@@ -1430,10 +1558,11 @@ fn restart_response_with(state: &AppState, message: String) -> Response {
     render(&MessageTemplate {
         nav: "config",
         version: crate::VERSION,
-        heading: "Restarting".into(),
+        heading: "Restarting\u{2026}".into(),
         message,
         refresh_secs: 5,
-        refresh_url: "/".into(),
+        refresh_url: "/config".into(),
+        restarting: true,
     })
 }
 
@@ -1487,6 +1616,109 @@ async fn config_loglevel(
                     .into_response()
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Logs page
+
+#[derive(Template)]
+#[template(path = "logs.html")]
+struct LogsTemplate {
+    nav: &'static str,
+    version: &'static str,
+    log_levels: Vec<LevelChoice>,
+    /// Log capture is available (this process initialized logging).
+    available: bool,
+    capacity: usize,
+}
+
+fn level_choices(current: &str) -> Vec<LevelChoice> {
+    [
+        LogLevel::Trace,
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+    ]
+    .iter()
+    .map(|l| LevelChoice {
+        value: l.as_str(),
+        selected: l.as_str().eq_ignore_ascii_case(current.trim()),
+    })
+    .collect()
+}
+
+async fn logs_page(State(state): State<Arc<AppState>>) -> Response {
+    let level = state.config_read().log_level.as_str().to_string();
+    render(&LogsTemplate {
+        nav: "logs",
+        version: crate::VERSION,
+        log_levels: level_choices(&level),
+        available: state.log_buffer().is_some(),
+        capacity: crate::logbuf::DEFAULT_CAPACITY,
+    })
+}
+
+/// `GET /logs.json?after=<seq>&level=<min>&limit=<n>`: captured log events newer than `after`
+/// at `level` or more severe, oldest first. `last` is the cursor for the next poll; a `last`
+/// below the client's cursor means the process restarted.
+async fn logs_json(
+    State(state): State<Arc<AppState>>,
+    query: Result<Query<HashMap<String, String>>, QueryRejection>,
+) -> Response {
+    let q = query.map(|Query(q)| q).unwrap_or_default();
+    let bad = |msg: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "success": false, "message": msg })),
+        )
+            .into_response()
+    };
+    let after = match q.get("after").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => 0,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => return bad(format!("after: '{v}' is not a number")),
+        },
+    };
+    let min = match q.get("level").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => None,
+        Some(v) if v.eq_ignore_ascii_case("all") => None,
+        Some(v) => match crate::logbuf::parse_level(v) {
+            Some(l) => Some(l),
+            None => return bad(format!("level: '{v}' is not trace|debug|info|warn|error")),
+        },
+    };
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(crate::logbuf::MAX_PAGE)
+        .clamp(1, crate::logbuf::MAX_PAGE);
+    let level = state.config_read().log_level.as_str();
+    match state.log_buffer() {
+        Some(buf) => {
+            let page = buf.since(after, min, limit);
+            Json(serde_json::json!({
+                "success": true,
+                "level": level,
+                "entries": page.entries,
+                "last": page.last,
+                "first": page.first,
+                "truncated": page.truncated,
+            }))
+            .into_response()
+        }
+        None => Json(serde_json::json!({
+            "success": false,
+            "message": "log capture is not available in this process",
+            "level": level,
+            "entries": [],
+            "last": 0,
+            "first": 1,
+            "truncated": false,
+        }))
+        .into_response(),
     }
 }
 
@@ -1656,13 +1888,24 @@ mod tests {
         assert!(home.contains("2026.0.0-test"), "{home}");
         assert!(home.contains("<td>ipcam-general</td>"));
         // The HTTP integration tests poll for `<td>Ready</td>` / `Failed:` in this page.
-        assert!(home.contains("<td>Failed: model file not found: x.onnx</td>"));
+        assert!(home.contains(
+            "<td>Failed:<br><span class=\"detail\">model file not found: x.onnx</span></td>"
+        ));
+        assert!(home.contains("<tr class=\"st-fail\">"));
+        assert!(home.contains("In use") && home.contains("nothing loaded yet"));
+        assert!(home.contains("OpenVINO can use"));
+        assert!(!home.contains("Force CPU is on"));
+        // Prometheus moved to the footer, Logs is in the nav.
+        assert!(home.contains("<a href=\"/logs\">Logs</a>"));
+        assert!(home.contains("<a href=\"/prometheus\">Prometheus metrics</a>"));
         assert!(!home.contains("<b>evil</b>") && home.contains("&#60;b&#62;evil"));
         assert!(home.contains("href=\"/static/style.css\""));
 
         let (s, stats) = get_text(&state, "/stats").await;
         assert_eq!(s, StatusCode::OK);
-        assert!(stats.contains("http-equiv=\"refresh\" content=\"5\""));
+        assert!(!stats.contains("http-equiv=\"refresh\""));
+        assert!(stats.contains("fetch(\"/stats.json\""));
+        assert!(stats.contains("class=\"stats sticky-first\""));
         assert!(stats.contains("ipcam-general") && stats.contains("title=\"CPU\""));
         assert!(!stats.contains("<b>evil</b>"));
 
@@ -1671,6 +1914,9 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["models"][0]["name"], "ipcam-general");
         assert_eq!(v["models"][0]["default"], true);
+        assert_eq!(v["models"][0]["stateClass"], "fail");
+        assert_eq!(v["models"][0]["runtime"], "-");
+        assert_eq!(v["models"][0]["executionProvider"], "not loaded");
 
         let (s, test) = get_text(&state, "/test").await;
         assert_eq!(s, StatusCode::OK);
@@ -1682,6 +1928,12 @@ mod tests {
         assert!(cfg.contains("name=\"models_json\""));
         assert!(cfg.contains("&#34;ipcam-general&#34;"), "{cfg}");
         assert!(cfg.contains("<option value=\"info\" selected>"));
+        // One log level control on this page (the Server form); the JSON is under Advanced.
+        assert_eq!(cfg.matches("name=\"log_level\"").count(), 1);
+        assert!(!cfg.contains("action=\"/config/loglevel\""));
+        assert!(cfg.contains("<summary>Advanced: Models (JSON)</summary>"));
+        assert!(cfg.contains("nav class=\"toc\""));
+        assert!(cfg.contains("Local models (not in config)"));
     }
 
     fn snapshot(devices: &[&str]) -> DevicesSnapshot {
@@ -1798,7 +2050,10 @@ mod tests {
         assert_eq!(v["autoPick"], v["selection"]["auto"][0]);
 
         let (_, cfg) = get_text(&state, "/config").await;
-        assert!(cfg.contains("<select name=\"device\">"), "{cfg}");
+        assert!(
+            cfg.contains("<select name=\"device\" id=\"device\">"),
+            "{cfg}"
+        );
         assert!(cfg.contains("<option value=\"auto\""));
         assert!(cfg.contains("currently:"));
         let (_, home) = get_text(&state, "/").await;
@@ -2231,7 +2486,9 @@ mod tests {
         assert_eq!(fx["provides"][0], "model:fixture-model");
         assert_eq!(fx["large"], false);
         // The platform's catalog is listed too.
+        assert_eq!(fx["group"], "models-yolov5");
         let ov = row(&j, "openvino-runtime");
+        assert_eq!(ov["group"], "runtimes");
         assert!(ov["size"].as_u64().unwrap() > 0);
         assert!(ov["provides"][0].as_str().unwrap().starts_with("openvino:"));
 
@@ -2358,6 +2615,165 @@ mod tests {
         assert!(html.contains("has no download manager"));
         let (s, _) = post_action(&plain, "/v1/resources/download", "id=openvino-runtime").await;
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    #[tokio::test]
+    async fn force_cpu_note_on_home_and_config() {
+        let state = test_state();
+        {
+            let mut c = state.config_write();
+            c.force_cpu = true;
+            c.device = "auto".into();
+        }
+        let (_, home) = get_text(&state, "/").await;
+        assert!(
+            home.contains("Force CPU is on \u{2014} overrides device auto (would use "),
+            "{home}"
+        );
+        let (_, cfg) = get_text(&state, "/config").await;
+        assert!(cfg.contains("<select name=\"device\" id=\"device\" disabled>"));
+        assert!(cfg.contains("Overridden by Force CPU: Force CPU is on"));
+    }
+
+    fn logs_state() -> Arc<AppState> {
+        let base = test_state();
+        let mut state = AppState::new(
+            base.registry.clone(),
+            base.metrics.clone(),
+            base.config_read().clone(),
+            base.config_path.clone(),
+        );
+        state.log_reload = Some(LogReloadHandle::detached(LogLevel::Info));
+        Arc::new(state)
+    }
+
+    #[tokio::test]
+    async fn logs_page_and_endpoint() {
+        let state = logs_state();
+        let buf = state.log_buffer().unwrap().clone();
+        buf.push(
+            tracing::Level::INFO,
+            "blue_onyx_prism::registry",
+            "model ready".into(),
+        );
+        buf.push(
+            tracing::Level::WARN,
+            "blue_onyx_prism::server",
+            "queue <full>".into(),
+        );
+        buf.push(tracing::Level::DEBUG, "x", "detail".into());
+
+        let (s, page) = get_text(&state, "/logs").await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(page.contains("id=\"logview\""));
+        assert!(page.contains("<option value=\"info\" selected>info</option>"));
+        assert!(page.contains("class=\"active\">Logs</a>"));
+
+        let (s, body) = get_text(&state, "/logs.json").await;
+        assert_eq!(s, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["success"], true);
+        assert_eq!(v["last"], 3);
+        assert_eq!(v["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(v["entries"][1]["message"], "queue <full>");
+        assert_eq!(v["entries"][1]["level"], "WARN");
+        assert_eq!(v["level"], "info");
+
+        let (_, body) = get_text(&state, "/logs.json?after=1&level=warn").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let e = v["entries"].as_array().unwrap();
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0]["seq"], 2);
+
+        let (_, body) = get_text(&state, "/logs.json?after=3").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["entries"].as_array().unwrap().is_empty());
+        assert_eq!(v["last"], 3);
+
+        let (s, _) = get_text(&state, "/logs.json?level=loud").await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = get_text(&state, "/logs.json?after=x").await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+
+        // The level control applies through the handle and is saved.
+        let (s, _, b) = call(&state, post_form("/config/loglevel", "level=debug", false)).await;
+        assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+        assert_eq!(
+            Config::load(&state.config_path).unwrap().log_level,
+            LogLevel::Debug
+        );
+
+        // Without a handle the endpoint says so.
+        let plain = test_state();
+        let (s, body) = get_text(&plain, "/logs.json").await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(body.contains("\"success\":false"));
+    }
+
+    #[tokio::test]
+    async fn local_models_listed_and_added() {
+        let (state, root) = resources_state();
+        let models = root.join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        for f in [
+            "yolo26n.xml",
+            "yolo26n.bin",
+            "yolo26n.onnx",
+            "custom.xml",
+            "custom.bin",
+            "other.onnx",
+            "IPcam-general.onnx",
+            "notes.txt",
+        ] {
+            std::fs::write(models.join(f), b"x").unwrap();
+        }
+        let j = resources(&state).await;
+        let local = j["localModels"].as_array().unwrap();
+        let ids: Vec<&str> = local.iter().map(|l| l["id"].as_str().unwrap()).collect();
+        // `other.onnx` is configured, IPcam-general is a catalog download; .onnx wins over .xml.
+        assert_eq!(ids, ["local:custom.xml", "local:yolo26n.onnx"], "{j}");
+        assert_eq!(local[1]["also"], "yolo26n.xml");
+        assert_eq!(local[1]["family"], "auto");
+        assert_eq!(local[1]["group"], "local-models");
+        assert_eq!(local[0]["format"], "openvino-ir");
+
+        let (_, html) = get_text(&state, "/config").await;
+        assert!(html.contains("value=\"local:yolo26n.onnx\""), "{html}");
+        assert!(html.contains("<h3 id=\"res-runtimes\">Runtimes</h3>"));
+
+        let (s, b) = post_action(
+            &state,
+            "/v1/resources/add-to-config",
+            "id=local%3Ayolo26n.onnx",
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        assert!(b["message"].as_str().unwrap().contains("added 'yolo26n'"));
+        let saved = Config::load(&state.config_path).unwrap();
+        let m = saved
+            .models
+            .iter()
+            .find(|m| m.effective_name() == "yolo26n")
+            .unwrap();
+        assert_eq!(m.path, PathBuf::from("models/yolo26n.onnx"));
+        assert_eq!(m.family, crate::model::ModelFamilyKind::Auto);
+        let j = resources(&state).await;
+        let ids: Vec<&str> = j["localModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["local:custom.xml"]);
+
+        for bad in [
+            "id=local%3A..%2Fx.onnx",
+            "id=local%3Anotes.txt",
+            "id=local%3Amissing.onnx",
+        ] {
+            let (s, b) = post_action(&state, "/v1/resources/add-to-config", bad).await;
+            assert_eq!(s, StatusCode::NOT_FOUND, "{bad}: {b}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

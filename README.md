@@ -119,8 +119,11 @@ blue-onyx-prism fetch --all-for-platform  # everything for this OS/arch (large o
 - **Offline / air-gapped:** set `"auto_download": false`, run `fetch --for-config` on a machine with
   network (same OS/arch and config), then copy the whole directory. `list-resources` on the target
   shows anything still missing.
-- **Web UI:** the Config page has a *Resources* card (state, size, Download / Remove, live
-  progress, *Add to config* for downloaded models) and `GET /v1/resources` returns the same as JSON.
+- **Web UI:** the Config page has a *Resources* card, grouped into Runtimes, GPU libraries, Models
+  by family (YOLOv5, RT-DETRv2, D-FINE, RF-DETR) and *Local models (not in config)* (`.onnx` / `.xml`
+  files in `models_dir` that no config entry uses, e.g. YOLO26 exports), with state, size,
+  Download / Remove, a live progress bar and *Add to config*. `GET /v1/resources` returns the same as
+  JSON (each row has a `group`; local files are in `localModels`).
   Device options that need a download show "will download ... (size)" in the Device dropdown;
   choosing one and saving starts the download and switches when it is installed.
 - **NVIDIA CUDA libraries (opt-in):** `ort:cuda` needs CUDA 12 and cuDNN 9. If they are not
@@ -274,8 +277,11 @@ uv pip install -r scripts/requirements-export.txt         # or .venv/bin/pip ins
 .venv/bin/python scripts/export_yolo26.py                  # Linux / macOS
 ```
 
-This writes `models/yolo26{n,s,m}.{xml,bin,yaml}` and prints the `"models"` snippet for the config
-file. YOLO26 weights are AGPL-3.0 and are never committed; `models/`, `cache/` and `openvino/` are
+This writes `yolo26{n,s,m}.{xml,bin,onnx,yaml}` and prints the `"models"` snippet for the config
+file. The output directory is `--out-dir` (default `target/release/models` when it exists, i.e. next
+to the release exe, else `models/`); point it at the `models` directory next to the exe you run (the
+Config page names it). The files then appear under *Local models (not in config)* with an
+*Add to config* button (the `.onnx` is preferred: it also runs on ONNX Runtime, incl. CoreML). YOLO26 weights are AGPL-3.0 and are never committed; `models/`, `cache/` and `openvino/` are
 git-ignored.
 
 ### Converting ONNX models to OpenVINO IR
@@ -340,11 +346,12 @@ Open `http://<host>:32168/` in a browser:
 
 | Page | What it does |
 |---|---|
-| `/` | Models (state, device, requests, queue), OpenVINO version and devices, uptime, API usage; shows a hint when a newer release exists |
-| `/stats` | Per-model state, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; refreshes every 5 s. JSON at `/stats.json` |
-| `/test` | Upload an image, pick a model and `min_confidence`; shows the annotated image and the JSON response (same code path and metrics as the API) |
-| `/config` | Choose which models load and the default model (Models card, with **Save and restart**), edit the main settings and the `models` list (JSON) and save them to the config file; **Restart server** reloads the file, recompiles the enabled models and rebinds the port without restarting the process. The log level applies immediately (`POST /config/loglevel` with `level=debug`, form or query) |
-| `/prometheus` | Prometheus metrics (`blue_onyx_prism_*{model="..."}`) |
+| `/` | Models (state badge with download progress or failure reason, device, requests, queue), the execution providers *in use*, the `auto` pick, runtimes and GPUs, uptime, API usage; warns when *Force CPU* overrides the device; shows a hint when a newer release exists |
+| `/stats` | Per-model state, runtime, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; updates in place every 5 s from `/stats.json` |
+| `/test` | Pick, drop or paste an image, choose a model and `min_confidence`; the page posts to `/v1/vision/custom/{model}` and draws the boxes client-side, with a detections table and the raw JSON (same code path and metrics as the API; without JavaScript the form posts to `/test` and the server draws the image) |
+| `/config` | Models card (which models load, the default model, **Save and restart**), Resources, server/inference/logging settings with "applies now" / "needs restart" tags and the `models` list as JSON under *Advanced*; **Restart server** reloads the file, recompiles the enabled models and rebinds the port without restarting the process (the page waits for the server and reloads) |
+| `/logs` | The last 2,000 log events of this process, live (polls `/logs.json`), with level filter, search, pause/follow, Copy and Download .txt, and the server log level (applies immediately; `POST /config/loglevel` with `level=debug`, form or query) |
+| `/prometheus` | Prometheus metrics (`blue_onyx_prism_*{model="..."}`), linked in the footer with the JSON endpoints |
 
 `log_path` changes need a full process restart. The UI has no authentication: do not expose the port
 beyond your LAN.
@@ -395,13 +402,14 @@ Put models in `deploy/models` and a `blue_onyx_prism_config.json` in `deploy/con
 | POST, GET | `/v1/vision/custom/list` | configured model names |
 | GET | `/v1/status/updateavailable` | GitHub release check |
 | GET | `/`, `/stats`, `/stats.json`, `/prometheus` | UI and metrics |
+| GET | `/logs`, `/logs.json?after=<seq>&level=<min>` | log page; recent log events newer than `after` at `level` (`trace`..`error`) or more severe, with `last` as the next cursor |
 | GET, POST | `/test`, `/config` | test page, config editor |
 | POST | `/config/restart`, `/config/loglevel` | reload config, change log level |
 | GET | `/v1/devices` | device options (runnable, downloadable with size, unavailable with reason) and the `auto` pick |
 | GET | `/v1/resources` | downloadable resources for this platform: state (installed, downloading with %, queued, needed, optional, available, failed with error and retry), size, what they provide, which models wait for them |
 | POST | `/v1/resources/download` | form `id` (e.g. `model:ipcam-bird`); large resources also need `confirm_large=1` unless `allow_large_downloads` |
 | POST | `/v1/resources/remove` | form `id`; refused (409) while downloading, while the runtime is loaded ("restart required") or while an enabled model uses the files |
-| POST | `/v1/resources/add-to-config` | form `id` of a downloaded model: append it to `models` |
+| POST | `/v1/resources/add-to-config` | form `id` of a downloaded model, or `local:<file>` for a model file in `models_dir` (family `auto`): append it to `models` |
 
 The detection response is byte-compatible with CodeProject.AI: `success, message, error, predictions
 [{x_min, y_min, x_max, y_max, confidence, label}], count, command, moduleId, executionProvider,

@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block content %}
+<h1>Logs</h1>
+{% if !available %}<p class="error">Log capture is not available in this process.</p>{% endif %}
+<div class="card logbar">
+  <form method="post" action="/config/loglevel" class="inline" id="level-form">
+    <label class="inline-label">Server log level
+      <select name="level" id="server-level">
+      {% for l in log_levels %}<option value="{{ l.value }}"{% if l.selected %} selected{% endif %}>{{ l.value }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" id="level-apply">Apply</button>
+    <span class="tag now">applies now</span>
+    <span class="muted" id="level-msg"></span>
+  </form>
+  <div class="inline">
+    <label class="inline-label">Show
+      <select id="show-level">
+        <option value="trace">all</option>
+        <option value="debug">debug and above</option>
+        <option value="info">info and above</option>
+        <option value="warn">warnings and errors</option>
+        <option value="error">errors</option>
+      </select>
+    </label>
+    <label class="inline-label">Search <input type="search" id="search" placeholder="text or target"></label>
+    <label class="check"><input type="checkbox" id="follow" checked> Follow</label>
+    <button type="button" id="pause">Pause</button>
+    <button type="button" id="copy">Copy</button>
+    <button type="button" id="download">Download .txt</button>
+    <span class="muted" id="log-status"></span>
+  </div>
+</div>
+<p class="muted">The last {{ capacity }} events this process logged at the server log level (newest last). Live JSON: <a href="/logs.json"><code>/logs.json?after=&lt;seq&gt;&amp;level=&lt;min&gt;</code></a>.</p>
+<div class="logview" id="logview" role="log" aria-live="polite"><noscript><p class="muted">The log view needs JavaScript; see <a href="/logs.json">/logs.json</a>.</p></noscript></div>
+<script>
+(function () {
+  var view = document.getElementById("logview"), status = document.getElementById("log-status");
+  var showLevel = document.getElementById("show-level"), search = document.getElementById("search");
+  var follow = document.getElementById("follow"), pauseBtn = document.getElementById("pause");
+  var RANK = {ERROR: 1, WARN: 2, INFO: 3, DEBUG: 4, TRACE: 5};
+  var entries = [], cursor = 0, paused = false, MAX = {{ capacity }};
+  function line(e) {
+    return e.ts + " " + e.level.padStart(5) + " " + e.target + ": " + e.message;
+  }
+  function visible(e) {
+    if (RANK[e.level] > RANK[showLevel.value.toUpperCase()]) return false;
+    var q = search.value.trim().toLowerCase();
+    return !q || line(e).toLowerCase().indexOf(q) >= 0;
+  }
+  function row(e) {
+    var d = document.createElement("div");
+    d.className = "logline lv-" + e.level.toLowerCase();
+    d.dataset.seq = e.seq;
+    var ts = document.createElement("span"); ts.className = "ts"; ts.textContent = e.ts.replace("T", " ").replace("Z", "");
+    var lv = document.createElement("span"); lv.className = "lv"; lv.textContent = e.level;
+    var tg = document.createElement("span"); tg.className = "tg"; tg.textContent = e.target;
+    var msg = document.createElement("span"); msg.className = "msg"; msg.textContent = e.message;
+    d.append(ts, " ", lv, " ", tg, " ", msg);
+    return d;
+  }
+  function atBottom() { return view.scrollHeight - view.scrollTop - view.clientHeight < 40; }
+  function rerender() {
+    var frag = document.createDocumentFragment();
+    entries.filter(visible).forEach(function (e) { frag.appendChild(row(e)); });
+    view.replaceChildren(frag);
+    if (follow.checked) view.scrollTop = view.scrollHeight;
+  }
+  function append(list) {
+    var stick = follow.checked || atBottom();
+    list.forEach(function (e) { if (visible(e)) view.appendChild(row(e)); });
+    var extra = view.children.length - MAX;
+    for (var i = 0; i < extra; i++) view.removeChild(view.firstChild);
+    if (stick && follow.checked) view.scrollTop = view.scrollHeight;
+  }
+  function poll() {
+    if (paused) return;
+    fetch("/logs.json?after=" + cursor, {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
+      if (j.last < cursor) { entries = []; cursor = 0; rerender(); return; } // process restarted
+      if (j.entries.length) {
+        entries = entries.concat(j.entries);
+        if (entries.length > MAX) entries = entries.slice(entries.length - MAX);
+        append(j.entries);
+      }
+      cursor = j.last;
+      status.textContent = (j.success ? entries.length + " events" : j.message) + (j.truncated ? " (older events were dropped)" : "");
+    }).catch(function () { status.textContent = "server not answering"; });
+  }
+  showLevel.addEventListener("change", rerender);
+  search.addEventListener("input", rerender);
+  follow.addEventListener("change", function () { if (follow.checked) view.scrollTop = view.scrollHeight; });
+  pauseBtn.addEventListener("click", function () {
+    paused = !paused;
+    pauseBtn.textContent = paused ? "Resume" : "Pause";
+    if (!paused) poll();
+  });
+  function text() { return entries.filter(visible).map(line).join("\n") + "\n"; }
+  document.getElementById("copy").addEventListener("click", function () {
+    var t = text();
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () {
+      status.textContent = "copied " + entries.filter(visible).length + " lines";
+    }, function () {
+      var ta = document.createElement("textarea"); ta.value = t; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); status.textContent = "copied"; } catch (e) { status.textContent = "copy failed"; }
+      ta.remove();
+    });
+  });
+  document.getElementById("download").addEventListener("click", function () {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text()], {type: "text/plain"}));
+    a.download = "blue_onyx_prism_" + new Date().toISOString().replace(/[:.]/g, "-") + ".txt";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+  document.getElementById("level-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var msg = document.getElementById("level-msg");
+    var body = new URLSearchParams({level: document.getElementById("server-level").value});
+    fetch("/config/loglevel", {method: "POST", body: body, headers: {"Accept": "application/json"}})
+      .then(function (r) { return r.json(); })
+      .then(function (j) { msg.textContent = j.message; msg.className = j.success ? "muted" : "error-text"; })
+      .catch(function (ex) { msg.textContent = "failed: " + ex; });
+  });
+  poll();
+  setInterval(poll, 2000);
+})();
+</script>
+{% endblock %}

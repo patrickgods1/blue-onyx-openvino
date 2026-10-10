@@ -205,11 +205,18 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("parsing config {}", path.display()))
+        let mut config: Config = serde_json::from_str(&text)
+            .with_context(|| format!("parsing config {}", path.display()))?;
+        config.fill_model_names();
+        Ok(config)
     }
 
+    /// Write the config as pretty JSON. Unnamed model entries are written with their
+    /// [`ModelConfig::effective_name`], so every model is named in the file.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let text = serde_json::to_string_pretty(self)?;
+        let mut named = self.clone();
+        named.fill_model_names();
+        let text = serde_json::to_string_pretty(&named)?;
         std::fs::write(path, text).with_context(|| format!("writing config {}", path.display()))
     }
 
@@ -224,6 +231,17 @@ impl Config {
             SERVICE_CONFIG_FILE,
             LEGACY_SERVICE_CONFIG_FILE,
         )
+    }
+
+    /// Give every model entry without a `name` its [`ModelConfig::effective_name`] (the file
+    /// stem), so the JSON and every model list show it. Names that are set are kept.
+    pub fn fill_model_names(&mut self) {
+        for m in &mut self.models {
+            if m.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
+                m.name = None;
+                m.name = Some(m.effective_name());
+            }
+        }
     }
 
     /// The model that serves `/v1/vision/detection`.
@@ -744,6 +762,40 @@ mod tests {
             with_dir.onnxruntime_dir,
             Some(PathBuf::from("rt/onnxruntime"))
         );
+    }
+
+    #[test]
+    fn unnamed_models_are_named_on_load_and_save() {
+        let dir = std::env::temp_dir().join(format!("bo-cfg-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.json");
+        std::fs::write(
+            &path,
+            r#"{"models":[{"name":null,"path":"models/IPcam-general.onnx"},
+                {"name":"custom","path":"models/x.onnx"},{"name":" ","path":"m/y.xml"}]}"#,
+        )
+        .unwrap();
+        let c = Config::load(&path).unwrap();
+        let names: Vec<_> = c.models.iter().map(|m| m.name.as_deref()).collect();
+        assert_eq!(names, [Some("IPcam-general"), Some("custom"), Some("y")]);
+
+        // Write-back names entries that were added without a name.
+        let mut c = c;
+        c.models.push(ModelConfig {
+            path: "models/dfine-s.onnx".into(),
+            ..Default::default()
+        });
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""name": "dfine-s""#), "{text}");
+        assert!(!text.contains(r#""name": null"#), "{text}");
+        // The in-memory config is left as it was.
+        assert_eq!(c.models[3].name, None);
+        assert_eq!(
+            Config::load(&path).unwrap().models[3].effective_name(),
+            "dfine-s"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

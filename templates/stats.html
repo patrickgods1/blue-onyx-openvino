@@ -1,23 +1,24 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="refresh" content="5">{% endblock %}
 {% block title %}Stats{% endblock %}
 {% block content %}
 <h1>Stats</h1>
-<p class="muted">Uptime {{ uptime }} &middot; OpenVINO {{ openvino_version }} &middot; refreshes every 5 s &middot; <a href="/stats.json">JSON</a></p>
+<p class="muted">Uptime <span id="uptime">{{ uptime }}</span> &middot; <span id="live">updates every 5 s</span> &middot; <a href="/stats.json">JSON</a></p>
+<noscript><p class="muted">Reload the page to update (live updates need JavaScript).</p></noscript>
 <div class="scroll">
-<table>
+<table class="stats sticky-first">
 <thead>
-<tr><th rowspan="2">Model</th><th rowspan="2">State</th><th rowspan="2">Device</th><th rowspan="2">Fell back</th>
+<tr><th rowspan="2">Model</th><th rowspan="2">State</th><th rowspan="2">Runtime</th><th rowspan="2">Device</th><th rowspan="2">Fell back</th>
 <th rowspan="2">Requests</th><th rowspan="2">Dropped</th><th rowspan="2">Queue</th>
 <th colspan="3">Inference ms</th><th colspan="3">Process ms</th><th colspan="3">Round trip ms</th></tr>
 <tr><th>avg</th><th>min</th><th>max</th><th>avg</th><th>min</th><th>max</th><th>avg</th><th>min</th><th>max</th></tr>
 </thead>
-<tbody>
+<tbody id="stats-body">
 {% for m in models %}
-<tr>
+<tr class="st-{{ m.state_class }}">
 <td>{{ m.name }}{% if m.is_default %} <span class="tag">default</span>{% endif %}</td>
 <td>{{ m.state }}</td>
-<td title="{{ m.device }}">{{ m.provider }}</td>
+<td>{{ m.runtime }}</td>
+<td class="trunc" title="{{ m.device }}">{{ m.provider }}</td>
 <td>{{ m.fell_back }}</td>
 <td class="num">{{ m.requests }}</td>
 <td class="num">{{ m.dropped }}</td>
@@ -28,4 +29,52 @@
 </tbody>
 </table>
 </div>
+<script>
+// Update the table in place from /stats.json (keeps scroll position, no flicker).
+(function () {
+  var body = document.getElementById("stats-body"), live = document.getElementById("live");
+  function td(text, cls, title) {
+    var c = document.createElement("td");
+    c.textContent = text;
+    if (cls) c.className = cls;
+    if (title) c.title = title;
+    return c;
+  }
+  function stat(s) {
+    if (!s || !s.count) return ["-", "-", "-"];
+    return [s.avg.toFixed(1), String(s.min), String(s.max)];
+  }
+  function update() {
+    fetch("/stats.json", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
+      document.getElementById("uptime").textContent = j.uptime;
+      var frag = document.createDocumentFragment();
+      j.models.forEach(function (m) {
+        var tr = document.createElement("tr");
+        tr.className = "st-" + m.stateClass;
+        var name = td(m.name);
+        if (m.default) {
+          var t = document.createElement("span");
+          t.className = "tag"; t.textContent = "default";
+          name.appendChild(document.createTextNode(" ")); name.appendChild(t);
+        }
+        tr.appendChild(name);
+        tr.appendChild(td(m.stateText));
+        tr.appendChild(td(m.runtime));
+        tr.appendChild(td(m.executionProvider, "trunc", m.device || m.requestedDevice));
+        tr.appendChild(td(m.fellBack === null || m.fellBack === undefined ? "-" : (m.fellBack ? "yes" : "no")));
+        tr.appendChild(td(String(m.requests), "num"));
+        tr.appendChild(td(String(m.dropped), "num"));
+        tr.appendChild(td(m.queueLength + "/" + m.queueCapacity, "num"));
+        [m.inferenceMs, m.processMs, m.roundTripMs].forEach(function (s) {
+          stat(s).forEach(function (v) { tr.appendChild(td(v, "num")); });
+        });
+        frag.appendChild(tr);
+      });
+      body.replaceChildren(frag);
+      live.textContent = "updated " + new Date().toLocaleTimeString();
+    }).catch(function () { live.textContent = "server not answering"; });
+  }
+  setInterval(update, 5000);
+})();
+</script>
 {% endblock %}

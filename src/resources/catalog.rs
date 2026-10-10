@@ -9,8 +9,9 @@
 //!   `cpu` there).
 //! - [`CUDA_LIBS`]: `nvidia-cuda-libs`, NVIDIA's CUDA 12.8 / cuDNN 9 redistributable wheels from
 //!   PyPI (Windows x64, Linux x64). Large and opt-in.
-//! - [`MODELS`]: the Hugging Face models of `download.rs` (`.onnx` + `.yaml`), pinned to a repo
-//!   commit so the hashes cannot drift.
+//! - [`MODELS`]: the Hugging Face models of `download.rs` (`.onnx` + `.yaml` for YOLOv5 and
+//!   RT-DETRv2; `.onnx` only for D-FINE and RF-DETR), pinned to a repo commit so the hashes cannot
+//!   drift.
 //!
 //! This is the single source of truth for the pinned versions and URLs: `setup_openvino` and
 //! `setup_onnxruntime` read their packages from here.
@@ -815,6 +816,82 @@ macro_rules! rtdetr {
     };
 }
 
+/// A Hugging Face `onnx-community/*-ONNX` export (D-FINE, RF-DETR): the fp32 `onnx/model.onnx`
+/// of `$repo` at commit `$rev`, saved as `models/<name>.onnx`. No class file: both use the COCO-80
+/// fallback (`family::detr` maps RF-DETR's COCO category ids).
+macro_rules! hf_detr {
+    ($family:expr, $name:literal, $repo:literal, $rev:literal, $title:literal, $desc:literal, $sha:literal, $size:literal) => {
+        Resource {
+            id: concat!("model:", $name),
+            kind: ResourceKind::Model,
+            version: $rev,
+            platform: None,
+            parts: &[Part {
+                url: concat!(
+                    "https://huggingface.co/",
+                    $repo,
+                    "/resolve/",
+                    $rev,
+                    "/onnx/model.onnx"
+                ),
+                sha256: $sha,
+                size: $size,
+                file_name: concat!($name, ".onnx"),
+                archive: None,
+                layout: Layout::File,
+            }],
+            dest: "models",
+            provides: Provides::Model {
+                name: $name,
+                family: $family,
+            },
+            title: $title,
+            description: $desc,
+            license: "Apache-2.0",
+        }
+    };
+}
+
+/// D-FINE (`onnx-community/dfine_*-ONNX`, 640x640 input), family `detr`. D-FINE nano
+/// (`dfine_n_coco-ONNX`) is left out: its export finds almost nothing on real photos (best score
+/// 0.65 for an obvious bus, no people) on both OpenVINO and ONNX Runtime.
+macro_rules! dfine {
+    ($($args:tt)*) => {
+        hf_detr!(ModelFamilyKind::Detr, $($args)*)
+    };
+}
+
+/// RF-DETR (`onnx-community/rfdetr_*-ONNX`), family `rfdetr` (ImageNet normalization). Input
+/// sizes are in [`MODEL_INPUT_SIZES`].
+macro_rules! rfdetr {
+    ($($args:tt)*) => {
+        hf_detr!(ModelFamilyKind::RfDetr, $($args)*)
+    };
+}
+
+/// Square input size of catalog models whose ONNX input is dynamic (from each Hugging Face
+/// repo's `preprocessor_config.json`). Models not listed use 640.
+pub const MODEL_INPUT_SIZES: &[(&str, u32)] = &[
+    ("dfine-s", 640),
+    ("dfine-m", 640),
+    ("dfine-l", 640),
+    ("dfine-x", 640),
+    ("rfdetr-nano", 384),
+    ("rfdetr-small", 512),
+    ("rfdetr-base", 560),
+    ("rfdetr-medium", 576),
+    ("rfdetr-large", 560),
+];
+
+/// Input size for a catalog model, by name or file name (`rfdetr-base`, `rfdetr-base.onnx`).
+pub fn model_input_size(name: &str) -> Option<u32> {
+    let name = model(name)?.model_name()?;
+    MODEL_INPUT_SIZES
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|&(_, s)| s)
+}
+
 macro_rules! yolo5 {
     ($name:literal, $desc:literal, $onnx_sha:literal, $onnx_size:literal, $yaml_sha:literal, $yaml_size:literal) => {
         Resource {
@@ -882,6 +959,87 @@ pub static MODELS: &[Resource] = &[
         "RT-DETRv2 extra large, general COCO",
         "810a18839401187bd94004bd722d602158302e3f35400840e7cbcfacb71d61c2",
         300394655
+    ),
+    dfine!(
+        "dfine-s",
+        "onnx-community/dfine_s_obj2coco-ONNX",
+        "f69c4ca98cba7ca58aa15b3d4600867808fecf1b",
+        "D-FINE small",
+        "D-FINE small (Objects365+COCO), COCO 80 classes; fast, good default for CPU/iGPU",
+        "b9e2e76610053aeeac3b2f1f685d8f9a1182a93a338f624b6c8cb7fb390cb532",
+        41535197
+    ),
+    dfine!(
+        "dfine-m",
+        "onnx-community/dfine_m_obj2coco-ONNX",
+        "a2e1133c83887da7d5a000a025594b9d69fef5c2",
+        "D-FINE medium",
+        "D-FINE medium (Objects365+COCO), COCO 80 classes; balanced accuracy and speed",
+        "347f2faba93248c2e7500c9e604317fb391706c58a04802dd908573376dc1323",
+        78624257
+    ),
+    dfine!(
+        "dfine-l",
+        "onnx-community/dfine_l_obj2coco_e25-ONNX",
+        "60e6123fe13da26a6e1dafc9d608ddeb5c393dcc",
+        "D-FINE large",
+        "D-FINE large (Objects365+COCO), COCO 80 classes; accurate, best on a GPU",
+        "76e521ed66874590456f9eeb89c2adf33f0599778cd33b1b614f3090f95845b9",
+        125348332
+    ),
+    dfine!(
+        "dfine-x",
+        "onnx-community/dfine_x_obj2coco-ONNX",
+        "4d3a85a6c29f55a5346fabaf9728f5f3751f947a",
+        "D-FINE extra large",
+        "D-FINE extra large (Objects365+COCO), COCO 80 classes; most accurate, slow without a GPU",
+        "486ee1cba40b25f3ea8d6783f664eca88b7c12d01078984834d36834d9b2c802",
+        251138448
+    ),
+    rfdetr!(
+        "rfdetr-nano",
+        "onnx-community/rfdetr_nano-ONNX",
+        "eae21cee0687a91bcf9fa071605c48d7705d2d91",
+        "RF-DETR nano",
+        "RF-DETR nano, COCO 80 classes, 384x384 input; fastest RF-DETR",
+        "9cbac6b11ce34a03034e4d5a24cfac5f18632fd6761d1311dd640232088d7fee",
+        108074865
+    ),
+    rfdetr!(
+        "rfdetr-small",
+        "onnx-community/rfdetr_small-ONNX",
+        "63463b68b200177d1fea7015f11f3cebb0ba4eeb",
+        "RF-DETR small",
+        "RF-DETR small, COCO 80 classes, 512x512 input; fast",
+        "121cc1476a7b69d865ca4bdc2bca59a3239020d227e4c3f35a811bef81aeb7f1",
+        114680416
+    ),
+    rfdetr!(
+        "rfdetr-base",
+        "onnx-community/rfdetr_base-ONNX",
+        "7b18fa82ba7b1d6bc9446518cf2cc1d991097a3f",
+        "RF-DETR base",
+        "RF-DETR base, COCO 80 classes, 560x560 input; balanced accuracy and speed",
+        "48b9502c04be895713efc0579c8904e69a97b3e03413a2f5aab1bdecda7e36ff",
+        107773649
+    ),
+    rfdetr!(
+        "rfdetr-medium",
+        "onnx-community/rfdetr_medium-ONNX",
+        "8553cefdd984bbaeb9d9ca8743d6a6a1c3e29dce",
+        "RF-DETR medium",
+        "RF-DETR medium, COCO 80 classes, 576x576 input; more accurate, slower",
+        "768928acf337ac86d069c9d55a929e11e563c1e1d272a3ffc9366248d66b2654",
+        121015411
+    ),
+    rfdetr!(
+        "rfdetr-large",
+        "onnx-community/rfdetr_large-ONNX",
+        "4988fbacee4aa815e43c2e0666377ab26bddf1e8",
+        "RF-DETR large",
+        "RF-DETR large, COCO 80 classes, 560x560 input; most accurate RF-DETR, needs a GPU",
+        "3dded29a94ddaf3835a5c982a243f8f4aec7da22d47a0c8c690ba7d7fb658d6a",
+        486217143
     ),
     yolo5!(
         "delivery",
@@ -1030,6 +1188,15 @@ mod tests {
             "model:IPcam-general"
         );
         assert_eq!(model("RT-DETRV2-S").unwrap().id, "model:rt-detrv2-s");
+        let rf = model("rfdetr-base.onnx").unwrap();
+        assert_eq!(rf.parts.len(), 1);
+        assert_eq!(rf.parts[0].file_name, "rfdetr-base.onnx");
+        assert_eq!(
+            rf.parts[0].url,
+            "https://huggingface.co/onnx-community/rfdetr_base-ONNX/resolve/\
+             7b18fa82ba7b1d6bc9446518cf2cc1d991097a3f/onnx/model.onnx"
+        );
+        assert_eq!(rf.version, "7b18fa82ba7b1d6bc9446518cf2cc1d991097a3f");
         assert!(model("yolo26s").is_none());
         assert_eq!(
             find("MODEL:ipcam-dark", "linux", "x86_64").unwrap().id,
@@ -1040,6 +1207,51 @@ mod tests {
             "onnxruntime-win-x64-gpu-1.24.4.zip"
         );
         assert!(find("onnxruntime-cuda", "macos", "aarch64").is_none());
+    }
+
+    #[test]
+    fn detr_models() {
+        let detr: Vec<_> = MODELS
+            .iter()
+            .filter_map(|r| match r.provides {
+                Provides::Model { name, family }
+                    if matches!(family, ModelFamilyKind::Detr | ModelFamilyKind::RfDetr) =>
+                {
+                    Some((r, name, family))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(detr.len(), 9);
+        for (r, name, family) in detr {
+            assert_eq!(r.license, "Apache-2.0");
+            assert_eq!(r.parts.len(), 1, "{name}: no class file part");
+            let p = &r.parts[0];
+            assert_eq!(p.file_name, format!("{name}.onnx"));
+            assert!(p.url.starts_with("https://huggingface.co/onnx-community/"));
+            assert!(
+                p.url
+                    .ends_with(&format!("/resolve/{}/onnx/model.onnx", r.version))
+            );
+            assert_eq!(r.version.len(), 40);
+            assert_eq!(p.sha256.len(), 64);
+            assert!(p.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+            let want = if name.starts_with("rfdetr") {
+                ModelFamilyKind::RfDetr
+            } else {
+                ModelFamilyKind::Detr
+            };
+            assert_eq!(family, want, "{name}");
+            assert!(model_input_size(name).is_some(), "{name} has no input size");
+        }
+        assert_eq!(model_input_size("RFDETR-NANO.onnx"), Some(384));
+        assert_eq!(model_input_size("dfine-s"), Some(640));
+        assert_eq!(model_input_size("IPcam-general.onnx"), None);
+        assert_eq!(model_input_size("unknown"), None);
+        // Every size entry names a catalog model.
+        for (n, _) in MODEL_INPUT_SIZES {
+            assert!(model(n).is_some(), "{n}");
+        }
     }
 
     #[test]

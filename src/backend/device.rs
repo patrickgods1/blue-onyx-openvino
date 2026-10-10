@@ -14,8 +14,23 @@ use openvino::{
 };
 use std::time::Instant;
 
-/// Static input shape used when the image input has dynamic dimensions.
-pub(crate) const DEFAULT_IMAGE_SHAPE: [i64; 4] = [1, 3, 640, 640];
+/// Static input shape used when the image input has dynamic dimensions and nothing better is
+/// known (what [`dynamic_image_shape`] returns for an unknown model).
+#[cfg(test)]
+pub(crate) const DEFAULT_IMAGE_SHAPE: [i64; 4] = [
+    1,
+    3,
+    crate::model::DEFAULT_INPUT_SIZE as i64,
+    crate::model::DEFAULT_INPUT_SIZE as i64,
+];
+
+/// `[1, 3, H, W]` for a model at `path` whose image input has dynamic dimensions: the size from
+/// [`crate::model::dynamic_input_size`] (catalog, Hugging Face `preprocessor_config.json`,
+/// RF-DETR default, else 640).
+pub(crate) fn dynamic_image_shape(path: &std::path::Path, outputs: &[PortSpec]) -> [i64; 4] {
+    let (w, h) = crate::model::dynamic_input_size(path, outputs);
+    [1, 3, h as i64, w as i64]
+}
 /// Static shape for RT-DETR's `orig_target_sizes` when dynamic.
 pub(crate) const DEFAULT_TARGET_SIZES_SHAPE: [i64; 2] = [1, 2];
 
@@ -267,6 +282,7 @@ fn make_static(
     model: &mut Model,
     inputs: &[PortSpec],
     image_idx: usize,
+    image_default: &[i64; 4],
     path: &std::path::Path,
 ) -> Result<bool> {
     let mut targets: Vec<(usize, Vec<i64>)> = Vec::new();
@@ -284,7 +300,7 @@ fn make_static(
         let dims: Vec<i64> = (0..4)
             .map(|i| match img.shape.get(i) {
                 Some(&d) if d >= 0 => d,
-                _ => DEFAULT_IMAGE_SHAPE[i],
+                _ => image_default[i],
             })
             .collect();
         targets.push((image_idx, dims));
@@ -387,8 +403,9 @@ pub fn load_model(
     }
     let t0 = Instant::now();
     let mut model = read_model(core, path)?;
-    let (inputs, _) =
+    let (inputs, outputs) =
         introspect(&model).with_context(|| format!("introspecting model {}", path.display()))?;
+    let image_default = dynamic_image_shape(path, &outputs);
     let image_idx = find_image_input(&inputs).with_context(|| {
         format!(
             "model {}: no image input (named 'images'/'input' or 4-D) among {:?}",
@@ -399,7 +416,7 @@ pub fn load_model(
                 .collect::<Vec<_>>()
         )
     })?;
-    let (inputs, outputs) = if make_static(&mut model, &inputs, image_idx, path)? {
+    let (inputs, outputs) = if make_static(&mut model, &inputs, image_idx, &image_default, path)? {
         introspect(&model)
             .with_context(|| format!("introspecting reshaped model {}", path.display()))?
     } else {
@@ -714,6 +731,33 @@ pub fn run_inference(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_image_shapes() {
+        use std::path::Path;
+        let out = |c: i64| {
+            vec![
+                PortSpec {
+                    name: "logits".into(),
+                    shape: vec![-1, 300, c],
+                    elem: PortElem::F32,
+                },
+                PortSpec {
+                    name: "pred_boxes".into(),
+                    shape: vec![-1, 300, 4],
+                    elem: PortElem::F32,
+                },
+            ]
+        };
+        let unknown = Path::new("models/custom.onnx");
+        assert_eq!(dynamic_image_shape(unknown, &[]), DEFAULT_IMAGE_SHAPE);
+        assert_eq!(dynamic_image_shape(unknown, &out(80)), DEFAULT_IMAGE_SHAPE);
+        assert_eq!(dynamic_image_shape(unknown, &out(91)), [1, 3, 560, 560]);
+        assert_eq!(
+            dynamic_image_shape(Path::new("m/rfdetr-small.onnx"), &out(91)),
+            [1, 3, 512, 512]
+        );
+    }
 
     #[test]
     fn execution_provider_strings() {
