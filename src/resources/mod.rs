@@ -10,9 +10,12 @@
 //! - [`status`]: the web UI's resource rows and Download / Remove / Add-to-config actions.
 //! - [`commands`]: the `fetch` and `list-resources` subcommands.
 //! - [`extract`]: whitelist-only archive extraction shared by the manager and `setup-*`.
+//! - [`export`]: the user-triggered YOLO26 export (pinned uv + Python env + Ultralytics'
+//!   exporter); the only module that executes downloaded code.
 
 pub mod catalog;
 pub mod commands;
+pub mod export;
 pub mod extract;
 pub mod manager;
 pub mod provision;

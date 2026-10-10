@@ -31,17 +31,32 @@ use tracing::{info, warn};
 pub const SERVICE_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// Test hooks.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ProvisionOptions {
     /// Extra downloadable models (see `resolve::Installed::extra_models`).
     pub extra_models: Vec<&'static Resource>,
     /// Retry schedule override for the manager.
     pub backoff: Option<fn(u32) -> Duration>,
+    /// Replaces the YOLO26 exporter's process runner and downloads (tests).
+    pub export_hooks: Option<(
+        Arc<dyn super::export::CommandRunner>,
+        Arc<dyn super::export::Fetcher>,
+    )>,
 }
 
-/// Owns the download manager across registry generations.
+impl std::fmt::Debug for ProvisionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProvisionOptions")
+            .field("extra_models", &self.extra_models)
+            .field("export_hooks", &self.export_hooks.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Owns the download manager (and the YOLO26 exporter) across registry generations.
 pub struct Provisioner {
     manager: std::sync::Mutex<Option<Arc<Manager>>>,
+    exporter: std::sync::Mutex<Option<Arc<super::export::Exporter>>>,
     opts: ProvisionOptions,
 }
 
@@ -59,8 +74,39 @@ impl Provisioner {
     pub fn with_options(opts: ProvisionOptions) -> Self {
         Self {
             manager: std::sync::Mutex::new(None),
+            exporter: std::sync::Mutex::new(None),
             opts,
         }
+    }
+
+    /// The YOLO26 exporter, once an export was started.
+    pub fn exporter(&self) -> Option<Arc<super::export::Exporter>> {
+        self.exporter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The YOLO26 exporter, started on first use (Config page Export buttons). Its downloads go
+    /// through [`Self::manager_for`].
+    pub fn exporter_for(&self, config: &Config) -> Arc<super::export::Exporter> {
+        let mut slot = self.exporter.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = slot.as_ref() {
+            return e.clone();
+        }
+        let (runner, fetcher): (
+            Arc<dyn super::export::CommandRunner>,
+            Arc<dyn super::export::Fetcher>,
+        ) = match &self.opts.export_hooks {
+            Some((r, f)) => (r.clone(), f.clone()),
+            None => (
+                Arc::new(super::export::SystemRunner),
+                Arc::new(super::export::ManagerFetcher::new(self.manager_for(config))),
+            ),
+        };
+        let e = Arc::new(super::export::Exporter::start(runner, fetcher));
+        *slot = Some(e.clone());
+        e
     }
 
     /// The manager, once something was queued.
@@ -209,7 +255,7 @@ impl Provisioner {
 /// model can run early), then the runtimes models wait for.
 fn priority(n: &Need) -> u8 {
     match (n.resource.kind, n.blocking_models.is_empty()) {
-        (ResourceKind::Model | ResourceKind::BenchImages, _) => 0,
+        (ResourceKind::Model | ResourceKind::BenchImages | ResourceKind::ExportModel, _) => 0,
         (_, true) => 1,
         _ => 2,
     }
@@ -414,11 +460,14 @@ impl Provision {
     /// is not served on its planned device yet (`not_ready`: names of models that are not
     /// `Ready`, or loaded on an interim device).
     pub fn restart_for(&self, resource: &Resource, not_ready: &[String]) -> Result<(), String> {
-        if resource.kind == ResourceKind::Model {
+        if resource.kind.is_model() {
             return Err("model files are loaded without a restart".into());
         }
         if resource.kind == ResourceKind::BenchImages {
             return Err("benchmark images need no restart".into());
+        }
+        if resource.kind == ResourceKind::Tool {
+            return Err("tools are not loaded by the service".into());
         }
         if let (Some(f), Some(loaded)) = (resource.flavor(), self.loaded_ort)
             && f != loaded

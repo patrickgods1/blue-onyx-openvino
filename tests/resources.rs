@@ -427,13 +427,10 @@ fn missing_model_files() {
     ]);
     let r = needed(&cfg, &HardwareInfo::new("linux", "x86_64", vec![]), &inst);
     assert!(r.is_satisfied());
+    let e = r.model("yolo26s").unwrap().error.clone().unwrap();
     assert!(
-        r.model("yolo26s")
-            .unwrap()
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("export_yolo26.py")
+        e.contains("export_yolo26.py") && e.contains("Config page"),
+        "{e}"
     );
     assert!(
         r.model("custom")
@@ -805,4 +802,200 @@ fn cuda_libraries_system_install_vs_download() {
         pick(&needed(&cfg, &arm, &inst), "IPcam-general"),
         "openvino:cpu"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// YOLO26 export (catalog pins, needs-export, fetch routing)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn yolo26_exports_and_uv_are_pinned() {
+    // Five sizes, the official Ultralytics release assets, AGPL-3.0, family yolo26.
+    let sizes: Vec<&str> = catalog::EXPORT_MODELS
+        .iter()
+        .map(|r| r.model_name().unwrap())
+        .collect();
+    assert_eq!(
+        sizes,
+        ["yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x"]
+    );
+    for r in catalog::EXPORT_MODELS {
+        let name = r.model_name().unwrap();
+        assert_eq!(r.id, format!("model:{name}"));
+        assert_eq!(r.kind, ResourceKind::ExportModel);
+        assert_eq!(r.license, "AGPL-3.0");
+        assert_eq!(r.version, catalog::YOLO26_EXPORT_VERSION);
+        assert!(r.platform.is_none());
+        assert_eq!(r.parts.len(), 1);
+        let p = &r.parts[0];
+        assert_eq!(
+            p.url,
+            format!("https://github.com/ultralytics/assets/releases/download/v8.4.0/{name}.pt")
+        );
+        assert_eq!(p.file_name, format!("{name}.pt"));
+        assert_eq!(p.layout, Layout::File);
+        assert!(
+            p.size > 5_000_000 && p.size < 130_000_000,
+            "{name} {}",
+            p.size
+        );
+        assert!(!r.is_large(), "the weights alone are small");
+        assert!(matches!(
+            r.provides,
+            catalog::Provides::Model {
+                family: ModelFamilyKind::Yolo26,
+                ..
+            }
+        ));
+        assert_eq!(
+            catalog::export_files(r),
+            Some((format!("{name}.onnx"), format!("{name}.yaml")))
+        );
+        // Not a download: `download-models` / the resolver never see it.
+        assert!(catalog::model(name).is_none());
+        assert!(blue_onyx_prism::download::find(name).is_none());
+        // `fetch --resource model:<name>` finds it on every platform.
+        for p in SHIPPED_PLATFORMS {
+            assert_eq!(
+                catalog::find(&format!("MODEL:{name}"), p.os, p.arch).map(|r| r.id),
+                Some(r.id)
+            );
+        }
+        assert_eq!(
+            catalog::export_model(&format!("models/{name}.onnx"))
+                .unwrap()
+                .id,
+            r.id
+        );
+    }
+    assert!(catalog::export_model("yolo26q").is_none());
+    assert!(catalog::export_model("IPcam-general").is_none());
+
+    // uv: one archive per platform, binary-only extraction, hashes from the release.
+    let triples = [
+        (Platform::MACOS_ARM64, "uv-aarch64-apple-darwin.tar.gz"),
+        (
+            Platform::new("macos", "x86_64"),
+            "uv-x86_64-apple-darwin.tar.gz",
+        ),
+        (Platform::LINUX_X64, "uv-x86_64-unknown-linux-gnu.tar.gz"),
+        (Platform::LINUX_ARM64, "uv-aarch64-unknown-linux-gnu.tar.gz"),
+        (Platform::WINDOWS_X64, "uv-x86_64-pc-windows-msvc.zip"),
+    ];
+    assert_eq!(catalog::TOOLS.len(), triples.len());
+    for (p, file) in triples {
+        let r = catalog::uv_for(p.os, p.arch).unwrap_or_else(|| panic!("no uv for {p}"));
+        assert_eq!(r.id, catalog::UV_ID);
+        assert_eq!(r.kind, ResourceKind::Tool);
+        assert_eq!(r.version, catalog::UV_VERSION);
+        assert_eq!(r.dest, catalog::UV_DEST);
+        assert_eq!(r.parts.len(), 1);
+        let part = &r.parts[0];
+        assert_eq!(part.file_name, file);
+        assert_eq!(
+            part.url,
+            format!("https://github.com/astral-sh/uv/releases/download/0.12.19/{file}")
+        );
+        assert_eq!(part.layout, Layout::Uv);
+        let zip = file.ends_with(".zip");
+        assert_eq!(
+            part.archive,
+            Some(if zip {
+                catalog::ArchiveKind::Zip
+            } else {
+                catalog::ArchiveKind::TarGz
+            })
+        );
+        assert!(part.size > 10_000_000 && part.size < 40_000_000);
+        assert_eq!(
+            catalog::find("tool:uv", p.os, p.arch).unwrap().id,
+            "tool:uv"
+        );
+    }
+    assert!(catalog::uv_for("linux", "riscv64").is_none());
+    // Export support where the toolchain is estimated (every shipped platform).
+    for p in SHIPPED_PLATFORMS {
+        let e = catalog::toolchain_estimate(p.os, p.arch).unwrap();
+        assert!(
+            catalog::is_large(e.disk),
+            "the toolchain needs a confirmation"
+        );
+    }
+    assert!(catalog::toolchain_estimate("macos", "x86_64").is_none());
+}
+
+#[test]
+fn missing_yolo26_needs_export_and_is_never_downloaded() {
+    let inst = Installed {
+        ort_in_build: true,
+        ..Installed::default()
+    }
+    .with_resources(&[OPENVINO_RUNTIME_ID]);
+    let hw = HardwareInfo::new("linux", "x86_64", vec![]);
+    for auto_download in [true, false] {
+        let cfg = Config {
+            auto_download,
+            ..config(vec![
+                model("models/yolo26s.onnx"),
+                model("models/yolo26n.xml"),
+            ])
+        };
+        let r = needed(&cfg, &hw, &inst);
+        assert!(r.is_satisfied(), "nothing to download: {:?}", ids(&r));
+        assert!(r.manual_message().is_none());
+        let s = r.model("yolo26s").unwrap();
+        assert_eq!(s.needs_export, Some("model:yolo26s"));
+        let e = s.error.as_deref().unwrap();
+        assert!(e.starts_with("needs export: models/yolo26s.onnx"), "{e}");
+        assert!(e.contains("fetch --resource model:yolo26s"), "{e}");
+        // The export writes .onnx only: an .xml path is told to point at it.
+        let n = r.model("yolo26n").unwrap();
+        assert_eq!(n.needs_export, None);
+        assert!(n.error.as_deref().unwrap().contains("yolo26n.onnx"));
+    }
+    // Exported: plans normally.
+    let inst = inst.with_files(&["models/yolo26s.onnx", "models/yolo26s.yaml"]);
+    let cfg = config(vec![model("models/yolo26s.onnx")]);
+    let r = needed(&cfg, &hw, &inst);
+    let s = r.model("yolo26s").unwrap();
+    assert_eq!(s.needs_export, None);
+    assert!(s.error.is_none() && s.device.is_some(), "{s:?}");
+}
+
+#[test]
+fn fetch_routes_yolo26_to_the_exporter() {
+    use blue_onyx_prism::resources::commands::{FetchRequest, fetch_jobs, requested_exports};
+    let root = PathBuf::from("/srv/bop");
+    let cfg = ipcam();
+    let hw = win(vec![]);
+    let inst = files_only(&cfg).with_resources(&[OPENVINO_RUNTIME_ID]);
+    let req = FetchRequest {
+        resources: vec![
+            "model:yolo26s".into(),
+            "MODEL:YOLO26S".into(),
+            "tool:uv".into(),
+        ],
+        ..FetchRequest::default()
+    };
+    let (jobs, _) = fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap();
+    let ids: Vec<&str> = jobs.iter().map(|j| j.resource.id).collect();
+    assert_eq!(ids, ["tool:uv"], "the export is not a download job");
+    assert_eq!(jobs[0].target, root.join("tools/uv"));
+    let ex = requested_exports(&req, "windows", "x86_64");
+    assert_eq!(
+        ex.iter().map(|r| r.id).collect::<Vec<_>>(),
+        ["model:yolo26s"]
+    );
+    // --all-for-platform never exports.
+    let req = FetchRequest {
+        all_for_platform: true,
+        allow_large: true,
+        ..FetchRequest::default()
+    };
+    let (jobs, _) = fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap();
+    assert!(jobs.iter().all(|j| !matches!(
+        j.resource.kind,
+        ResourceKind::ExportModel | ResourceKind::Tool
+    )));
+    assert!(requested_exports(&req, "windows", "x86_64").is_empty());
 }

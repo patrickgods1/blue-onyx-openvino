@@ -12,6 +12,12 @@
 //! - [`MODELS`]: the Hugging Face models of `download.rs` (`.onnx` + `.yaml` for YOLOv5 and
 //!   RT-DETRv2; `.onnx` only for D-FINE and RF-DETR), pinned to a repo commit so the hashes cannot
 //!   drift.
+//! - [`EXPORT_MODELS`]: YOLO26 n/s/m/l/x (`model:yolo26<size>`). Not redistributable (AGPL-3.0):
+//!   the part is Ultralytics' official `.pt` release asset, and the `.onnx` + `.yaml` are produced
+//!   on this machine by [`super::export`] when the user asks for it. Never downloaded or exported
+//!   automatically.
+//! - [`TOOLS`]: `tool:uv`, Astral's uv per platform, used only by the YOLO26 export (it installs
+//!   Python and the pinned packages of `scripts/requirements-yolo26-export.txt`).
 //!
 //! This is the single source of truth for the pinned versions and URLs: `setup_openvino` and
 //! `setup_onnxruntime` read their packages from here.
@@ -19,7 +25,9 @@
 //! Where the hashes come from: OpenVINO `<archive>.sha256` files on storage.openvinotoolkit.org;
 //! the GitHub release API `digest` for ONNX Runtime archives; the PyPI JSON API for the NVIDIA
 //! wheels; Hugging Face LFS `oid`s for `.onnx` files; NuGet packages and `.yaml` files were
-//! downloaded and hashed (the yaml git blob ids match the Hugging Face tree).
+//! downloaded and hashed (the yaml git blob ids match the Hugging Face tree); the GitHub release
+//! API `digest` for the YOLO26 weights (also downloaded and hashed) and the release's
+//! `<archive>.sha256` files for uv (archives downloaded and checked against them).
 
 use crate::backend::spec::{Runtime, Target};
 use crate::model::ModelFamilyKind;
@@ -49,6 +57,27 @@ pub const CUDA_LIBS_DEST: &str = "onnxruntime/cuda-libs";
 pub const MODEL_ID_PREFIX: &str = "model:";
 /// Id prefix of benchmark image sets: `bench:coco-cctv`.
 pub const BENCH_ID_PREFIX: &str = "bench:";
+/// Id prefix of tools: `tool:uv`.
+pub const TOOL_ID_PREFIX: &str = "tool:";
+/// The uv tool resource (YOLO26 export toolchain).
+pub const UV_ID: &str = "tool:uv";
+/// Install directory of `tool:uv` under the download root.
+pub const UV_DEST: &str = "tools/uv";
+/// Pinned uv release (2026-09-25).
+pub const UV_VERSION: &str = "0.12.19";
+/// Ultralytics `assets` release with the YOLO26 weights.
+pub const YOLO26_ASSETS_RELEASE: &str = "v8.4.0";
+/// Ultralytics package version the export environment pins (`requirements-yolo26-export.txt`).
+pub const ULTRALYTICS_VERSION: &str = "8.4.163";
+/// Version recorded for an exported YOLO26 model: exporter version + weights release.
+pub const YOLO26_EXPORT_VERSION: &str = "ultralytics-8.4.163+assets-v8.4.0";
+/// License of the YOLO26 weights and the Ultralytics exporter.
+pub const YOLO26_LICENSE: &str = "AGPL-3.0";
+/// Shown before a YOLO26 export and in the Resources card.
+pub const YOLO26_NOTICE: &str = "YOLO26 weights and the Ultralytics exporter are licensed \
+    AGPL-3.0. Blue Onyx Prism does not redistribute them: on your request it downloads the official \
+    weights from Ultralytics' GitHub release (SHA-256 pinned) and runs Ultralytics' exporter on this \
+    machine in its own Python environment.";
 
 /// `(os, arch)` as in `std::env::consts::{OS, ARCH}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -185,12 +214,28 @@ pub enum ResourceKind {
     Model,
     /// A benchmark image set (plain image files, `bench/<set>/`), from `assets/bench/<set>.json`.
     BenchImages,
+    /// A model exported on this machine (YOLO26): the part is the verified `.pt` weights file
+    /// (downloaded into the export toolchain's weights directory); the model files are produced by
+    /// [`super::export`].
+    ExportModel,
+    /// A helper program (`tool:uv`), extracted from a release archive.
+    Tool,
 }
 
 impl ResourceKind {
-    /// Plain verified files placed as is (models, benchmark images), not an extracted archive.
+    /// Plain verified files placed as is (models, benchmark images, export weights), not an
+    /// extracted archive.
     pub fn is_plain_files(self) -> bool {
-        matches!(self, ResourceKind::Model | ResourceKind::BenchImages)
+        matches!(
+            self,
+            ResourceKind::Model | ResourceKind::BenchImages | ResourceKind::ExportModel
+        )
+    }
+
+    /// Model files: downloaded ([`ResourceKind::Model`]) or exported locally
+    /// ([`ResourceKind::ExportModel`]).
+    pub fn is_model(self) -> bool {
+        matches!(self, ResourceKind::Model | ResourceKind::ExportModel)
     }
 }
 
@@ -218,6 +263,8 @@ pub enum Layout {
     NugetDirectMl,
     /// NVIDIA PyPI wheel: `nvidia/<component>/{bin,lib}/<libs>`, copied flat.
     NvidiaWheel,
+    /// uv release archive: only `<top>/uv` (`uv.exe` on Windows), copied flat.
+    Uv,
     /// A plain file saved as [`Part::file_name`].
     File,
 }
@@ -255,6 +302,8 @@ pub enum Provides {
     },
     /// Benchmark images of dataset `set`.
     BenchImages { set: &'static str },
+    /// A helper program (`tool:<name>`).
+    Tool { name: &'static str },
 }
 
 impl Provides {
@@ -268,6 +317,7 @@ impl Provides {
             Provides::CudaLibs => vec!["ort:cuda".to_string(), "ort:tensorrt".to_string()],
             Provides::Model { name, .. } => vec![format!("{MODEL_ID_PREFIX}{name}")],
             Provides::BenchImages { set } => vec![format!("{BENCH_ID_PREFIX}{set}")],
+            Provides::Tool { name } => vec![format!("{TOOL_ID_PREFIX}{name}")],
         }
     }
 
@@ -942,7 +992,7 @@ macro_rules! yolo5 {
 }
 
 /// Downloadable models (the `download.rs` catalog). YOLO26 is not here: its weights are
-/// AGPL-3.0 and exported locally with `scripts/export_yolo26.py`.
+/// AGPL-3.0 and exported locally on request ([`EXPORT_MODELS`]).
 pub static MODELS: &[Resource] = &[
     rtdetr!(
         "rt-detrv2-s",
@@ -1114,6 +1164,240 @@ pub static MODELS: &[Resource] = &[
 ];
 
 // ---------------------------------------------------------------------------------------------
+// YOLO26, exported locally (AGPL-3.0, not redistributed)
+// ---------------------------------------------------------------------------------------------
+
+macro_rules! yolo26 {
+    ($size:literal, $title:literal, $desc:literal, $sha:literal, $bytes:literal) => {
+        Resource {
+            id: concat!("model:yolo26", $size),
+            kind: ResourceKind::ExportModel,
+            version: YOLO26_EXPORT_VERSION,
+            platform: None,
+            parts: &[Part {
+                url: concat!(
+                    "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26",
+                    $size,
+                    ".pt"
+                ),
+                sha256: $sha,
+                size: $bytes,
+                file_name: concat!("yolo26", $size, ".pt"),
+                archive: None,
+                layout: Layout::File,
+            }],
+            dest: "models",
+            provides: Provides::Model {
+                name: concat!("yolo26", $size),
+                family: ModelFamilyKind::Yolo26,
+            },
+            title: $title,
+            description: $desc,
+            license: YOLO26_LICENSE,
+        }
+    };
+}
+
+/// YOLO26 detection models (COCO 80 classes, end-to-end `[1,300,6]` output, no NMS). The part is
+/// the official PyTorch weights file; the export writes `models/yolo26<size>.onnx` and
+/// `models/yolo26<size>.yaml`. Speeds: ONNX Runtime CoreML on an Apple M1.
+pub static EXPORT_MODELS: &[Resource] = &[
+    yolo26!(
+        "n",
+        "YOLO26 nano",
+        "YOLO26 nano, COCO 80 classes; fastest (about 15 ms on an M1 with CoreML), good on CPUs and iGPUs",
+        "9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef",
+        5544453
+    ),
+    yolo26!(
+        "s",
+        "YOLO26 small",
+        "YOLO26 small, COCO 80 classes; more accurate, about 2x nano's time (29 ms on an M1 with CoreML)",
+        "646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b",
+        20422725
+    ),
+    yolo26!(
+        "m",
+        "YOLO26 medium",
+        "YOLO26 medium, COCO 80 classes; accurate, best with a GPU",
+        "401cea9ab23ad19246ff7744859816bc599f350e93c9dd30367b6f0a0745d0b7",
+        44255705
+    ),
+    yolo26!(
+        "l",
+        "YOLO26 large",
+        "YOLO26 large, COCO 80 classes; slower, needs a GPU for camera streams",
+        "9fe3c544f2b19bebad7ea41e76d7ad3d88b7c2f10d11d24430c5311f6b32db26",
+        53211173
+    ),
+    yolo26!(
+        "x",
+        "YOLO26 extra large",
+        "YOLO26 extra large, COCO 80 classes; most accurate and slowest, needs a fast GPU",
+        "9fdd44a31c504547ffb81d2c6d9e6dac3493c8eaa8b0398d3f43bae6c7003e92",
+        118667365
+    ),
+];
+
+/// What setting up the YOLO26 export toolchain costs on one platform (uv, Python 3.11 and the
+/// pinned packages; the weights are extra). Download sizes are the sums of the locked wheels (see
+/// `scripts/yolo26-export/gen_locks.sh`) plus uv and Python; disk is `tools/` afterwards (measured
+/// on macOS arm64: 1.2 GB; the others scaled by their wheel sizes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ToolchainEstimate {
+    pub platform: Platform,
+    /// Bytes downloaded once (uv archive + Python + wheels).
+    pub download: u64,
+    /// Bytes on disk afterwards (`tools/`).
+    pub disk: u64,
+}
+
+/// Platforms the YOLO26 export supports (PyTorch 2.14 CPU wheels exist), with their costs.
+pub const TOOLCHAIN_ESTIMATES: &[ToolchainEstimate] = &[
+    ToolchainEstimate {
+        platform: Platform::MACOS_ARM64,
+        download: 350_000_000,
+        disk: 1_200_000_000,
+    },
+    ToolchainEstimate {
+        platform: Platform::LINUX_X64,
+        download: 470_000_000,
+        disk: 1_600_000_000,
+    },
+    ToolchainEstimate {
+        platform: Platform::LINUX_ARM64,
+        download: 400_000_000,
+        disk: 1_400_000_000,
+    },
+    ToolchainEstimate {
+        platform: Platform::WINDOWS_X64,
+        download: 360_000_000,
+        disk: 1_300_000_000,
+    },
+];
+
+/// The export toolchain estimate for `(os, arch)`; None = YOLO26 cannot be exported there.
+pub fn toolchain_estimate(os: &str, arch: &str) -> Option<&'static ToolchainEstimate> {
+    TOOLCHAIN_ESTIMATES
+        .iter()
+        .find(|e| e.platform.matches(os, arch))
+}
+
+/// Exportable model by name or file name (`yolo26s`, `YOLO26S.onnx`, `yolo26s.xml`).
+pub fn export_model(name: &str) -> Option<&'static Resource> {
+    let n = name.trim();
+    let stem = std::path::Path::new(n)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(n);
+    let stem = strip_prefix_ci(stem, MODEL_ID_PREFIX).unwrap_or(stem);
+    EXPORT_MODELS
+        .iter()
+        .find(|r| r.model_name().is_some_and(|m| m.eq_ignore_ascii_case(stem)))
+}
+
+/// File names an export of `res` writes into the models directory: `(<name>.onnx, <name>.yaml)`.
+pub fn export_files(res: &Resource) -> Option<(String, String)> {
+    (res.kind == ResourceKind::ExportModel)
+        .then(|| res.model_name())
+        .flatten()
+        .map(|n| (format!("{n}.onnx"), format!("{n}.yaml")))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tools (uv, for the YOLO26 export)
+// ---------------------------------------------------------------------------------------------
+
+macro_rules! uv_part {
+    ($file:literal, $kind:expr, $sha:literal, $size:literal) => {
+        Part {
+            url: concat!(
+                "https://github.com/astral-sh/uv/releases/download/0.12.19/",
+                $file
+            ),
+            sha256: $sha,
+            size: $size,
+            file_name: $file,
+            archive: Some($kind),
+            layout: Layout::Uv,
+        }
+    };
+}
+
+const fn uv(platform: Platform, parts: &'static [Part]) -> Resource {
+    Resource {
+        id: UV_ID,
+        kind: ResourceKind::Tool,
+        version: UV_VERSION,
+        platform: Some(platform),
+        parts,
+        dest: UV_DEST,
+        provides: Provides::Tool { name: "uv" },
+        title: "uv (YOLO26 export toolchain)",
+        description: "Astral's uv: sets up Python 3.11 and the pinned export packages in \
+                      tools/yolo26-env; only runs when you export a YOLO26 model",
+        license: "MIT OR Apache-2.0",
+    }
+}
+
+/// `tool:uv` per platform: the standalone uv binary from Astral's GitHub release (only `uv` /
+/// `uv.exe` is extracted).
+pub static TOOLS: &[Resource] = &[
+    uv(
+        Platform::MACOS_ARM64,
+        &[uv_part!(
+            "uv-aarch64-apple-darwin.tar.gz",
+            ArchiveKind::TarGz,
+            "a9a8df1eedeb192f2e47e40e2faabfb387db4b850209118786d42f89dde3e0ba",
+            16988553
+        )],
+    ),
+    uv(
+        Platform::new("macos", "x86_64"),
+        &[uv_part!(
+            "uv-x86_64-apple-darwin.tar.gz",
+            ArchiveKind::TarGz,
+            "cb5fa57bafe68fc0fb94b17f06bee0b0b9a7feb94ccbd110445afa0696e39273",
+            20718482
+        )],
+    ),
+    uv(
+        Platform::LINUX_X64,
+        &[uv_part!(
+            "uv-x86_64-unknown-linux-gnu.tar.gz",
+            ArchiveKind::TarGz,
+            "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
+            19831732
+        )],
+    ),
+    uv(
+        Platform::LINUX_ARM64,
+        &[uv_part!(
+            "uv-aarch64-unknown-linux-gnu.tar.gz",
+            ArchiveKind::TarGz,
+            "0804e9b164c64b6914182d5920c08551958a095986f10a3731056df701126436",
+            18916891
+        )],
+    ),
+    uv(
+        Platform::WINDOWS_X64,
+        &[uv_part!(
+            "uv-x86_64-pc-windows-msvc.zip",
+            ArchiveKind::Zip,
+            "6dbb02d79e419522f1c500f0adb1cddcff0cda7d59b0d66ea7f5e3b4a1b2f5f0",
+            17955780
+        )],
+    ),
+];
+
+/// `tool:uv` for `(os, arch)`.
+pub fn uv_for(os: &str, arch: &str) -> Option<&'static Resource> {
+    TOOLS
+        .iter()
+        .find(|r| r.id == UV_ID && r.available_on(os, arch))
+}
+
+// ---------------------------------------------------------------------------------------------
 // Lookups
 // ---------------------------------------------------------------------------------------------
 
@@ -1124,6 +1408,8 @@ pub fn all() -> impl Iterator<Item = &'static Resource> {
         .chain(ONNXRUNTIME)
         .chain(CUDA_LIBS)
         .chain(MODELS)
+        .chain(EXPORT_MODELS)
+        .chain(TOOLS)
         .chain(bench_sets())
 }
 
@@ -1208,7 +1494,7 @@ pub fn for_platform<'a>(
 pub fn find(id: &str, os: &str, arch: &str) -> Option<&'static Resource> {
     let id = id.trim();
     if let Some(name) = strip_prefix_ci(id, MODEL_ID_PREFIX) {
-        return model(name);
+        return model(name).or_else(|| export_model(name));
     }
     for_platform(os, arch).find(|r| r.id.eq_ignore_ascii_case(id))
 }

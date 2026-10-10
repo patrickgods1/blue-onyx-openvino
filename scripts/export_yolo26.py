@@ -7,15 +7,21 @@ Usage (inside the project venv: `.venv/Scripts/python.exe scripts/export_yolo26.
     python scripts/export_yolo26.py --sizes n s     # subset
     python scripts/export_yolo26.py --int8 --data coco128.yaml
     python scripts/export_yolo26.py --out-dir C:/BlueOnyx/models
+    python scripts/export_yolo26.py --sizes s --weights yolo26s.pt --no-openvino   # ONNX only
+
+The service runs this same file (embedded in the binary) for the Config page's "Export" button
+and `blue-onyx-prism fetch --resource model:yolo26s`, as `--sizes <s> --weights <verified .pt>
+--no-openvino --out-dir <staging> --work <dir>` inside its own pinned environment, with
+YOLO_OFFLINE=1 and YOLO_AUTOINSTALL=false (no network, no pip installs from Ultralytics).
 
 Output directory (`--out-dir`, alias `--out`): by default `<repo>/target/release/models` when that
 directory exists (the release exe reads `<exe dir>/models`), else `<repo>/models`. Point it at the
 `models` directory next to the installed exe (the Config page shows the exact path) so the files
 appear under "Local models (not in config)" with an "Add to config" button.
 
-Produces `<name>.xml`, `<name>.bin`, `<name>.onnx` (for the ONNX Runtime devices incl. CoreML, FP32,
-nms=False, opset 17; skip with --no-onnx) and `<name>.yaml` (a `NAMES:` list) per model and prints
-the config snippet to paste into `blue_onyx_prism_config.json`.
+Produces `<name>.xml`, `<name>.bin` (skip with --no-openvino), `<name>.onnx` (for the ONNX Runtime
+devices incl. CoreML, FP32, nms=False, opset 17; skip with --no-onnx) and `<name>.yaml` (a `NAMES:`
+list) per model and prints the config snippet to paste into `blue_onyx_prism_config.json`.
 
 YOLO26 weights and the Ultralytics exporter are AGPL-3.0: export locally, do not commit weights.
 """
@@ -32,6 +38,10 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def log(msg: str) -> None:
+    print(f"[export_yolo26] {msg}", flush=True)
 
 
 def default_out_dir() -> Path:
@@ -52,30 +62,52 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="where to write the model files (default: <repo>/target/release/models if it exists, else <repo>/models)",
     )
+    p.add_argument(
+        "--weights",
+        type=Path,
+        default=None,
+        help="local yolo26<size>.pt to export (one size only); it is copied into --work, nothing is downloaded",
+    )
     p.add_argument("--int8", action="store_true", help="INT8 post-training quantization (needs --data)")
     p.add_argument("--data", default="coco128.yaml", help="dataset yaml used for INT8 calibration")
     p.add_argument("--fp32", action="store_true", help="keep FP32 weights instead of FP16")
     p.add_argument("--opset", type=int, default=17, help="ONNX opset for the .onnx export")
     p.add_argument("--no-onnx", action="store_true", help="skip the <name>.onnx export")
+    p.add_argument("--no-openvino", action="store_true", help="skip the OpenVINO IR export (ONNX only)")
     p.add_argument("--work", type=Path, default=REPO / ".export_work")
     args = p.parse_args()
     if args.out is None:
         args.out = default_out_dir()
+    if args.no_onnx and args.no_openvino:
+        p.error("--no-onnx and --no-openvino leave nothing to export")
+    if args.weights is not None and len(args.sizes) != 1:
+        p.error("--weights needs exactly one --sizes value")
     return args
 
 
-def export_one(size: str, args: argparse.Namespace) -> Path:
+def load_model(size: str, args: argparse.Namespace):
+    """`YOLO(<work>/yolo26<size>.pt)`. With --weights the given file is copied there first, so
+    Ultralytics never downloads and its outputs land in the work dir, not next to the weights."""
     from ultralytics import YOLO
 
     name = f"yolo26{size}"
     args.work = args.work.resolve()
     args.work.mkdir(parents=True, exist_ok=True)
-    # Ultralytics downloads `<name>.pt` and writes `<name>_openvino_model/` into the current
-    # directory; run inside the work dir so the repo root stays clean and reruns are offline.
+    # Ultralytics writes `<name>.onnx` / `<name>_openvino_model/` next to the weights and may
+    # download `<name>.pt` into the current directory: run inside the work dir.
     os.chdir(args.work)
     weights = args.work / f"{name}.pt"
-    model = YOLO(str(weights) if weights.exists() else f"{name}.pt")
+    if args.weights is not None:
+        src = args.weights.resolve()
+        if not src.is_file():
+            raise SystemExit(f"--weights {src} does not exist")
+        if src != weights:
+            shutil.copyfile(src, weights)
+    return YOLO(str(weights) if weights.exists() else f"{name}.pt")
 
+
+def export_one(size: str, args: argparse.Namespace) -> Path:
+    model = load_model(size, args)
     kwargs = dict(format="openvino", imgsz=args.imgsz, dynamic=False, nms=False, batch=1)
     if args.int8:
         kwargs.update(int8=True, data=args.data)
@@ -96,14 +128,7 @@ def export_one(size: str, args: argparse.Namespace) -> Path:
 
 def export_onnx(size: str, args: argparse.Namespace) -> Path:
     """Export `<name>.onnx` (FP32, static 640x640, NMS-free [1,300,6] output) for ONNX Runtime."""
-    from ultralytics import YOLO
-
-    name = f"yolo26{size}"
-    args.work = args.work.resolve()
-    args.work.mkdir(parents=True, exist_ok=True)
-    os.chdir(args.work)
-    weights = args.work / f"{name}.pt"
-    model = YOLO(str(weights) if weights.exists() else f"{name}.pt")
+    model = load_model(size, args)
     out = model.export(format="onnx", imgsz=args.imgsz, dynamic=False, nms=False, batch=1, opset=args.opset)
     return Path(out)
 
@@ -119,6 +144,16 @@ def output_shape(xml_path: Path) -> list[int]:
     return [int(d.text) for d in port.findall("dim")]
 
 
+def onnx_output_shape(path: Path) -> list[int]:
+    import onnx
+
+    graph = onnx.load(str(path), load_external_data=False).graph
+    if not graph.output:
+        return []
+    dims = graph.output[0].type.tensor_type.shape.dim
+    return [d.dim_value if d.HasField("dim_value") else -1 for d in dims]
+
+
 def names_from_metadata(export_dir: Path) -> list[str]:
     import yaml
 
@@ -132,6 +167,18 @@ def names_from_metadata(export_dir: Path) -> list[str]:
     return list(names)
 
 
+def names_from_model(size: str, args: argparse.Namespace) -> list[str]:
+    names = load_model(size, args).names
+    if isinstance(names, dict):
+        return [names[k] for k in sorted(names, key=int)]
+    return list(names)
+
+
+def check_shape(name: str, shape: list[int]) -> None:
+    if len(shape) < 2 or shape[-1] != 6:
+        raise SystemExit(f"{name}: unexpected output shape {shape}; expected [1, 300, 6] from an NMS-free export.")
+
+
 def main() -> int:
     args = parse_args()
     args.out = args.out.resolve()
@@ -139,28 +186,35 @@ def main() -> int:
     snippets = []
     for size in args.sizes:
         name = f"yolo26{size}"
-        export_dir = export_one(size, args)
-        export_dir = export_dir if export_dir.is_dir() else export_dir.parent
-        xml = next(export_dir.glob("*.xml"))
-        binf = xml.with_suffix(".bin")
-        shape = output_shape(xml)
-        if len(shape) < 2 or shape[-1] != 6:
-            raise SystemExit(
-                f"{name}: unexpected output shape {shape}; expected [1, 300, 6] from an NMS-free export."
-            )
-        dst_xml = args.out / f"{name}.xml"
-        shutil.copy2(xml, dst_xml)
-        shutil.copy2(binf, args.out / f"{name}.bin")
+        dst_xml = None
+        names: list[str] = []
+        shape: list[int] = []
+        if not args.no_openvino:
+            log(f"{name}: exporting OpenVINO IR")
+            export_dir = export_one(size, args)
+            export_dir = export_dir if export_dir.is_dir() else export_dir.parent
+            xml = next(export_dir.glob("*.xml"))
+            binf = xml.with_suffix(".bin")
+            shape = output_shape(xml)
+            check_shape(name, shape)
+            dst_xml = args.out / f"{name}.xml"
+            shutil.copy2(xml, dst_xml)
+            shutil.copy2(binf, args.out / f"{name}.bin")
+            names = names_from_metadata(export_dir)
         dst_onnx = None
         if not args.no_onnx:
+            log(f"{name}: exporting ONNX (opset {args.opset})")
             onnx = export_onnx(size, args)
+            shape = onnx_output_shape(onnx)
+            check_shape(name, shape)
             dst_onnx = args.out / f"{name}.onnx"
             shutil.copy2(onnx, dst_onnx)
             print(f"{name}: ONNX -> {dst_onnx}")
-        names = names_from_metadata(export_dir)
+        if not names:
+            names = names_from_model(size, args)
         yaml_path = args.out / f"{name}.yaml"
         yaml_path.write_text("NAMES:\n" + "".join(f"  - {n}\n" for n in names), encoding="utf-8")
-        print(f"{name}: output {shape}, {len(names)} classes -> {dst_xml}")
+        print(f"{name}: output {shape}, {len(names)} classes -> {dst_onnx or dst_xml}")
         # The .onnx runs on both runtimes (OpenVINO and ONNX Runtime, incl. CoreML); the IR only on OpenVINO.
         model_file = dst_onnx.name if dst_onnx else dst_xml.name
         snippets.append(

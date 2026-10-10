@@ -28,7 +28,7 @@
       </select>
       {% if let Some(p) = m.provider %}<br><span class="muted">now: {{ p }}</span>{% endif %}
       {% if let Some(b) = m.bench %}<br><a href="{{ b.href }}" title="{{ b.title }}">{{ b.text }}</a>{% endif %}</td>
-    <td><code>{{ m.path }}</code>{% if !m.exists %} <span class="muted">(missing)</span>{% endif %}</td>
+    <td><code>{{ m.path }}</code>{% if !m.exists %}{% if let Some(x) = m.needs_export %} <span class="tag restart">needs export</span> <a href="#res-models-yolo26" title="{{ x }}: exported on this machine on request (AGPL-3.0)">export it</a>{% else %} <span class="muted">(missing)</span>{% endif %}{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>
@@ -52,6 +52,7 @@
   {% if !resources_enabled %}<p class="muted">This server has no download manager; use <code>blue-onyx-prism fetch</code>.</p>{% endif %}
   {% for g in resource_groups %}
   <h3 id="res-{{ g.key }}">{{ g.title }}</h3>
+  {% if g.key == "models-yolo26" %}<p class="muted">{{ yolo26_notice }} Export makes <code>&lt;name&gt;.onnx</code> + <code>.yaml</code> in <code>{{ models_dir }}</code> (runs on OpenVINO and ONNX Runtime incl. CoreML); the toolchain lives in <code>{{ tools_dir }}</code> (remove it with <em>Remove export toolchain</em>). Nothing is exported automatically. CLI: <code>blue-onyx-prism fetch --resource model:yolo26s --allow-large</code>; by hand: <code>scripts/export_yolo26.py</code>.</p>{% endif %}
   <div class="scroll">
   <table class="resources">
   <thead><tr><th>Resource</th><th>Size</th><th>State</th><th>Action</th></tr></thead>
@@ -59,10 +60,28 @@
   {% for r in g.rows %}
   <tr data-id="{{ r.id }}" data-busy="{{ r.busy }}" data-state="{{ r.state }}">
     <td>{{ r.title }} <code>{{ r.id }}</code><br><span class="muted">{{ r.description }}{% if r.kind == "cuda-libs" %} &middot; {{ r.license }}{% endif %}</span></td>
-    <td class="num">{{ r.size_text }}{% if r.large %}<br><span class="muted">large</span>{% endif %}</td>
-    <td class="res-state"><span class="res-text">{{ r.state_text }}</span>{% if r.busy %}<br><progress max="100"{% if let Some(p) = r.progress %} value="{{ p }}"{% endif %}></progress>{% endif %}{% if r.active %} <span class="tag">active</span>{% endif %}{% if r.loaded %} <span class="tag">loaded</span>{% endif %}{% if !r.blocking.is_empty() %}<br><span class="muted">needed by {{ r.blocking.join(", ") }}</span>{% endif %}</td>
+    <td class="num">{{ r.size_text }}{% if let Some(n) = r.size_note %}<br><span class="muted">{{ n }}</span>{% else if r.large %}<br><span class="muted">large</span>{% endif %}</td>
+    <td class="res-state"><span class="res-text">{{ r.state_text }}</span>{% if r.busy %}<br><progress max="100"{% if let Some(p) = r.progress %} value="{{ p }}"{% endif %}></progress>{% endif %}{% if r.active %} <span class="tag">active</span>{% endif %}{% if r.loaded %} <span class="tag">loaded</span>{% endif %}{% if !r.blocking.is_empty() %}<br><span class="muted">needed by {{ r.blocking.join(", ") }}</span>{% endif %}{% if !r.log.is_empty() %}<details class="res-log"><summary>output</summary><pre>{% for l in r.log %}{{ l }}
+{% endfor %}</pre></details>{% endif %}</td>
     <td>
-    {% if r.state == "installed" %}
+    {% if r.action == "export" %}
+      {% if r.busy %}<form method="post" action="/v1/resources/export/cancel" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Cancel the export of {{ r.title }}?">Cancel</button></form>
+      {% else if r.state == "installed" %}
+        {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove the exported {{ r.title }} files?">Remove</button></form>
+        {% else if let Some(why) = r.remove_blocked %}<span class="muted">{{ why }}</span>{% endif %}
+        {% if r.can_add_to_config %}<form method="post" action="/v1/resources/add-to-config" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit">Add to config</button></form>{% endif %}
+      {% else if resources_enabled %}
+        <form method="post" action="/v1/resources/export" class="inline export"><input type="hidden" name="id" value="{{ r.id }}"><input type="hidden" name="confirm_large" value="1">
+        <button type="submit"{% if let Some(c) = r.confirm %} data-confirm="{{ c }}"{% endif %}>{% if r.state == "failed" %}Retry export{% else %}Export{% endif %}</button>
+        <label class="check"><input type="checkbox" name="add_to_config" value="1" checked> and add to config</label>
+        </form>
+      {% endif %}
+    {% else if r.action == "toolchain" %}
+      {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger"{% if let Some(c) = r.confirm %} data-confirm="{{ c }}"{% endif %}>Remove export toolchain</button></form>
+      {% else if r.busy %}<span class="muted">in progress</span>
+      {% else if let Some(why) = r.remove_blocked %}<span class="muted">{{ why }}</span>{% endif %}
+    {% else if r.action == "none" %}<span class="muted">not available here</span>
+    {% else if r.state == "installed" %}
       {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove {{ r.title }}?">Remove</button></form>
       {% else if let Some(why) = r.remove_blocked %}<span class="muted">{{ why }}</span>{% endif %}
       {% if r.can_add_to_config %}<form method="post" action="/v1/resources/add-to-config" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit">Add to config</button></form>{% endif %}
@@ -101,7 +120,7 @@
   </table>
   </div>
   {% endif %}
-  <p class="muted">YOLO26 cannot be downloaded (the weights are AGPL-3.0). Export it locally with <code>scripts/export_yolo26.py --out-dir "{{ models_dir }}"</code> (see the README); the <code>.onnx</code> and <code>.xml</code> files then show up under Local models. The NVIDIA CUDA/cuDNN libraries (for <code>ort:cuda</code> without a CUDA 12 / cuDNN 9 install) are covered by NVIDIA's license.</p>
+  <p class="muted">YOLO26 is not downloadable (the weights are AGPL-3.0): use Export in the <a href="#res-models-yolo26">YOLO26</a> section, or export by hand with <code>scripts/export_yolo26.py --out-dir "{{ models_dir }}"</code> (see the README); other model files show up under Local models. The NVIDIA CUDA/cuDNN libraries (for <code>ort:cuda</code> without a CUDA 12 / cuDNN 9 install) are covered by NVIDIA's license.</p>
 </section>
 
 <form method="post" action="/config" class="card grid" id="server">
@@ -190,7 +209,8 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
           if (bar) { if (r.progress !== null && r.progress !== undefined) bar.value = r.progress; else bar.removeAttribute("value"); }
         }
       });
-      if (changed) { clearInterval(timer); location.reload(); }
+      // Load /config afresh (the page may be the answer to a POST, which a reload would resend).
+      if (changed) { clearInterval(timer); location.replace("/config?t=" + Date.now() + "#resources"); }
     }).catch(function () {});
   }, 2000);
 })();

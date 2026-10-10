@@ -7,6 +7,7 @@
 /openvino/
 /onnxruntime/
 /bench/
+/tools/
 benchmark.json
 *.log
 *_config*.json

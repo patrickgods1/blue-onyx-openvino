@@ -7,7 +7,9 @@
 //! Rules:
 //! - **Models**: an enabled model whose file (or default `<stem>.yaml`) is missing and whose file
 //!   name matches a catalog model needs that model resource. A missing file that is not in the
-//!   catalog is reported in [`ModelPlan::error`] (YOLO26 weights must be exported locally).
+//!   catalog is reported in [`ModelPlan::error`]. A missing YOLO26 file is "needs export"
+//!   ([`ModelPlan::needs_export`]): it is never downloaded or exported automatically (exporting
+//!   runs Ultralytics' code and needs a click, see `super::export`).
 //! - **Runtimes**: each enabled model's device plan is computed with the real `select` /
 //!   `plan` code on a *hypothetical* probe in which every runtime that is installed **or
 //!   downloadable** for this platform is present. The candidates are walked in order and the
@@ -203,6 +205,9 @@ pub struct ModelPlan {
     pub skipped: Vec<String>,
     /// Why the model cannot be provisioned (missing non-catalog file, no device).
     pub error: Option<String>,
+    /// The missing model file is produced by exporting this resource (`model:yolo26s`); only a
+    /// user action starts it.
+    pub needs_export: Option<&'static str>,
 }
 
 /// Result of [`needed`].
@@ -418,6 +423,7 @@ impl Resolver<'_> {
             device: None,
             skipped: Vec::new(),
             error: None,
+            needs_export: None,
         };
 
         // Model files.
@@ -426,6 +432,9 @@ impl Resolver<'_> {
             match entry {
                 Some(_) => model_need = Some(format!("model file {} is missing", m.path.display())),
                 None => {
+                    plan.needs_export = catalog::export_model(&m.path.to_string_lossy())
+                        .filter(|r| export_produces(r, &m.path))
+                        .map(|r| r.id);
                     plan.error = Some(missing_model_message(&m.path));
                     self.out.models.push(plan);
                     return;
@@ -937,15 +946,28 @@ fn push_need(list: &mut Vec<Need>, need: Need) {
     }
 }
 
-fn missing_model_message(path: &Path) -> String {
+/// `path` is the model file an export of `res` writes (`yolo26s.onnx`; the on-demand export
+/// makes no OpenVINO IR).
+fn export_produces(res: &Resource, path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("onnx"))
+        && catalog::export_model(&path.to_string_lossy()).is_some_and(|r| r.id == res.id)
+}
+
+/// Why a configured model file that is not downloadable is missing.
+pub fn missing_model_message(path: &Path) -> String {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    if stem.starts_with("yolo26") {
+    if let Some(r) = catalog::export_model(&stem).filter(|r| export_produces(r, path)) {
+        super::export::needs_export_message(r, path)
+    } else if stem.starts_with("yolo26") {
         format!(
             "model file {} not found; YOLO26 weights are AGPL-3.0 and cannot be downloaded: \
-             export them with scripts/export_yolo26.py",
+             export them on the Config page (Resources, YOLO26; it writes {stem}.onnx, so point \
+             `path` at that) or with scripts/export_yolo26.py",
             path.display()
         )
     } else {
