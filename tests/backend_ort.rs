@@ -52,6 +52,7 @@ fn with_runtimes<T>(f: impl FnOnce(&mut Runtimes) -> T) -> Option<T> {
             },
             &OrtOptions {
                 onnxruntime_dir: Some(lib),
+                ..OrtOptions::default()
             },
         )
     });

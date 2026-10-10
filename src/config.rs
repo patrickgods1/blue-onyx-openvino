@@ -313,6 +313,49 @@ impl Config {
         crate::backend::spec::parse(&self.device_for(m)).with_context(|| field)
     }
 
+    /// Root for downloaded runtimes and relative model paths: `download_dir` (resolved against
+    /// the exe dir), else the exe dir.
+    pub fn data_root(&self) -> PathBuf {
+        self.download_dir
+            .as_deref()
+            .map(crate::resolve_path)
+            .unwrap_or_else(crate::exe_dir)
+    }
+
+    /// A model/classes/models_dir path: absolute as is, else under [`Self::data_root`].
+    pub fn data_path(&self, p: &Path) -> PathBuf {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.data_root().join(p)
+        }
+    }
+
+    /// OpenVINO install dir to use: `openvino_dir` (resolved against the exe dir), else
+    /// `<download_dir>/openvino` when `download_dir` is set and that exists. None = the exe
+    /// dir's `openvino/`, then the system.
+    pub fn openvino_dir_effective(&self) -> Option<PathBuf> {
+        if let Some(d) = &self.openvino_dir {
+            return Some(crate::resolve_path(d));
+        }
+        self.download_dir.as_ref()?;
+        let d = self
+            .data_root()
+            .join(crate::backend::libs::BUNDLED_DIR_NAME);
+        d.is_dir().then_some(d)
+    }
+
+    /// ONNX Runtime lookup options for this config (explicit dir and the install root).
+    pub fn ort_options(&self) -> crate::backend::OrtOptions {
+        crate::backend::OrtOptions {
+            onnxruntime_dir: self.onnxruntime_dir.as_deref().map(crate::resolve_path),
+            default_dir: self
+                .download_dir
+                .is_some()
+                .then(|| self.data_root().join(crate::backend::libs::ORT_DIR_NAME)),
+        }
+    }
+
     /// Cache directory resolved against the exe dir, or None when disabled.
     pub fn cache_dir_path(&self) -> Option<PathBuf> {
         if self.cache_dir.trim().is_empty() {

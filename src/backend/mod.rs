@@ -58,6 +58,10 @@ pub struct OrtOptions {
     /// Config `onnxruntime_dir`: a directory holding the library, or the library file. None =
     /// `ORT_DYLIB_PATH`, then `<exe_dir>/onnxruntime`.
     pub onnxruntime_dir: Option<PathBuf>,
+    /// Install root searched after the explicit dir and `ORT_DYLIB_PATH` (active flavor, legacy
+    /// flat layout, per-flavor dirs). None = `<exe_dir>/onnxruntime`; config `download_dir` sets
+    /// it to `<download_dir>/onnxruntime`.
+    pub default_dir: Option<PathBuf>,
 }
 
 /// What to load. The device comes separately as a [`DeviceSpec`] / [`Candidate`].
@@ -319,7 +323,10 @@ impl Runtimes {
 
         #[cfg(feature = "onnxruntime")]
         let (ort, ort_error, ort_probe) = {
-            let lookup = libs::find_onnxruntime(ort_opts.onnxruntime_dir.as_deref());
+            let lookup = match &ort_opts.default_dir {
+                Some(d) => libs::find_onnxruntime_with(ort_opts.onnxruntime_dir.as_deref(), d),
+                None => libs::find_onnxruntime(ort_opts.onnxruntime_dir.as_deref()),
+            };
             match &lookup.library {
                 None => (
                     None,

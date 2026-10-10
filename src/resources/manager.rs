@@ -301,6 +301,36 @@ impl State {
     }
 }
 
+impl State {
+    /// Model-state text naming the resource: "downloading OpenVINO runtime 42% (18/44 MB)",
+    /// "download of OpenVINO runtime failed: ...; retrying in 60 s", ...
+    pub fn describe_for(&self, title: &str) -> String {
+        match self {
+            State::Queued => format!("waiting to download {title}"),
+            State::Downloading { bytes, total } => {
+                let pct = if *total > 0 { bytes * 100 / total } else { 0 };
+                format!(
+                    "downloading {title} {pct}% ({}/{} MB)",
+                    bytes / 1_000_000,
+                    total.div_ceil(1_000_000)
+                )
+            }
+            State::Verifying => format!("verifying {title}"),
+            State::Extracting => format!("installing {title}"),
+            State::Installed => format!("{title} installed"),
+            State::Failed {
+                error, retry_at, ..
+            } => match retry_at.and_then(|t| {
+                let now = unix_now();
+                Some(t.saturating_sub(now))
+            }) {
+                Some(s) => format!("download of {title} failed: {error}; retrying in {s} s"),
+                None => format!("download of {title} failed: {error}"),
+            },
+        }
+    }
+}
+
 /// Shared status of one job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Status {
@@ -541,7 +571,7 @@ impl Drop for Manager {
 }
 
 /// Jobs for `needs` of a resolution: runtimes into `<root>/<dest>`, models into their
-/// configured directory (resolved against the exe dir). The wanted ORT flavor is marked active
+/// configured directory (relative ones under `root`, the config's data root). The wanted ORT flavor is marked active
 /// once installed (see [`super::resolve::Resolution::ort_activation`]).
 pub fn jobs_for(
     resolution: &super::resolve::Resolution,
@@ -552,7 +582,9 @@ pub fn jobs_for(
         .iter()
         .map(|n| {
             let mut job = match &n.model_dir {
-                Some(dir) => Job::into_dir(n.resource, crate::resolve_path(dir)),
+                // Relative model dirs live under the data root (`download_dir`, else the exe dir).
+                Some(dir) if dir.is_absolute() => Job::into_dir(n.resource, dir.clone()),
+                Some(dir) => Job::into_dir(n.resource, root.join(dir)),
                 None => Job::new(n.resource, root),
             };
             job.activate_ort =

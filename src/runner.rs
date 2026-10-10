@@ -5,14 +5,23 @@
 //! and starts the next generation. If the new config fails to start, the previous one is
 //! restored. Cancelling the `shutdown` token (Ctrl-C/SIGTERM in the CLI, Stop in the service)
 //! ends the loop.
+//!
+//! On-demand resources (phase 7.3): before each generation the [`Provisioner`] (which owns the
+//! download manager for the whole run) works out what the config is missing and queues it.
+//! When a runtime the generation can use gets installed, a watcher thread restarts the
+//! generation the same way `/config/restart` does, but keeps the in-memory config. A restart
+//! first stops the HTTP server (in-flight requests finish on the old workers), then stops the
+//! workers.
 
 use crate::cli::LogReloadHandle;
 use crate::config::Config;
 use crate::metrics::Metrics;
 use crate::registry::ModelRegistry;
+use crate::resources::provision::{Provision, Provisioner};
 use crate::server::{self, AppState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -55,21 +64,44 @@ pub fn run_server(
 /// (no models, OpenVINO init failure, port in use) and there is no previous config to restore.
 pub fn run_server_on(
     rt: &tokio::runtime::Runtime,
+    config: Config,
+    config_path: PathBuf,
+    log: LogReloadHandle,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    run_server_with(rt, config, config_path, log, shutdown, Provisioner::new())
+}
+
+/// [`run_server_on`] with a given [`Provisioner`] (tests inject catalog entries through it).
+pub fn run_server_with(
+    rt: &tokio::runtime::Runtime,
     mut config: Config,
     config_path: PathBuf,
     log: LogReloadHandle,
     shutdown: CancellationToken,
+    mut provisioner: Provisioner,
 ) -> Result<()> {
     ensure_models(&config, &config_path)?;
     let started = Instant::now();
     // Config to fall back to when a restart with the edited config fails to start.
     let mut previous: Option<Config> = None;
+    // ONNX Runtime flavor loaded by an earlier generation (fixed for the process).
+    let mut loaded_ort: Option<crate::resources::catalog::Flavor> = None;
     loop {
-        // One generation = one registry + one HTTP server. `POST /config/restart` cancels the
-        // generation token; cancelling `shutdown` cancels it too.
+        // One generation = one registry + one HTTP server. `POST /config/restart` (or an
+        // installed runtime) cancels the generation token, which stops the server; the workers
+        // have their own token so in-flight requests drain first. Cancelling `shutdown` cancels
+        // both.
         let generation = shutdown.child_token();
+        let workers = shutdown.child_token();
         let metrics = Arc::new(Metrics::new(crate::VERSION));
-        let registry = match ModelRegistry::start(&config, &metrics, generation.clone()) {
+        let provision = Arc::new(provisioner.prepare(&config, loaded_ort));
+        let registry = match ModelRegistry::start_with(
+            &config,
+            &metrics,
+            workers.clone(),
+            Some(&provision),
+        ) {
             Ok(r) => Arc::new(r),
             Err(e) => match previous.take() {
                 Some(prev) => {
@@ -83,6 +115,16 @@ pub fn run_server_on(
             },
         };
         info!(models = ?registry.names(), "models registered (compiling in the background)");
+        if loaded_ort.is_none() {
+            loaded_ort = registry_ort_flavor(&registry);
+        }
+        let resources_restart = Arc::new(AtomicBool::new(false));
+        let watcher = spawn_watcher(
+            provision.clone(),
+            registry.clone(),
+            generation.clone(),
+            resources_restart.clone(),
+        );
 
         let port = config.port;
         let state = Arc::new(AppState {
@@ -95,8 +137,14 @@ pub fn run_server_on(
             restart: generation.clone(),
         });
         let served = rt.block_on(server::serve(state, port, shutdown.clone()));
-        // Stop this generation's workers whatever ended the server.
+        // The server has drained its requests; stop this generation's workers and watcher.
         generation.cancel();
+        workers.cancel();
+        if let Some(w) = watcher
+            && w.join().is_err()
+        {
+            warn!("resource watcher panicked");
+        }
         match Arc::try_unwrap(registry) {
             Ok(reg) => reg.shutdown(),
             Err(_) => warn!("registry still referenced; workers stop via the shutdown token"),
@@ -117,6 +165,11 @@ pub fn run_server_on(
             }
         }
 
+        if resources_restart.load(Ordering::SeqCst) {
+            info!("restarting the registry to load downloaded resources");
+            previous = None;
+            continue;
+        }
         info!(config = %config_path.display(), "restarting: reloading the config file");
         let next = match Config::load(&config_path) {
             Ok(c) if !c.models.is_empty() => c,
@@ -139,4 +192,84 @@ pub fn run_server_on(
         }
         previous = Some(std::mem::replace(&mut config, next));
     }
+}
+
+/// The ONNX Runtime flavor `registry` loaded, if any.
+fn registry_ort_flavor(registry: &ModelRegistry) -> Option<crate::resources::catalog::Flavor> {
+    let rt = registry.runtimes()?;
+    let rt = rt.lock().unwrap_or_else(|e| e.into_inner());
+    let ort = &rt.probe().ort;
+    if !ort.is_available() {
+        return None;
+    }
+    Some(
+        ort.flavor
+            .as_deref()
+            .and_then(crate::resources::catalog::Flavor::parse)
+            .unwrap_or(crate::resources::catalog::Flavor::Cpu),
+    )
+}
+
+/// Watch the download manager during one generation: log every outcome and, when a runtime
+/// that this generation can use is installed, restart it (sets `restart`, cancels
+/// `generation`). None when nothing is being downloaded.
+fn spawn_watcher(
+    provision: Arc<Provision>,
+    registry: Arc<ModelRegistry>,
+    generation: CancellationToken,
+    restart: Arc<AtomicBool>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let manager = provision.manager()?.clone();
+    let events = manager.subscribe();
+    std::thread::Builder::new()
+        .name("resources".into())
+        .spawn(move || {
+            loop {
+                if generation.is_cancelled() {
+                    return;
+                }
+                let ev = match events.recv_timeout(std::time::Duration::from_millis(250)) {
+                    Ok(ev) => ev,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                };
+                let text = crate::resources::provision::describe_event(&ev);
+                let crate::resources::manager::Event::Installed { id, .. } = ev else {
+                    warn!("{text}");
+                    continue;
+                };
+                info!("{text}");
+                let Some(res) = provision
+                    .resolution
+                    .needs
+                    .iter()
+                    .map(|n| n.resource)
+                    .find(|r| r.id == id)
+                else {
+                    continue;
+                };
+                // Models not served on their planned device yet: waiting, failed, or loaded on
+                // an interim device while their runtime downloaded.
+                let not_ready: Vec<String> = registry
+                    .workers()
+                    .iter()
+                    .filter(|w| !w.state.is_ready() || provision.is_blocked_on_runtime(&w.name))
+                    .map(|w| w.name.clone())
+                    .collect();
+                match provision.restart_for(res, &not_ready) {
+                    Ok(()) => {
+                        info!(
+                            resource = id,
+                            "runtime installed; starting a new registry generation to load it"
+                        );
+                        restart.store(true, Ordering::SeqCst);
+                        generation.cancel();
+                        return;
+                    }
+                    Err(why) => info!(resource = id, "no restart needed: {why}"),
+                }
+            }
+        })
+        .map_err(|e| warn!("could not spawn the resource watcher: {e}"))
+        .ok()
 }

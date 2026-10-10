@@ -38,7 +38,7 @@ pub fn fetch_jobs(
             jobs.push(job);
         }
     };
-    let models_dir = crate::resolve_path(&config.models_dir);
+    let models_dir = config.data_path(&config.models_dir);
     let no_ort_active = installed.active_ort.is_none() && !installed.ort_pinned;
 
     if req.for_config || (req.resources.is_empty() && !req.all_for_platform) {
@@ -161,7 +161,7 @@ pub fn fetch(config: &Config, req: &FetchRequest) -> Result<()> {
 /// `list-resources` as text.
 pub fn list_resources(config: &Config, hw: &HardwareInfo, installed: &Installed) -> String {
     let r: Resolution = resolve::needed(config, hw, installed);
-    let models_dir = crate::resolve_path(&config.models_dir);
+    let models_dir = config.data_path(&config.models_dir);
     let mut out = String::new();
     let _ = writeln!(out, "Resources for {}/{}:", hw.os, hw.arch);
     let _ = writeln!(out, "  {:<24} {:>8}  {:<28} TITLE", "ID", "SIZE", "STATE");

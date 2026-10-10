@@ -142,22 +142,15 @@ pub async fn serve(
     Ok(())
 }
 
-fn state_str(s: &ModelState) -> String {
-    match s {
-        ModelState::Initializing => "Initializing".into(),
-        ModelState::Ready => "Ready".into(),
-        ModelState::Failed(m) => format!("Failed: {m}"),
-    }
-}
-
-/// State text for the HTML pages; a lazy model that has not been requested yet says so.
+/// State text for the HTML pages and `/stats`: "Initializing (downloading ...)", "Ready", ...;
+/// a lazy model that has not been requested yet says so.
 fn state_label(w: &WorkerHandle) -> String {
     let s = w.state.get();
     match (&s, w.lazy) {
         (ModelState::Initializing, true) if w.accepts_while_initializing() => {
             "Lazy (loads on first request)".to_string()
         }
-        _ => state_str(&s),
+        _ => w.state.describe(),
     }
 }
 
@@ -255,8 +248,14 @@ fn devices_snapshot(state: &AppState) -> DevicesSnapshot {
     let info = &state.registry.runtime_info;
     let live = state.registry.runtimes().and_then(|rt| {
         let rt = rt.try_lock().ok()?;
-        Some((rt.hardware().clone(), rt.selection(None)))
+        Some((
+            rt.hardware().clone(),
+            rt.selection(None),
+            rt.probe().clone(),
+        ))
     });
+    let probe = live.as_ref().map(|(_, _, p)| p.clone());
+    let live = live.map(|(h, s, _)| (h, s));
     let (hardware, selection) = live.unwrap_or_else(|| {
         let hardware = crate::backend::detect::hardware().clone();
         let probe = if info.openvino_version.is_empty() && info.available_devices.is_empty() {
@@ -270,6 +269,20 @@ fn devices_snapshot(state: &AppState) -> DevicesSnapshot {
         let selection = select(&hardware, &probe, true);
         (hardware, selection)
     });
+    // Options a download would make runnable ("downloadable").
+    let mut selection = selection;
+    {
+        let cfg = state.config_read();
+        let root = crate::resources::download_root(&cfg);
+        let installed = crate::resources::detect_installed(&cfg, &root, probe);
+        crate::resources::resolve::annotate_selection(
+            &mut selection,
+            &cfg,
+            &hardware,
+            &installed,
+            true,
+        );
+    }
     // The install the ONNX Runtime loader picks (explicit dir, ORT_DYLIB_PATH, active flavor,
     // legacy flat dir, ...).
     let explicit = state.config_read().onnxruntime_dir.clone();
@@ -474,7 +487,10 @@ async fn dispatch(
         ModelState::Ready => {}
         ModelState::Initializing if handle.accepts_while_initializing() => {}
         ModelState::Initializing => {
-            return VisionDetectionResponse::error(format!("Model '{name}' is initializing"));
+            return VisionDetectionResponse::error(match handle.state.detail() {
+                Some(d) => format!("Model '{name}' is initializing ({d})"),
+                None => format!("Model '{name}' is initializing"),
+            });
         }
         ModelState::Failed(m) => {
             return VisionDetectionResponse::error(format!("Model '{name}' failed to load: {m}"));
@@ -647,7 +663,8 @@ async fn stats_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Valu
             serde_json::json!({
                 "name": w.name,
                 "default": default.as_deref() == Some(w.name.as_str()),
-                "state": state_str(&w.state.get()),
+                "state": w.state.describe(),
+                "stateDetail": w.state.detail(),
                 "lazy": w.lazy,
                 "requestedDevice": m.requested_device,
                 "device": dev.as_ref().map(|d| d.actual.clone()),
@@ -929,7 +946,7 @@ fn model_choices(c: &Config) -> Vec<ModelSelectRow> {
             name: m.effective_name(),
             family: m.family.to_string(),
             path: m.path.display().to_string(),
-            exists: crate::resolve_path(&m.path).is_file(),
+            exists: c.data_path(&m.path).is_file(),
             enabled: m.enabled,
             is_default: default == Some(i),
         })
@@ -984,6 +1001,18 @@ fn device_choices(snap: &DevicesSnapshot, current: &str, gpu_index: &str) -> Vec
         out.push(DeviceChoice {
             value: o.spec.to_string(),
             label: format!("{} \u{2014} {}", o.spec, o.label),
+            selected: is_current(&o.spec),
+            disabled: false,
+        });
+    }
+    // Downloadable options are selectable (the download itself is started from the Resources
+    // card / `fetch`; until it is installed the model falls back as usual).
+    let (dl, bad): (Vec<_>, Vec<_>) = bad.into_iter().partition(|o| o.is_downloadable());
+    for o in dl {
+        let summary = o.download.as_ref().map_or("", |d| d.summary.as_str());
+        out.push(DeviceChoice {
+            value: o.spec.to_string(),
+            label: format!("{} \u{2014} {summary}", o.spec),
             selected: is_current(&o.spec),
             disabled: false,
         });

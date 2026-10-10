@@ -55,6 +55,16 @@ const KNOWN_SUBDIRS: &[&str] = &[
 #[cfg(windows)]
 const WINDOWS_DLL_SUBDIRS: &[&str] = &["runtime/bin/intel64/Release", "runtime/3rdparty/tbb/bin"];
 
+/// The `openvino_c` library loaded by explicit path (Unix), for helpers that need its path.
+static LOADED_OPENVINO_C: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The `openvino_c` library this process loaded: the explicit path from
+/// [`prepare_environment`], else what the finder's environment search sees.
+pub fn loaded_openvino_c() -> Option<PathBuf> {
+    let loaded = LOADED_OPENVINO_C.lock().ok().and_then(|g| g.clone());
+    loaded.or_else(|| find_openvino_c(&mut Vec::new()))
+}
+
 /// What `prepare_environment` decided, for `diagnostics()`.
 static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -108,9 +118,13 @@ pub fn prepare_environment(explicit: Option<&Path>) {
                 }
             }
         };
+        // Windows: the finder reads OPENVINO_INSTALL_DIR. Unix: the library is loaded by
+        // explicit path below instead, because this also runs in later registry generations
+        // (after a runtime download) while other threads exist, where `setenv` is not sound.
+        #[cfg(windows)]
         if let Some(dir) = &chosen {
-            // SAFETY: called from `OvCore::new` at startup, before OpenVINO starts its threads;
-            // no other thread of ours mutates the environment concurrently.
+            // SAFETY: the Windows environment block is protected by a lock (SetEnvironmentVariableW),
+            // so this is sound even with other threads running.
             unsafe { std::env::set_var(ENV_INSTALL_DIR, dir) };
             note(format!("set {ENV_INSTALL_DIR}={}", dir.display()));
         }
@@ -129,6 +143,27 @@ pub fn prepare_environment(explicit: Option<&Path>) {
     #[cfg(unix)]
     if let Some(dir) = &install_dir {
         preload_dependencies(dir);
+        match lib_dir_of(dir) {
+            Some(lib_dir) => {
+                let lib = lib_dir.join(openvino_c_file_name());
+                match openvino_sys::library::load_from(&lib) {
+                    Ok(()) => {
+                        note(format!("loaded {}", lib.display()));
+                        if let Ok(mut g) = LOADED_OPENVINO_C.lock()
+                            && g.is_none()
+                        {
+                            *g = Some(lib.clone());
+                        }
+                    }
+                    Err(e) => note(format!("loading {} failed: {e}", lib.display())),
+                }
+            }
+            None => note(format!(
+                "no {} under {}",
+                openvino_c_file_name(),
+                dir.display()
+            )),
+        }
     }
     #[cfg(not(any(windows, unix)))]
     let _ = &install_dir;
@@ -293,8 +328,8 @@ pub(crate) fn core_set_property_variadic(
     const _: () =
         assert!(std::mem::size_of::<openvino::Core>() == std::mem::size_of::<*const c_void>());
 
-    let path = find_openvino_c(&mut Vec::new())
-        .ok_or_else(|| format!("{} not found", openvino_c_file_name()))?;
+    let path =
+        loaded_openvino_c().ok_or_else(|| format!("{} not found", openvino_c_file_name()))?;
     let cstr = |s: &str| CString::new(s).map_err(|e| format!("invalid string {s:?}: {e}"));
     let (device, key, value) = (cstr(device)?, cstr(key)?, cstr(value)?);
     // SAFETY: `path` is the openvino_c library openvino-sys already loaded (Core exists), so
@@ -518,6 +553,15 @@ pub fn write_active_flavor(ort_root: &Path, flavor: &str) -> std::io::Result<()>
     let tmp = ort_root.join(format!("{ORT_ACTIVE_FILE}.tmp"));
     std::fs::write(&tmp, format!("{flavor}\n"))?;
     std::fs::rename(&tmp, ort_root.join(ORT_ACTIVE_FILE))
+}
+
+/// [`find_onnxruntime`] with another install root than `<exe_dir>/onnxruntime` (config
+/// `download_dir`).
+pub fn find_onnxruntime_with(explicit: Option<&Path>, default_dir: &Path) -> OrtLookup {
+    let env = std::env::var_os(ENV_ORT_DYLIB_PATH)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    find_onnxruntime_from(explicit, env.as_deref(), default_dir)
 }
 
 /// Locate the ONNX Runtime library. Order (first hit wins):

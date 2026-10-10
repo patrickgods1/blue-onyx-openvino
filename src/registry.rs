@@ -93,6 +93,22 @@ impl ModelRegistry {
     /// An empty `models` list is an error; models that are all disabled give an empty registry
     /// (the web UI stays up so a model can be enabled).
     pub fn start(config: &Config, metrics: &Metrics, shutdown: CancellationToken) -> Result<Self> {
+        Self::start_with(config, metrics, shutdown, None)
+    }
+
+    /// [`Self::start`] for a generation planned by the [`Provisioner`]
+    /// (`crate::resources::provision`): a model blocked on a download either loads on what is
+    /// runnable now (its file is there and only a runtime is missing) or waits with progress in
+    /// its state; with `auto_download: false` it is `Failed` with the command to run. Missing
+    /// runtimes are not fatal while something is being provisioned.
+    ///
+    /// [`Provisioner`]: crate::resources::provision::Provisioner
+    pub fn start_with(
+        config: &Config,
+        metrics: &Metrics,
+        shutdown: CancellationToken,
+        provision: Option<&crate::resources::provision::Provision>,
+    ) -> Result<Self> {
         if config.models.is_empty() {
             bail!(
                 "no models configured: pass `--model <path> [--family yolo5|yolo8|yolo26|rtdetr]`, \
@@ -130,13 +146,18 @@ impl ModelRegistry {
         let opts = CoreOptions {
             cache_dir: config.cache_dir_path(),
             intra_threads: config.intra_threads,
-            openvino_dir: config.openvino_dir.as_deref().map(crate::resolve_path),
+            openvino_dir: config.openvino_dir_effective(),
         };
-        let ort_opts = OrtOptions {
-            onnxruntime_dir: config.onnxruntime_dir.as_deref().map(crate::resolve_path),
-        };
+        let ort_opts: OrtOptions = config.ort_options();
         let runtimes = Runtimes::new_with(&opts, &ort_opts);
-        runtimes.require_any()?;
+        if let Err(e) = runtimes.require_any() {
+            match provision.filter(|p| p.has_needs()) {
+                // Fresh install: the runtimes are being downloaded (or must be fetched); serve
+                // HTTP with the models waiting / failed instead of exiting.
+                Some(_) => warn!("{e:#} (the missing runtime is being provisioned)"),
+                None => return Err(e),
+            }
+        }
         let runtime_info = runtimes.info();
         if runtimes.openvino().is_some() {
             info!(
@@ -171,7 +192,7 @@ impl ModelRegistry {
         let mut prev: Option<LoadGate> = None;
         for &m in &enabled {
             let name = m.effective_name();
-            let path = crate::resolve_path(&m.path);
+            let path = config.data_path(&m.path);
             let load = load_request(config, m, path.clone());
             let mm = Arc::new(ModelMetrics::new(
                 name.clone(),
@@ -182,6 +203,39 @@ impl ModelRegistry {
                 g.push(mm.clone());
             }
 
+            // Downloads this model waits for (phase 7.3).
+            if let Some(p) = provision
+                && let Some(msg) = p.manual_failure(&name)
+            {
+                warn!(model = %name, "{msg}");
+                workers.push(WorkerHandle::failed(name, msg, mm));
+                continue;
+            }
+            let mut wait = provision.and_then(|p| p.wait_for(&name));
+            if let Some(w) = &wait {
+                let only_runtimes = w.blocks().iter().all(|b| b.is_runtime());
+                if only_runtimes && path.is_file() {
+                    let device = config.device_spec_for(m).unwrap_or(best_cpu);
+                    let rt = runtimes.lock().unwrap_or_else(|e| e.into_inner());
+                    let sel = rt.selection(Some(&path));
+                    let interim = rt
+                        .plan(&device, &path)
+                        .into_iter()
+                        .find(|c| sel.option(&c.device).is_some_and(|o| o.runnable));
+                    drop(rt);
+                    if let Some(c) = interim {
+                        let ids: Vec<&str> = w.blocks().iter().map(|b| b.resource.id).collect();
+                        info!(
+                            model = %name,
+                            "loading on {} while {} downloads; switching after it is installed",
+                            c.device,
+                            ids.join(", ")
+                        );
+                        wait = None;
+                    }
+                }
+            }
+
             let setup = (|| -> Result<(DeviceSpec, Vec<String>)> {
                 // `force_cpu`: the best CPU option (OpenVINO, else ONNX Runtime).
                 let device = if config.force_cpu {
@@ -189,13 +243,17 @@ impl ModelRegistry {
                 } else {
                     config.device_spec_for(m)?
                 };
+                if wait.is_some() {
+                    // Class names are read after the files arrive (in the worker).
+                    return Ok((device, Vec::new()));
+                }
                 if !path.is_file() {
                     bail!(
                         "model file not found: {} (download it with `download-models` or fix `path`)",
                         path.display()
                     );
                 }
-                let classes_path = m.classes.as_deref().map(crate::resolve_path);
+                let classes_path = m.classes.as_deref().map(|c| config.data_path(c));
                 Ok((device, resolve_class_names(&path, classes_path.as_deref())?))
             })();
             let (device, classes) = match setup {
@@ -210,7 +268,7 @@ impl ModelRegistry {
 
             let resolved = ModelConfig {
                 path,
-                classes: m.classes.as_deref().map(crate::resolve_path),
+                classes: m.classes.as_deref().map(|c| config.data_path(c)),
                 ..m.clone()
             };
             let cfg = WorkerConfig {
@@ -233,6 +291,7 @@ impl ModelRegistry {
                 lazy: m.lazy,
                 can_use_gpu: runtime_info.has_gpu,
                 model: resolved,
+                wait,
             };
             let handle =
                 spawn_worker_after(runtimes.clone(), cfg, mm, shutdown.clone(), prev.take());

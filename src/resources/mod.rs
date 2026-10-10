@@ -6,6 +6,7 @@
 //!   hardware (pure); [`resolve::detect_installed`] snapshots what is on disk.
 //! - [`manager`]: the download manager (queue, verified resumable downloads, atomic installs,
 //!   manifests, cross-process lock, backoff, progress and events).
+//! - [`provision`]: service startup integration (what a registry generation waits for).
 //! - [`commands`]: the `fetch` and `list-resources` subcommands.
 //! - [`extract`]: whitelist-only archive extraction shared by the manager and `setup-*`.
 
@@ -13,6 +14,7 @@ pub mod catalog;
 pub mod commands;
 pub mod extract;
 pub mod manager;
+pub mod provision;
 pub mod resolve;
 
 pub use catalog::{Flavor, LARGE_DOWNLOAD_BYTES, Platform, Resource, ResourceKind};

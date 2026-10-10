@@ -298,6 +298,7 @@ dependencies = [
  "mime",
  "num_cpus",
  "openvino",
+ "openvino-sys",
  "ort",
  "raw-cpuid",
  "reqwest",

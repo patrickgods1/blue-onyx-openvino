@@ -240,7 +240,17 @@ fn fresh_windows_nvidia_with_large_downloads_needs_cuda() {
     let mut cfg = ipcam();
     cfg.allow_large_downloads = true;
     let r = needed(&cfg, &win(vec![intel_igpu(0), rtx(1)]), &files_only(&cfg));
-    assert_eq!(ids(&r), ["onnxruntime-cuda", CUDA_LIBS_ID]);
+    // Plus OpenVINO for the plan's CPU fallback (blocks nothing).
+    assert_eq!(
+        ids(&r),
+        ["onnxruntime-cuda", CUDA_LIBS_ID, OPENVINO_RUNTIME_ID]
+    );
+    assert!(r.needs[2].blocking_models.is_empty());
+    assert!(
+        r.needs[2].reason.contains("CPU fallback"),
+        "{}",
+        r.needs[2].reason
+    );
     assert_eq!(pick(&r, "IPcam-general"), "ort:cuda:0");
     assert_eq!(r.ort_flavor, Some(Flavor::Cuda));
     assert!(!r.ort_restart_required());
@@ -299,7 +309,12 @@ fn installed_system_cuda_needs_no_libs() {
 fn fresh_macos_needs_coreml_flavor() {
     let cfg = ipcam();
     let r = needed(&cfg, &mac(), &files_only(&cfg));
-    assert_eq!(ids(&r), ["onnxruntime-coreml"]);
+    assert_eq!(ids(&r), ["onnxruntime-coreml", OPENVINO_RUNTIME_ID]);
+    assert_eq!(r.needs[0].blocking_models, ["IPcam-general"]);
+    assert!(
+        r.needs[1].blocking_models.is_empty(),
+        "the CPU fallback blocks nothing"
+    );
     assert_eq!(pick(&r, "IPcam-general"), "ort:coreml");
     assert_eq!(r.ort_flavor, Some(Flavor::CoreMl));
     assert_eq!(r.needs[0].resource.dest, "onnxruntime/coreml");
@@ -429,7 +444,7 @@ fn one_flavor_per_process_across_models() {
     ]);
     cfg.allow_large_downloads = true;
     let r = needed(&cfg, &win(vec![rtx(0)]), &files_only(&cfg));
-    assert_eq!(ids(&r), ["onnxruntime-directml"]);
+    assert_eq!(ids(&r), ["onnxruntime-directml", OPENVINO_RUNTIME_ID]);
     assert_eq!(pick(&r, "IPcam-general"), "ort:directml");
     assert_eq!(pick(&r, "IPcam-dark"), "ort:directml:0");
     assert_eq!(r.needs[0].blocking_models, ["IPcam-general", "IPcam-dark"]);
@@ -504,12 +519,12 @@ fn explicit_device_specs() {
         ..model("models/IPcam-general.onnx")
     }]);
     let r = needed(&cfg, &linux, &files_only(&cfg));
-    assert_eq!(ids(&r), ["onnxruntime-cpu"]);
+    assert_eq!(ids(&r), ["onnxruntime-cpu", OPENVINO_RUNTIME_ID]);
     assert_eq!(pick(&r, "IPcam-general"), "ort:cpu");
 
     // ort:cpu on macOS takes the CoreML package (the same archive), so CoreML stays possible.
     let r = needed(&cfg, &mac(), &files_only(&cfg));
-    assert_eq!(ids(&r), ["onnxruntime-coreml"]);
+    assert_eq!(ids(&r), ["onnxruntime-coreml", OPENVINO_RUNTIME_ID]);
 
     // openvino:gpu without an Intel GPU: OpenVINO CPU as the fallback.
     let cfg = config(vec![ModelConfig {
@@ -538,7 +553,7 @@ fn explicit_device_specs() {
     // ...unless a sibling `.onnx` exists.
     let inst = files_only(&cfg).with_files(&["models/yolo26s.onnx"]);
     let r = needed(&cfg, &mac(), &inst);
-    assert_eq!(ids(&r), ["onnxruntime-coreml"]);
+    assert_eq!(ids(&r), ["onnxruntime-coreml", OPENVINO_RUNTIME_ID]);
 }
 
 #[test]
@@ -622,7 +637,10 @@ fn fetch_jobs_follow_the_resolver() {
         ..FetchRequest::default()
     };
     let (jobs, _) = fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap();
-    assert_eq!(ids(&jobs), ["onnxruntime-cuda", CUDA_LIBS_ID]);
+    assert_eq!(
+        ids(&jobs),
+        ["onnxruntime-cuda", CUDA_LIBS_ID, OPENVINO_RUNTIME_ID]
+    );
     assert!(jobs[0].activate_ort);
     assert_eq!(jobs[0].target, root.join("onnxruntime/cuda"));
     assert_eq!(jobs[1].target, root.join("onnxruntime/cuda-libs"));

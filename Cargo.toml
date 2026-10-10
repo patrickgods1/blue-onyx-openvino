@@ -34,6 +34,9 @@ onnxruntime = ["dep:ort"]
 
 [dependencies]
 openvino = { version = "0.11", features = ["runtime-linking"] }
+# Same version/feature as `openvino` uses; `library::load_from` loads openvino_c by explicit path
+# (no environment variable) in later registry generations.
+openvino-sys = { version = "=0.11.0", features = ["runtime-linking"] }
 anyhow = "1"
 thiserror = "2"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "multipart", "tokio", "query", "form"] }

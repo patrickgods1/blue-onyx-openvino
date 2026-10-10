@@ -311,7 +311,7 @@ fn jobs(args: &Args, config: &Config) -> Result<Vec<Job>> {
     config_models(config)?
         .into_iter()
         .map(|m| {
-            let path = blue_onyx_prism::resolve_path(&m.path);
+            let path = config.data_path(&m.path);
             let classes_path = m.classes.as_deref().map(blue_onyx_prism::resolve_path);
             let classes = resolve_class_names(&path, classes_path.as_deref())?;
             let device = match &device_override {
@@ -332,10 +332,7 @@ fn jobs(args: &Args, config: &Config) -> Result<Vec<Job>> {
 
 fn run(args: Args) -> Result<bool> {
     let config = load_config(args.config.as_deref())?;
-    let openvino_dir = config
-        .openvino_dir
-        .as_deref()
-        .map(blue_onyx_prism::resolve_path);
+    let openvino_dir = config.openvino_dir_effective();
     libs::prepare_environment(openvino_dir.as_deref());
 
     if args.repeat == 0 {
@@ -360,12 +357,7 @@ fn run(args: Args) -> Result<bool> {
         intra_threads: args.threads.unwrap_or(config.intra_threads),
         openvino_dir,
     };
-    let ort_opts = OrtOptions {
-        onnxruntime_dir: config
-            .onnxruntime_dir
-            .as_deref()
-            .map(blue_onyx_prism::resolve_path),
-    };
+    let ort_opts: OrtOptions = config.ort_options();
     let mut runtimes = Runtimes::new_with(&opts, &ort_opts);
     runtimes.require_any()?;
     let info = runtimes.info();

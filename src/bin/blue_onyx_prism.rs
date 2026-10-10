@@ -51,7 +51,8 @@ fn models_dir(cli: &Cli, dir: Option<PathBuf>) -> PathBuf {
     if let Some(d) = dir {
         return d;
     }
-    blue_onyx_prism::resolve_path(&read_config(cli).models_dir)
+    let cfg = read_config(cli);
+    cfg.data_path(&cfg.models_dir)
 }
 
 /// `list-devices`: hardware, runtimes, the option table, the `auto` pick, and the load plan of each
@@ -67,21 +68,14 @@ fn list_devices(cli: &Cli, models: &[PathBuf]) {
     if cli.force_cpu {
         cfg.force_cpu = true;
     }
+    let ort_opts: OrtOptions = cfg.ort_options();
     let rt = Runtimes::new_with(
         &CoreOptions {
             cache_dir: None,
             intra_threads: 0,
-            openvino_dir: cfg
-                .openvino_dir
-                .as_deref()
-                .map(blue_onyx_prism::resolve_path),
+            openvino_dir: cfg.openvino_dir_effective(),
         },
-        &OrtOptions {
-            onnxruntime_dir: cfg
-                .onnxruntime_dir
-                .as_deref()
-                .map(blue_onyx_prism::resolve_path),
-        },
+        &ort_opts,
     );
     let hw = rt.hardware();
     println!("Platform: {} {}", hw.os, hw.arch);
@@ -108,7 +102,9 @@ fn list_devices(cli: &Cli, models: &[PathBuf]) {
         None => println!("  ONNX Runtime: available"),
         Some(e) => println!("  ONNX Runtime: not available ({e})"),
     }
-    let sel = rt.selection(None);
+    let mut sel = rt.selection(None);
+    let installed = resources::detect_installed(&cfg, &cfg.data_root(), Some(rt.probe().clone()));
+    resources::resolve::annotate_selection(&mut sel, &cfg, hw, &installed, true);
     println!("Device options:");
     print!("{}", select::format_options(&sel));
     let pick = sel
@@ -134,7 +130,7 @@ fn list_devices(cli: &Cli, models: &[PathBuf]) {
     }
     println!("Models:");
     for m in &entries {
-        let path = blue_onyx_prism::resolve_path(&m.path);
+        let path = cfg.data_path(&m.path);
         let name = m.effective_name();
         let spec = match cfg.device_spec_for(m) {
             Ok(s) => s,
