@@ -47,6 +47,13 @@ pub enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// Show detected GPUs, every device option (runnable or why not) and what `auto` picks.
+    ListDevices {
+        /// Also show the load plan for this model file (repeatable; default: the enabled models
+        /// in the config file).
+        #[arg(long)]
+        model: Vec<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Parser)]
@@ -189,6 +196,9 @@ impl Cli {
                 add_to_config,
             },
             Command::ListModels { dir } => Command::ListModels { dir: abs(&dir) },
+            Command::ListDevices { model } => Command::ListDevices {
+                model: model.iter().map(|p| absolutize(p, base)).collect(),
+            },
         });
         c
     }

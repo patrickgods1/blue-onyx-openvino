@@ -2,7 +2,7 @@
 //!
 //! | Spec                                   | Meaning                                  |
 //! |----------------------------------------|------------------------------------------|
-//! | `auto`                                 | ranked choice (6.1: same as `openvino:gpu`) |
+//! | `auto`                                 | ranked choice (`select.rs`)              |
 //! | `openvino:gpu`, `openvino:gpu.N`       | OpenVINO GPU plugin (`GPU`, `GPU.N`)     |
 //! | `openvino:cpu`, `openvino:npu`         | OpenVINO CPU / NPU plugin                |
 //! | `ort:cuda[:N]`, `ort:tensorrt[:N]`     | ONNX Runtime NVIDIA execution providers  |
@@ -209,7 +209,8 @@ impl fmt::Display for Device {
 /// Parsed `device` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceSpec {
-    /// Pick the best runtime and device for the hardware (6.1: OpenVINO GPU, then CPU).
+    /// Pick the best runtime and device for the hardware (`select::select`), falling back down
+    /// the ranking to CPU.
     Auto,
     Device(Device),
 }

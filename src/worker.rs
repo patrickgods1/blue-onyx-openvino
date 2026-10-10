@@ -442,7 +442,7 @@ impl WorkerCtx {
         let name = &self.cfg.name;
         let candidates = {
             let rt = self.runtimes.lock().unwrap_or_else(|e| e.into_inner());
-            rt.plan(&self.cfg.device)
+            rt.plan(&self.cfg.device, &self.cfg.load.path)
         };
         info!(
             model = %name,
