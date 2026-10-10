@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 const LATEST_URL: &str =
-    "https://api.github.com/repos/patrickgods1/blue-onyx-openvino/releases/latest";
+    "https://api.github.com/repos/patrickgods1/blue-onyx-prism/releases/latest";
 
 #[derive(Deserialize)]
 struct Release {
@@ -23,7 +23,7 @@ async fn fetch_latest() -> Result<Release> {
         .get(LATEST_URL)
         .header(
             reqwest::header::USER_AGENT,
-            format!("blue-onyx-openvino/{}", crate::VERSION),
+            format!("blue-onyx-prism/{}", crate::VERSION),
         )
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()

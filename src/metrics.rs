@@ -192,7 +192,7 @@ fn escape_label(v: &str) -> String {
         .replace('\n', "\\n")
 }
 
-const PREFIX: &str = "blue_onyx_openvino_";
+const PREFIX: &str = "blue_onyx_prism_";
 
 /// Render all metrics in the Prometheus text exposition format. `gauges` adds the per-model
 /// `model_info`, `model_ready`, `queue_length` and `queue_capacity` series.
@@ -362,15 +362,15 @@ mod tests {
         mm.inference_ms.record(8);
         m.models.write().unwrap().push(mm);
         let text = render_prometheus(&m, &[]);
-        assert!(text.contains("blue_onyx_openvino_requests_total{model=\"ipcam\\\"x\"} 5"));
-        assert!(text.contains("blue_onyx_openvino_dropped_total{model=\"ipcam\\\"x\"} 1"));
-        assert!(text.contains("blue_onyx_openvino_inference_ms_avg{model=\"ipcam\\\"x\"} 10.000"));
-        assert!(text.contains("blue_onyx_openvino_inference_ms_min{model=\"ipcam\\\"x\"} 8"));
-        assert!(text.contains("blue_onyx_openvino_inference_ms_max{model=\"ipcam\\\"x\"} 12"));
-        assert!(text.contains("blue_onyx_openvino_uptime_seconds "));
-        assert!(text.contains("# TYPE blue_onyx_openvino_round_trip_ms_avg gauge"));
-        assert!(text.contains("# TYPE blue_onyx_openvino_model_info gauge"));
-        assert!(!text.contains("blue_onyx_openvino_model_info{"));
+        assert!(text.contains("blue_onyx_prism_requests_total{model=\"ipcam\\\"x\"} 5"));
+        assert!(text.contains("blue_onyx_prism_dropped_total{model=\"ipcam\\\"x\"} 1"));
+        assert!(text.contains("blue_onyx_prism_inference_ms_avg{model=\"ipcam\\\"x\"} 10.000"));
+        assert!(text.contains("blue_onyx_prism_inference_ms_min{model=\"ipcam\\\"x\"} 8"));
+        assert!(text.contains("blue_onyx_prism_inference_ms_max{model=\"ipcam\\\"x\"} 12"));
+        assert!(text.contains("blue_onyx_prism_uptime_seconds "));
+        assert!(text.contains("# TYPE blue_onyx_prism_round_trip_ms_avg gauge"));
+        assert!(text.contains("# TYPE blue_onyx_prism_model_info gauge"));
+        assert!(!text.contains("blue_onyx_prism_model_info{"));
     }
 
     #[test]
@@ -429,28 +429,28 @@ mod tests {
                 "missing line {line:?} in:\n{text}"
             )
         };
-        has("# TYPE blue_onyx_openvino_model_info gauge");
+        has("# TYPE blue_onyx_prism_model_info gauge");
         has(
-            "blue_onyx_openvino_model_info{model=\"yolo26s\",device=\"GPU\",provider=\"OpenVINO GPU (Intel(R) UHD Graphics 630 (iGPU))\",state=\"ready\"} 1",
+            "blue_onyx_prism_model_info{model=\"yolo26s\",device=\"GPU\",provider=\"OpenVINO GPU (Intel(R) UHD Graphics 630 (iGPU))\",state=\"ready\"} 1",
         );
         has(
-            "blue_onyx_openvino_model_info{model=\"ipcam-general\",device=\"CPU\",provider=\"\",state=\"initializing\"} 1",
+            "blue_onyx_prism_model_info{model=\"ipcam-general\",device=\"CPU\",provider=\"\",state=\"initializing\"} 1",
         );
         has(
-            "blue_onyx_openvino_model_info{model=\"rt\\\"detr\",device=\"CPU\",provider=\"\",state=\"lazy\"} 1",
+            "blue_onyx_prism_model_info{model=\"rt\\\"detr\",device=\"CPU\",provider=\"\",state=\"lazy\"} 1",
         );
         has(
-            "blue_onyx_openvino_model_info{model=\"broken\",device=\"CPU\",provider=\"\",state=\"failed\"} 1",
+            "blue_onyx_prism_model_info{model=\"broken\",device=\"CPU\",provider=\"\",state=\"failed\"} 1",
         );
-        has("blue_onyx_openvino_model_ready{model=\"yolo26s\"} 1");
-        has("blue_onyx_openvino_model_ready{model=\"ipcam-general\"} 0");
-        has("blue_onyx_openvino_model_ready{model=\"broken\"} 0");
-        has("blue_onyx_openvino_queue_length{model=\"yolo26s\"} 2");
-        has("blue_onyx_openvino_queue_capacity{model=\"yolo26s\"} 30");
-        has("blue_onyx_openvino_queue_capacity{model=\"broken\"} 0");
-        has("# TYPE blue_onyx_openvino_queue_length gauge");
-        has("# TYPE blue_onyx_openvino_queue_capacity gauge");
-        has("# TYPE blue_onyx_openvino_model_ready gauge");
+        has("blue_onyx_prism_model_ready{model=\"yolo26s\"} 1");
+        has("blue_onyx_prism_model_ready{model=\"ipcam-general\"} 0");
+        has("blue_onyx_prism_model_ready{model=\"broken\"} 0");
+        has("blue_onyx_prism_queue_length{model=\"yolo26s\"} 2");
+        has("blue_onyx_prism_queue_capacity{model=\"yolo26s\"} 30");
+        has("blue_onyx_prism_queue_capacity{model=\"broken\"} 0");
+        has("# TYPE blue_onyx_prism_queue_length gauge");
+        has("# TYPE blue_onyx_prism_queue_capacity gauge");
+        has("# TYPE blue_onyx_prism_model_ready gauge");
         // Every sample line is `name{labels} value` with a numeric value.
         for l in text.lines().filter(|l| !l.starts_with('#')) {
             let v = l.rsplit(' ').next().unwrap();

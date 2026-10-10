@@ -3,8 +3,8 @@
 //! Set `BLUE_ONYX_SKIP_OPENVINO_TESTS=1` to skip (e.g. offline CI).
 //! Run with `cargo test --test backend_cpu -- --nocapture` to see timings.
 
-use blue_onyx_openvino::backend::{CoreOptions, LoadRequest, Runtimes, spec};
-use blue_onyx_openvino::setup_openvino;
+use blue_onyx_prism::backend::{CoreOptions, LoadRequest, Runtimes, spec};
+use blue_onyx_prism::setup_openvino;
 use std::path::{Path, PathBuf};
 
 const MODEL_URL: &str = "https://huggingface.co/xnorpx/blue-onyx-yolo5/resolve/main/IPcam-general";
@@ -17,8 +17,8 @@ fn ensure_runtime(dir: &Path) {
     if dir.is_dir() {
         return;
     }
-    // Set BLUE_ONYX_OPENVINO_ARCHIVE to a downloaded archive to skip the download.
-    let archive = std::env::var_os("BLUE_ONYX_OPENVINO_ARCHIVE").map(PathBuf::from);
+    // Set BLUE_ONYX_PRISM_ARCHIVE to a downloaded archive to skip the download.
+    let archive = std::env::var_os("BLUE_ONYX_PRISM_ARCHIVE").map(PathBuf::from);
     setup_openvino::run(&setup_openvino::SetupOptions {
         dest: Some(dir.to_path_buf()),
         version: None,

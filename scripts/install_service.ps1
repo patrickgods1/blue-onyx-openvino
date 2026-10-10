@@ -1,14 +1,14 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Installs Blue Onyx OpenVINO as a Windows service (BlueOnyxOpenVINOService).
+    Installs Blue Onyx Prism as a Windows service (BlueOnyxPrismService).
 .DESCRIPTION
-    - Creates the Application event log source "BlueOnyxOpenVINO"
+    - Creates the Application event log source "BlueOnyxPrism"
     - Raises ServicesPipeTimeout to 600000 ms so the service has time to compile models on first start
-    - Registers the service (auto start, LocalSystem) pointing at blue-onyx-openvino-service.exe
+    - Registers the service (auto start, LocalSystem) pointing at blue-onyx-prism-service.exe
     - Configures automatic restart on failure and a firewall rule for the listening port
 .PARAMETER InstallDir
-    Directory containing blue-onyx-openvino-service.exe (default: the parent of this script's folder).
+    Directory containing blue-onyx-prism-service.exe (default: the parent of this script's folder).
 .PARAMETER Port
     TCP port to open in Windows Firewall (default 32168).
 .PARAMETER Account
@@ -24,16 +24,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ServiceName = "BlueOnyxOpenVINOService"
-$DisplayName = "Blue Onyx OpenVINO"
-$EventSource = "BlueOnyxOpenVINO"
+$ServiceName = "BlueOnyxPrismService"
+$DisplayName = "Blue Onyx Prism"
+$EventSource = "BlueOnyxPrism"
 
-$exe = Join-Path $InstallDir "blue-onyx-openvino-service.exe"
+$exe = Join-Path $InstallDir "blue-onyx-prism-service.exe"
 if (-not (Test-Path $exe)) {
-    throw "blue-onyx-openvino-service.exe not found in '$InstallDir'. Pass -InstallDir."
+    throw "blue-onyx-prism-service.exe not found in '$InstallDir'. Pass -InstallDir."
 }
 if (-not (Test-Path (Join-Path $InstallDir "openvino"))) {
-    Write-Warning "No 'openvino' folder next to the service exe. Run 'blue-onyx-openvino setup-openvino' first."
+    Write-Warning "No 'openvino' folder next to the service exe. Run 'blue-onyx-prism setup-openvino' first."
 }
 
 Write-Host "Creating event log source $EventSource ..."
@@ -45,6 +45,15 @@ try {
 
 Write-Host "Setting ServicesPipeTimeout to 600000 ms (takes effect after reboot) ..."
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control" -Name ServicesPipeTimeout -Value 600000 -Type DWord
+
+# Pre-rename service (Blue Onyx OpenVINO): remove it so the two don't fight over the port.
+$legacy = Get-Service -Name "BlueOnyxOpenVINOService" -ErrorAction SilentlyContinue
+if ($legacy) {
+    Write-Host "Removing the old BlueOnyxOpenVINOService ..."
+    if ($legacy.Status -ne "Stopped") { Stop-Service "BlueOnyxOpenVINOService" -Force; Start-Sleep -Seconds 2 }
+    sc.exe delete "BlueOnyxOpenVINOService" | Out-Null
+    Start-Sleep -Seconds 2
+}
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
@@ -64,11 +73,11 @@ if ($Account) {
     sc.exe create $ServiceName binPath= $binPath start= auto DisplayName= "$DisplayName" obj= LocalSystem | Out-Null
 }
 sc.exe config $ServiceName type= own | Out-Null
-sc.exe description $ServiceName "Blue Iris / CodeProject.AI compatible object detection on OpenVINO" | Out-Null
+sc.exe description $ServiceName "Blue Iris / CodeProject.AI compatible object detection (OpenVINO / ONNX Runtime)" | Out-Null
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null
 
 Write-Host "Adding firewall rule for TCP $Port ..."
-$ruleName = "Blue Onyx OpenVINO ($Port)"
+$ruleName = "Blue Onyx Prism ($Port)"
 if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $Port -Action Allow | Out-Null
 }
@@ -83,4 +92,4 @@ if (-not $NoStart) {
 
 Write-Host ""
 Write-Host "Manage with:  net start $ServiceName | net stop $ServiceName | sc.exe delete $ServiceName"
-Write-Host "Config file:  $(Join-Path $InstallDir 'blue_onyx_openvino_config_service.json')"
+Write-Host "Config file:  $(Join-Path $InstallDir 'blue_onyx_prism_config_service.json')"

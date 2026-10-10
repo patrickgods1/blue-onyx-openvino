@@ -8,8 +8,30 @@ use std::path::{Path, PathBuf};
 
 use crate::model::ModelFamilyKind;
 
-pub const CONFIG_FILE: &str = "blue_onyx_openvino_config.json";
-pub const SERVICE_CONFIG_FILE: &str = "blue_onyx_openvino_config_service.json";
+pub const CONFIG_FILE: &str = "blue_onyx_prism_config.json";
+pub const SERVICE_CONFIG_FILE: &str = "blue_onyx_prism_config_service.json";
+/// Config file names used before the project was renamed from Blue Onyx OpenVINO.
+const LEGACY_CONFIG_FILE: &str = "blue_onyx_openvino_config.json";
+const LEGACY_SERVICE_CONFIG_FILE: &str = "blue_onyx_openvino_config_service.json";
+
+/// Rename `dir/legacy` to `dir/current` when only the legacy file exists. Returns the path to use.
+fn migrate_legacy(dir: &Path, current: &str, legacy: &str) -> PathBuf {
+    let path = dir.join(current);
+    let old = dir.join(legacy);
+    if !path.exists() && old.is_file() {
+        match std::fs::rename(&old, &path) {
+            Ok(()) => tracing::info!("renamed config {} -> {}", old.display(), path.display()),
+            Err(e) => {
+                tracing::warn!(
+                    "could not rename config {}: {e}; using it as is",
+                    old.display()
+                );
+                return old;
+            }
+        }
+    }
+    path
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -173,12 +195,17 @@ impl Config {
         std::fs::write(path, text).with_context(|| format!("writing config {}", path.display()))
     }
 
+    /// `<exe_dir>/blue_onyx_prism_config.json`, adopting a pre-rename config file if present.
     pub fn default_config_path() -> PathBuf {
-        crate::exe_dir().join(CONFIG_FILE)
+        migrate_legacy(&crate::exe_dir(), CONFIG_FILE, LEGACY_CONFIG_FILE)
     }
 
     pub fn service_config_path() -> PathBuf {
-        crate::exe_dir().join(SERVICE_CONFIG_FILE)
+        migrate_legacy(
+            &crate::exe_dir(),
+            SERVICE_CONFIG_FILE,
+            LEGACY_SERVICE_CONFIG_FILE,
+        )
     }
 
     /// The model that serves `/v1/vision/detection`.
@@ -464,6 +491,26 @@ pub fn apply_models_selection(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_config_is_renamed_once() {
+        let dir = std::env::temp_dir().join(format!("bop-legacy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // No files: the current name is returned and nothing is created.
+        let p = super::migrate_legacy(&dir, super::CONFIG_FILE, super::LEGACY_CONFIG_FILE);
+        assert_eq!(p, dir.join(super::CONFIG_FILE));
+        assert!(!p.exists());
+        // Only the legacy file: it is renamed.
+        std::fs::write(dir.join(super::LEGACY_CONFIG_FILE), "{}").unwrap();
+        let p = super::migrate_legacy(&dir, super::CONFIG_FILE, super::LEGACY_CONFIG_FILE);
+        assert!(p.is_file() && !dir.join(super::LEGACY_CONFIG_FILE).exists());
+        // Both present: the current one wins and the legacy file is left alone.
+        std::fs::write(dir.join(super::LEGACY_CONFIG_FILE), "{\"port\":1}").unwrap();
+        let p = super::migrate_legacy(&dir, super::CONFIG_FILE, super::LEGACY_CONFIG_FILE);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{}");
+        assert!(dir.join(super::LEGACY_CONFIG_FILE).exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     use super::*;
     use std::collections::HashMap;
 

@@ -1,10 +1,10 @@
 //! Post-processing tests through the public API with synthetic output tensors.
 
-use blue_onyx_openvino::model::rtdetr::RtDetr;
-use blue_onyx_openvino::model::yolo5::Yolo5;
-use blue_onyx_openvino::model::yolo8::Yolo8;
-use blue_onyx_openvino::model::yolo26::Yolo26;
-use blue_onyx_openvino::model::{
+use blue_onyx_prism::model::rtdetr::RtDetr;
+use blue_onyx_prism::model::yolo5::Yolo5;
+use blue_onyx_prism::model::yolo8::Yolo8;
+use blue_onyx_prism::model::yolo26::Yolo26;
+use blue_onyx_prism::model::{
     Detection, ExtraData, Family, ModelFamilyKind, NamedOutput, OutputBuf, PostParams,
     PreprocessCtx, ResizeMode, make_family,
 };

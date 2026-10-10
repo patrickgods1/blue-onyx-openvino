@@ -1,13 +1,13 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Removes the Blue Onyx OpenVINO Windows service, its event log source and firewall rule.
+    Removes the Blue Onyx Prism Windows service, its event log source and firewall rule.
 #>
 param([int]$Port = 32168)
 
 $ErrorActionPreference = "Continue"
-$ServiceName = "BlueOnyxOpenVINOService"
-$EventSource = "BlueOnyxOpenVINO"
+$ServiceName = "BlueOnyxPrismService"
+$EventSource = "BlueOnyxPrism"
 
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc) {
@@ -22,7 +22,7 @@ if ($svc) {
     Write-Host "Service $ServiceName not installed."
 }
 
-$ruleName = "Blue Onyx OpenVINO ($Port)"
+$ruleName = "Blue Onyx Prism ($Port)"
 if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
     Remove-NetFirewallRule -DisplayName $ruleName
     Write-Host "Removed firewall rule '$ruleName'."

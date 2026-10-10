@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "NAME=blue-onyx-openvino-$VERSION-${{ matrix.label }}" >> "$GITHUB_ENV"
+          echo "NAME=blue-onyx-prism-$VERSION-${{ matrix.label }}" >> "$GITHUB_ENV"
 
       - name: Build release
         run: cargo build --release --locked --bins --target ${{ matrix.target }}
@@ -67,28 +67,28 @@ jobs:
           STAGE="dist/$NAME"
           mkdir -p "$STAGE/scripts"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            for b in blue-onyx-openvino blue-onyx-openvino-service blue-onyx-openvino-benchmark test-blue-onyx-openvino; do
+            for b in blue-onyx-prism blue-onyx-prism-service blue-onyx-prism-benchmark test-blue-onyx-prism; do
               cp "$OUT/$b.exe" "$STAGE/"
             done
             cp scripts/*.ps1 "$STAGE/scripts/"
           else
             # The service binary is Windows-only (a stub elsewhere), so it is not shipped.
-            for b in blue-onyx-openvino blue-onyx-openvino-benchmark test-blue-onyx-openvino; do
+            for b in blue-onyx-prism blue-onyx-prism-benchmark test-blue-onyx-prism; do
               cp "$OUT/$b" "$STAGE/"
             done
             cp scripts/*.sh "$STAGE/scripts/"
-            chmod +x "$STAGE"/blue-onyx-openvino* "$STAGE"/test-blue-onyx-openvino "$STAGE"/scripts/*.sh
+            chmod +x "$STAGE"/blue-onyx-prism* "$STAGE"/test-blue-onyx-prism "$STAGE"/scripts/*.sh
             mkdir -p "$STAGE/deploy"
             if [ "$RUNNER_OS" = "Linux" ]; then
-              cp deploy/blue-onyx-openvino.service "$STAGE/deploy/"
+              cp deploy/blue-onyx-prism.service "$STAGE/deploy/"
             else
-              cp deploy/com.blueonyx.openvino.plist "$STAGE/deploy/"
+              cp deploy/com.blueonyx.prism.plist "$STAGE/deploy/"
             fi
           fi
           cp scripts/export_yolo26.py scripts/convert_onnx_to_ir.py scripts/requirements-export.txt "$STAGE/scripts/"
           cp README.md LICENSE "$STAGE/"
           mkdir -p "$STAGE/models"
-          "$OUT/blue-onyx-openvino" setup-openvino --dest "$STAGE/openvino"
+          "$OUT/blue-onyx-prism" setup-openvino --dest "$STAGE/openvino"
           find "$STAGE" -maxdepth 2 | sort
 
       - name: Archive

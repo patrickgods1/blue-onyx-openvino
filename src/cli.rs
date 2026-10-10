@@ -51,12 +51,12 @@ pub enum Command {
 
 #[derive(Debug, Clone, Default, Parser)]
 #[command(
-    name = "blue-onyx-openvino",
+    name = "blue-onyx-prism",
     version = env!("CARGO_PKG_VERSION"),
     about = "Blue Iris compatible object detection service on native OpenVINO"
 )]
 pub struct Cli {
-    /// Path to the JSON config file (default: <exe_dir>/blue_onyx_openvino_config.json).
+    /// Path to the JSON config file (default: <exe_dir>/blue_onyx_prism_config.json).
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// HTTP listen port.
@@ -270,7 +270,7 @@ fn merge_cli(config: &mut Config, cli: &Cli) {
     }
 }
 
-/// Load `blue_onyx_openvino_config_service.json`, creating a default one (log level debug)
+/// Load `blue_onyx_prism_config_service.json`, creating a default one (log level debug)
 /// when missing.
 pub fn for_service() -> Result<(Config, PathBuf)> {
     let path = Config::service_config_path();
@@ -344,7 +344,7 @@ pub fn init_logging_with(
         Some(dir) => {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("creating log dir {}", dir.display()))?;
-            let appender = tracing_appender::rolling::daily(dir, "blue_onyx_openvino.log");
+            let appender = tracing_appender::rolling::daily(dir, "blue_onyx_prism.log");
             let (writer, guard) = tracing_appender::non_blocking(appender);
             registry
                 .with(

@@ -1,13 +1,13 @@
 [Unit]
-Description=Blue Onyx OpenVINO object detection service (Blue Iris / CodeProject.AI compatible)
+Description=Blue Onyx Prism object detection service (Blue Iris / CodeProject.AI compatible)
 After=network.target
 
 [Service]
 Type=simple
 # Install the release bundle (binary + openvino/ + models/) into this directory
-# (scripts/install_systemd.sh does this). Config: <dir>/blue_onyx_openvino_config.json.
-WorkingDirectory=/opt/blue-onyx-openvino
-ExecStart=/opt/blue-onyx-openvino/blue-onyx-openvino
+# (scripts/install_systemd.sh does this). Config: <dir>/blue_onyx_prism_config.json.
+WorkingDirectory=/opt/blue-onyx-prism
+ExecStart=/opt/blue-onyx-prism/blue-onyx-prism
 Restart=on-failure
 RestartSec=5
 # Needed for Intel GPU inference via /dev/dri (install intel-opencl-icd on the host).

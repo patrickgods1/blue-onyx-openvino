@@ -1,13 +1,13 @@
-//! Windows service host for Blue Onyx OpenVINO (`BlueOnyxOpenVINOService`).
+//! Windows service host for Blue Onyx Prism (`BlueOnyxPrismService`).
 //!
 //! Install with `scripts/install_service.ps1`. The service reads
-//! `blue_onyx_openvino_config_service.json` next to the executable and runs the same server loop
-//! as the CLI binary ([`blue_onyx_openvino::runner`]). Controls: Stop / Shutdown, Interrogate,
+//! `blue_onyx_prism_config_service.json` next to the executable and runs the same server loop
+//! as the CLI binary ([`blue_onyx_prism::runner`]). Controls: Stop / Shutdown, Interrogate,
 //! and the user-defined codes 130 (stop) and 131 (restart: cancel the running server, reload the
-//! service config, start again), e.g. `sc.exe control BlueOnyxOpenVINOService 131`.
+//! service config, start again), e.g. `sc.exe control BlueOnyxPrismService 131`.
 //!
 //! Logs go to the configured `log_path` (daily rolling file; stdout is discarded for services)
-//! and, at INFO and above, to the Application event log under the source `BlueOnyxOpenVINO`.
+//! and, at INFO and above, to the Application event log under the source `BlueOnyxPrism`.
 //! Modeled on the blue-onyx service binary (MIT).
 
 #[cfg(windows)]
@@ -18,8 +18,8 @@ fn main() -> std::process::ExitCode {
 #[cfg(not(windows))]
 fn main() -> std::process::ExitCode {
     eprintln!(
-        "blue-onyx-openvino-service is a Windows service binary and only runs on Windows. \
-         On Linux/macOS run `blue-onyx-openvino` under systemd or launchd (see deploy/)."
+        "blue-onyx-prism-service is a Windows service binary and only runs on Windows. \
+         On Linux/macOS run `blue-onyx-prism` under systemd or launchd (see deploy/)."
     );
     std::process::ExitCode::FAILURE
 }
@@ -27,10 +27,10 @@ fn main() -> std::process::ExitCode {
 #[cfg(windows)]
 mod service {
     use anyhow::Result;
-    use blue_onyx_openvino::backend::libs;
-    use blue_onyx_openvino::cli::{self, ExtraLogLayer, LogReloadHandle};
-    use blue_onyx_openvino::config::{Config, LogLevel};
-    use blue_onyx_openvino::{resolve_path, runner, system_info};
+    use blue_onyx_prism::backend::libs;
+    use blue_onyx_prism::cli::{self, ExtraLogLayer, LogReloadHandle};
+    use blue_onyx_prism::config::{Config, LogLevel};
+    use blue_onyx_prism::{resolve_path, runner, system_info};
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::process::ExitCode;
@@ -50,9 +50,9 @@ mod service {
     };
     use windows_service::{define_windows_service, service_dispatcher};
 
-    pub const SERVICE_NAME: &str = "BlueOnyxOpenVINOService";
+    pub const SERVICE_NAME: &str = "BlueOnyxPrismService";
     /// Application event log source; created by `scripts/install_service.ps1`.
-    pub const EVENT_SOURCE: &str = "BlueOnyxOpenVINO";
+    pub const EVENT_SOURCE: &str = "BlueOnyxPrism";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
     /// User-defined control code: stop the service.
     const CONTROL_STOP: u32 = 130;
@@ -72,7 +72,7 @@ mod service {
                 eprintln!(
                     "could not connect to the Service Control Manager: {e}. This binary is started \
                      by Windows as the '{SERVICE_NAME}' service (install it with \
-                     scripts/install_service.ps1); for a console server run blue-onyx-openvino.exe."
+                     scripts/install_service.ps1); for a console server run blue-onyx-prism.exe."
                 );
                 ExitCode::FAILURE
             }
@@ -195,12 +195,12 @@ mod service {
         );
 
         info!(
-            version = blue_onyx_openvino::VERSION,
+            version = blue_onyx_prism::VERSION,
             os = %system_info::os_description(),
             cpu = %system_info::cpu_name(),
             memory_gb = ?system_info::total_memory_gb(),
             config = %Config::service_config_path().display(),
-            "starting Blue Onyx OpenVINO service"
+            "starting Blue Onyx Prism service"
         );
         // Set OPENVINO_INSTALL_DIR (and the DLL search path) before any runtime/worker thread
         // exists; `OvCore::new` calls it again per generation and then leaves it untouched.

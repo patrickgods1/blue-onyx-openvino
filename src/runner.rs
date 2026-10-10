@@ -23,7 +23,7 @@ pub fn ensure_models(config: &Config, config_path: &std::path::Path) -> Result<(
     if config.models.is_empty() {
         anyhow::bail!(
             "no models configured in {}. Start with `--model <path/to/model.onnx|.xml> --family yolo5` \
-             or fetch one first with `blue-onyx-openvino download-models --name IPcam-general`",
+             or fetch one first with `blue-onyx-prism download-models --name IPcam-general`",
             config_path.display()
         );
     }

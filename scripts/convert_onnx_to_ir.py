@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Convert an ONNX model to OpenVINO IR (`.xml` + `.bin`) for Blue Onyx OpenVINO.
+"""Convert an ONNX model to OpenVINO IR (`.xml` + `.bin`) for Blue Onyx Prism.
 
 The service reads ONNX directly through OpenVINO's ONNX frontend. Use this fallback when a model
 fails to load that way (an unsupported op, or a dynamic shape the frontend cannot resolve), or to
@@ -81,7 +81,7 @@ def main() -> int:
             shutil.copy2(classes, dst_classes)
         entry["classes"] = f"models/{classes.name}"
     print(f"\nwrote {dst} and {dst.with_suffix('.bin')}")
-    print('Config entry for blue_onyx_openvino_config.json -> "models" (set "family" explicitly if known):')
+    print('Config entry for blue_onyx_prism_config.json -> "models" (set "family" explicitly if known):')
     print(json.dumps(entry, indent=2))
     return 0
 

@@ -304,7 +304,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "blue-onyx-openvino"
+name = "blue-onyx-prism"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",

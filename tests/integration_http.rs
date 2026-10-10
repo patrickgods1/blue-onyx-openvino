@@ -4,12 +4,12 @@
 //! under the repo root. Set `BLUE_ONYX_TEST_ROOT` to point at another checkout that has them
 //! (e.g. when running from a git worktree).
 
-use blue_onyx_openvino::api::VisionDetectionResponse;
-use blue_onyx_openvino::config::{Config, ModelConfig};
-use blue_onyx_openvino::metrics::Metrics;
-use blue_onyx_openvino::model::ModelFamilyKind;
-use blue_onyx_openvino::registry::ModelRegistry;
-use blue_onyx_openvino::server::{self, AppState};
+use blue_onyx_prism::api::VisionDetectionResponse;
+use blue_onyx_prism::config::{Config, ModelConfig};
+use blue_onyx_prism::metrics::Metrics;
+use blue_onyx_prism::model::ModelFamilyKind;
+use blue_onyx_prism::registry::ModelRegistry;
+use blue_onyx_prism::server::{self, AppState};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -72,7 +72,7 @@ async fn detection_over_http() {
         ..Default::default()
     };
     let token = CancellationToken::new();
-    let metrics = Arc::new(Metrics::new(blue_onyx_openvino::VERSION));
+    let metrics = Arc::new(Metrics::new(blue_onyx_prism::VERSION));
     let registry =
         Arc::new(ModelRegistry::start(&config, &metrics, token.clone()).expect("registry"));
     let config_path = std::env::temp_dir().join(format!(

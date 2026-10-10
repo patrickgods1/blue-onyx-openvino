@@ -95,7 +95,7 @@ impl ModelRegistry {
             bail!(
                 "no models configured: pass `--model <path> [--family yolo5|yolo8|yolo26|rtdetr]`, \
                  add entries to `models` in the config file, or fetch one with \
-                 `blue-onyx-openvino download-models --name IPcam-general`"
+                 `blue-onyx-prism download-models --name IPcam-general`"
             );
         }
 

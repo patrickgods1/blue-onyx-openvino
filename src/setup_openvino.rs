@@ -490,7 +490,7 @@ where
 async fn download_async(url: String, dest: PathBuf) -> Result<u64> {
     use futures_util::StreamExt;
     let client = reqwest::Client::builder()
-        .user_agent(concat!("blue-onyx-openvino/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("blue-onyx-prism/", env!("CARGO_PKG_VERSION")))
         .build()
         .context("creating HTTP client")?;
     let resp = client
@@ -603,8 +603,8 @@ pub fn run(opts: &SetupOptions) -> Result<PathBuf> {
             let pkg = package_for(os, arch).with_context(|| {
                 format!("no OpenVINO {OPENVINO_VERSION} runtime package known for {os}/{arch}")
             })?;
-            let tmp = std::env::temp_dir()
-                .join(format!("blue-onyx-openvino-setup-{}", std::process::id()));
+            let tmp =
+                std::env::temp_dir().join(format!("blue-onyx-prism-setup-{}", std::process::id()));
             std::fs::create_dir_all(&tmp)
                 .with_context(|| format!("creating temp dir {}", tmp.display()))?;
             let file_name = pkg.url.rsplit('/').next().unwrap_or("openvino_archive");

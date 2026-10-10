@@ -3,20 +3,20 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.blueonyx.openvino</string>
+    <string>com.blueonyx.prism</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/blue-onyx-openvino/blue-onyx-openvino</string>
+        <string>/usr/local/blue-onyx-prism/blue-onyx-prism</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/usr/local/blue-onyx-openvino</string>
+    <string>/usr/local/blue-onyx-prism</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/usr/local/blue-onyx-openvino/blue-onyx-openvino.log</string>
+    <string>/usr/local/blue-onyx-prism/blue-onyx-prism.log</string>
     <key>StandardErrorPath</key>
-    <string>/usr/local/blue-onyx-openvino/blue-onyx-openvino.log</string>
+    <string>/usr/local/blue-onyx-prism/blue-onyx-prism.log</string>
 </dict>
 </plist>

@@ -1,5 +1,5 @@
-//! Blue Onyx OpenVINO: a Blue Iris / CodeProject.AI compatible object detection
-//! service running on native OpenVINO.
+//! Blue Onyx Prism (formerly Blue Onyx OpenVINO): a Blue Iris / CodeProject.AI compatible
+//! object detection service on native OpenVINO, with ONNX Runtime as a second runtime.
 //!
 //! Module map (see CLAUDE.md):
 //! - [`api`]       wire structs for the CodeProject.AI compatible JSON API
@@ -31,9 +31,9 @@ pub mod update;
 pub mod worker;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const MODULE_ID: &str = "ObjectDetectionOpenVINO";
-pub const MODULE_NAME: &str = "Object Detection (OpenVINO)";
-pub const PROCESSED_BY: &str = "BlueOnyxOpenVINO";
+pub const MODULE_ID: &str = "ObjectDetectionPrism";
+pub const MODULE_NAME: &str = "Object Detection (Prism)";
+pub const PROCESSED_BY: &str = "BlueOnyxPrism";
 pub const DEFAULT_PORT: u16 = 32168;
 
 /// Directory containing the running executable (falls back to cwd).
