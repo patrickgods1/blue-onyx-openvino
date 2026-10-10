@@ -24,6 +24,7 @@ pub mod model;
 pub mod registry;
 pub mod runner;
 pub mod server;
+pub mod setup_onnxruntime;
 pub mod setup_openvino;
 pub mod startup;
 pub mod system_info;

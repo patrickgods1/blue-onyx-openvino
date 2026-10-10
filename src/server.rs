@@ -3,10 +3,14 @@
 //! Handler flow and page set modeled on blue-onyx `server.rs` and its templates (MIT).
 
 use crate::api::{VisionCustomListResponse, VisionDetectionRequest, VisionDetectionResponse};
+use crate::backend::detect::HardwareInfo;
+use crate::backend::select::{OpenVinoProbe, OrtProbe, RuntimeProbe, Selection, select};
+use crate::backend::spec::{self, DeviceSpec};
 use crate::cli::LogReloadHandle;
 use crate::config::{Config, FORM_FIELDS, LogLevel, apply_config_form, apply_models_selection};
 use crate::metrics::{Metrics, Stat};
 use crate::registry::ModelRegistry;
+use crate::setup_onnxruntime::InstalledOrt;
 use crate::startup::ModelState;
 use crate::worker::WorkerHandle;
 use askama::Template;
@@ -87,6 +91,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/vision/custom/list", get(custom_list).post(custom_list))
         .route("/v1/vision/custom/{model}", post(detection_custom))
         .route("/v1/status/updateavailable", get(update_available))
+        .route("/v1/devices", get(devices_json))
         .route("/stats", get(stats_page))
         .route("/stats.json", get(stats_json))
         .route("/prometheus", get(prometheus))
@@ -207,11 +212,98 @@ struct WelcomeTemplate {
     nav: &'static str,
     version: &'static str,
     openvino_version: String,
+    onnxruntime: String,
     devices: String,
+    gpus: Vec<String>,
+    auto_pick: String,
     uptime: String,
     port: u16,
     default_model: String,
     models: Vec<ModelRow>,
+}
+
+/// Hardware, runtimes and device options as seen by this process.
+struct DevicesSnapshot {
+    hardware: HardwareInfo,
+    selection: Selection,
+    openvino_version: String,
+    openvino_devices: Vec<String>,
+    onnxruntime: Option<InstalledOrt>,
+}
+
+impl DevicesSnapshot {
+    /// Display text of the device `auto` resolves to.
+    fn auto_pick_label(&self) -> String {
+        match self.selection.auto_pick() {
+            Some(o) => format!("{} ({})", o.spec, o.label),
+            None => "nothing runnable".to_string(),
+        }
+    }
+
+    fn onnxruntime_label(&self) -> String {
+        match &self.onnxruntime {
+            Some(o) => format!("{} ({})", o.version, o.flavor),
+            None => "not installed (run setup-onnxruntime)".to_string(),
+        }
+    }
+}
+
+/// Snapshot of the process's devices. Uses the shared runtimes when they are free (workers hold
+/// the lock while compiling a model; waiting would stall the page), else rebuilds the options from
+/// the OpenVINO facts the registry captured at startup.
+fn devices_snapshot(state: &AppState) -> DevicesSnapshot {
+    let info = &state.registry.runtime_info;
+    let live = state.registry.runtimes().and_then(|rt| {
+        let rt = rt.try_lock().ok()?;
+        Some((rt.hardware().clone(), rt.selection(None)))
+    });
+    let (hardware, selection) = live.unwrap_or_else(|| {
+        let hardware = crate::backend::detect::hardware().clone();
+        let probe = if info.openvino_version.is_empty() && info.available_devices.is_empty() {
+            RuntimeProbe {
+                openvino: OpenVinoProbe::unavailable(crate::backend::OV_UNAVAILABLE),
+                ort: OrtProbe::not_in_build(),
+            }
+        } else {
+            RuntimeProbe::openvino_only(&info.available_devices)
+        };
+        let selection = select(&hardware, &probe, true);
+        (hardware, selection)
+    });
+    let ort_dir = state
+        .config_read()
+        .onnxruntime_dir
+        .clone()
+        .unwrap_or_else(|| crate::setup_onnxruntime::DIR_NAME.into());
+    let onnxruntime = crate::setup_onnxruntime::installed(&crate::resolve_path(&ort_dir));
+    DevicesSnapshot {
+        hardware,
+        selection,
+        openvino_version: info.openvino_version.clone(),
+        openvino_devices: info.available_devices.clone(),
+        onnxruntime,
+    }
+}
+
+/// `GET /v1/devices`: detected hardware, runtimes and every device option with `auto`'s pick.
+async fn devices_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let snap = devices_snapshot(&state);
+    Json(serde_json::json!({
+        "success": true,
+        "hardware": snap.hardware,
+        "runtimes": {
+            "openvino": {
+                "version": snap.openvino_version,
+                "devices": snap.openvino_devices,
+            },
+            "onnxruntime": snap.onnxruntime.as_ref().map(|o| serde_json::json!({
+                "version": o.version,
+                "flavor": o.flavor,
+            })),
+        },
+        "selection": snap.selection,
+        "autoPick": snap.selection.auto_pick().map(|o| o.spec.to_string()),
+    }))
 }
 
 fn default_name(reg: &ModelRegistry) -> String {
@@ -222,6 +314,7 @@ fn default_name(reg: &ModelRegistry) -> String {
 
 async fn welcome(State(state): State<Arc<AppState>>) -> Response {
     let reg = &state.registry;
+    let snap = devices_snapshot(&state);
     let default = default_name(reg);
     let models = reg
         .workers()
@@ -238,8 +331,19 @@ async fn welcome(State(state): State<Arc<AppState>>) -> Response {
     render(&WelcomeTemplate {
         nav: "home",
         version: crate::VERSION,
-        openvino_version: reg.runtime_info.openvino_version.clone(),
-        devices: reg.runtime_info.available_devices.join(", "),
+        openvino_version: if reg.runtime_info.openvino_version.is_empty() {
+            "not available (run setup-openvino)".to_string()
+        } else {
+            reg.runtime_info.openvino_version.clone()
+        },
+        onnxruntime: snap.onnxruntime_label(),
+        devices: if reg.runtime_info.available_devices.is_empty() {
+            "none".to_string()
+        } else {
+            reg.runtime_info.available_devices.join(", ")
+        },
+        gpus: snap.hardware.gpus.iter().map(|g| g.to_string()).collect(),
+        auto_pick: snap.auto_pick_label(),
         uptime: format_uptime(state.started.elapsed()),
         port: state.config_read().port,
         default_model: default,
@@ -845,8 +949,66 @@ struct ConfigTemplate {
     c: ConfigView,
     models: Vec<ModelSelectRow>,
     log_levels: Vec<LevelChoice>,
+    device_choices: Vec<DeviceChoice>,
     message: Option<String>,
     error: Option<String>,
+}
+
+/// One `<option>` of the Device select.
+struct DeviceChoice {
+    value: String,
+    label: String,
+    selected: bool,
+    disabled: bool,
+}
+
+/// Options for the Device select: `auto` first, then every runnable option, then the ones that
+/// cannot run (disabled, with the reason). The current value is always present; when it is not
+/// runnable it stays enabled so saving the form does not silently change it.
+fn device_choices(snap: &DevicesSnapshot, current: &str, gpu_index: &str) -> Vec<DeviceChoice> {
+    let parsed = spec::parse(current).ok();
+    let gpu_index = gpu_index.trim().parse::<u32>().unwrap_or(0);
+    let is_current = |d: &crate::backend::spec::Device| match parsed {
+        Some(DeviceSpec::Device(p)) => p == *d || p.with_default_index(gpu_index) == *d,
+        _ => false,
+    };
+    let mut out = vec![DeviceChoice {
+        value: "auto".to_string(),
+        label: format!("Auto \u{2014} currently: {}", snap.auto_pick_label()),
+        selected: matches!(parsed, Some(DeviceSpec::Auto)),
+        disabled: false,
+    }];
+    let (ok, bad): (Vec<_>, Vec<_>) = snap.selection.options.iter().partition(|o| o.runnable);
+    for o in ok {
+        out.push(DeviceChoice {
+            value: o.spec.to_string(),
+            label: format!("{} \u{2014} {}", o.spec, o.label),
+            selected: is_current(&o.spec),
+            disabled: false,
+        });
+    }
+    for o in bad {
+        let selected = is_current(&o.spec);
+        out.push(DeviceChoice {
+            value: o.spec.to_string(),
+            label: format!(
+                "{} \u{2014} not available: {}",
+                o.spec,
+                o.reason.as_deref().unwrap_or("not runnable")
+            ),
+            selected,
+            disabled: !selected,
+        });
+    }
+    if !out.iter().any(|c| c.selected) {
+        out.push(DeviceChoice {
+            value: current.trim().to_string(),
+            label: format!("{} \u{2014} not a known option", current.trim()),
+            selected: true,
+            disabled: false,
+        });
+    }
+    out
 }
 
 fn config_template(
@@ -875,6 +1037,7 @@ fn config_template(
         selected: l.as_str().eq_ignore_ascii_case(c.log_level.trim()),
     })
     .collect();
+    let device_choices = device_choices(&devices_snapshot(state), &c.device, &c.gpu_index);
     ConfigTemplate {
         nav: "config",
         version: crate::VERSION,
@@ -882,6 +1045,7 @@ fn config_template(
         c,
         models,
         log_levels,
+        device_choices,
         message,
         error,
     }
@@ -1287,6 +1451,129 @@ mod tests {
         assert!(cfg.contains("name=\"models_json\""));
         assert!(cfg.contains("&#34;ipcam-general&#34;"), "{cfg}");
         assert!(cfg.contains("<option value=\"info\" selected>"));
+    }
+
+    fn snapshot(devices: &[&str]) -> DevicesSnapshot {
+        use crate::backend::detect::{GpuAdapter, GpuVendor};
+        let hardware = HardwareInfo::new(
+            "linux",
+            "x86_64",
+            vec![
+                GpuAdapter {
+                    vendor: GpuVendor::Intel,
+                    name: "UHD 630".into(),
+                    vram_mb: 0,
+                    index: 0,
+                    discrete: false,
+                },
+                GpuAdapter {
+                    vendor: GpuVendor::Nvidia,
+                    name: "RTX 3060".into(),
+                    vram_mb: 12288,
+                    index: 1,
+                    discrete: true,
+                },
+            ],
+        );
+        let names: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
+        let selection = select(&hardware, &RuntimeProbe::openvino_only(&names), true);
+        DevicesSnapshot {
+            hardware,
+            selection,
+            openvino_version: "test".into(),
+            openvino_devices: names,
+            onnxruntime: None,
+        }
+    }
+
+    #[test]
+    fn device_choices_list_auto_first_and_grey_out_unrunnable() {
+        let snap = snapshot(&["CPU", "GPU.0"]);
+        let c = device_choices(&snap, "auto", "0");
+        assert_eq!(c[0].value, "auto");
+        assert!(
+            c[0].label.starts_with("Auto \u{2014} currently: "),
+            "{}",
+            c[0].label
+        );
+        assert!(c[0].selected && !c[0].disabled);
+        assert_eq!(c.iter().filter(|d| d.selected).count(), 1);
+        let gpu = c
+            .iter()
+            .find(|d| d.value == "openvino:gpu.0")
+            .expect("gpu option");
+        assert!(!gpu.disabled);
+        // ONNX Runtime is not in this probe: its options are listed, disabled, with a reason.
+        let cuda = c
+            .iter()
+            .find(|d| d.value.starts_with("ort:cuda"))
+            .expect("cuda option");
+        assert!(cuda.disabled && !cuda.selected && cuda.label.contains("not available"));
+        // Runnable options come before the disabled ones.
+        let first_disabled = c.iter().position(|d| d.disabled).unwrap();
+        assert!(c[..first_disabled].iter().all(|d| !d.disabled));
+        assert!(c[first_disabled..].iter().all(|d| d.disabled));
+    }
+
+    #[test]
+    fn device_choices_select_current_value() {
+        let snap = snapshot(&["CPU", "GPU.0"]);
+        // Legacy spellings map to their option.
+        for cur in ["GPU", "openvino:gpu", " gpu "] {
+            let c = device_choices(&snap, cur, "0");
+            let sel: Vec<_> = c.iter().filter(|d| d.selected).collect();
+            assert_eq!(sel.len(), 1, "{cur}");
+            assert_eq!(sel[0].value, "openvino:gpu.0", "{cur}");
+        }
+        // A current value that cannot run stays selected and enabled (so saving keeps it).
+        let c = device_choices(&snap, "ort:cuda", "0");
+        let sel: Vec<_> = c.iter().filter(|d| d.selected).collect();
+        assert_eq!(sel.len(), 1);
+        assert!(!sel[0].disabled && sel[0].label.contains("not available"));
+        // An unparseable value is kept as an extra option.
+        let c = device_choices(&snap, "vulkan", "0");
+        let last = c.last().unwrap();
+        assert!(last.selected && last.value == "vulkan");
+    }
+
+    #[tokio::test]
+    async fn devices_endpoint_and_pages() {
+        let state = test_state();
+        let (s, h, b) = call(
+            &state,
+            Request::get("/v1/devices").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(
+            h[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("application/json")
+        );
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(v["success"], true);
+        assert!(v["hardware"]["gpus"].is_array());
+        assert_eq!(v["runtimes"]["openvino"]["version"], "2026.0.0-test");
+        assert_eq!(v["runtimes"]["openvino"]["devices"][0], "CPU");
+        let opts = v["selection"]["options"].as_array().unwrap();
+        let cpu = opts
+            .iter()
+            .find(|o| o["spec"] == "openvino:cpu")
+            .expect("cpu option");
+        assert_eq!(cpu["runnable"], true);
+        assert!(opts.iter().any(|o| o["spec"] == "ort:cpu"));
+        assert!(v["selection"]["auto"].is_array());
+        assert_eq!(v["autoPick"], v["selection"]["auto"][0]);
+
+        let (_, cfg) = get_text(&state, "/config").await;
+        assert!(cfg.contains("<select name=\"device\">"), "{cfg}");
+        assert!(cfg.contains("<option value=\"auto\""));
+        assert!(cfg.contains("currently:"));
+        let (_, home) = get_text(&state, "/").await;
+        assert!(
+            home.contains("ONNX Runtime") && home.contains("GPUs") && home.contains("Auto picks")
+        );
     }
 
     #[tokio::test]

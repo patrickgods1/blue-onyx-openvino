@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result, bail};
 use blue_onyx_prism::api::Prediction;
-use blue_onyx_prism::backend::{CoreOptions, LoadRequest, Runtimes, libs, spec};
+use blue_onyx_prism::backend::{CoreOptions, LoadRequest, OrtOptions, Runtimes, libs, spec};
 use blue_onyx_prism::config::{Config, ModelConfig};
 use blue_onyx_prism::model::preprocess::Preprocessor;
 use blue_onyx_prism::model::{ModelFamilyKind, PostParams};
@@ -43,11 +43,16 @@ struct Args {
     /// Class names YAML for --model (default: <model>.yaml beside the model, else COCO-80).
     #[arg(long)]
     classes: Option<PathBuf>,
-    /// Device spec: GPU, GPU.N, CPU, auto, openvino:gpu[.N], openvino:cpu, openvino:npu, ort:...
-    /// GPU falls back to CPU like the server does (without the warm-up check).
-    /// Default: GPU for --model, the configured device for config models.
-    #[arg(long)]
+    /// Device spec, one of: auto, openvino:gpu[.N], openvino:cpu, openvino:npu, ort:cuda[:N],
+    /// ort:tensorrt[:N], ort:directml[:N], ort:coreml, ort:cpu (legacy GPU, GPU.N, CPU, NPU mean
+    /// OpenVINO). A GPU request falls back to CPU like the server does (without the warm-up check).
+    /// Default: auto for --model, the configured device for config models.
+    #[arg(long, value_parser = parse_device_arg)]
     device: Option<String>,
+    /// Run every runnable device option (see `list-devices`) for each model and print a
+    /// comparison table. Cannot be combined with --device, --force-cpu or --compare-cpu.
+    #[arg(long, conflicts_with_all = ["device", "force_cpu", "compare_cpu"])]
+    all_devices: bool,
     /// Force CPU inference.
     #[arg(long)]
     force_cpu: bool,
@@ -81,6 +86,13 @@ struct Args {
     /// Show info-level logs (on stderr).
     #[arg(long, short)]
     verbose: bool,
+}
+
+/// Validate `--device` with the spec parser, keeping the string as typed.
+fn parse_device_arg(s: &str) -> Result<String, String> {
+    spec::parse(s)
+        .map(|_| s.trim().to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// min / mean / p50 / p95 / max in milliseconds.
@@ -200,6 +212,13 @@ struct ModelReport {
     comparison: Option<Comparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    /// `--all-devices`: one run per runnable device option (`primary` is the fastest by total
+    /// p50 latency).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    all_devices: Vec<RunResult>,
+    /// `--all-devices`: options that were runnable on paper but failed for this model.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_devices: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -283,7 +302,7 @@ fn jobs(args: &Args, config: &Config) -> Result<Vec<Job>> {
                     path: p.clone(),
                     family: args.family.unwrap_or(ModelFamilyKind::Auto),
                     classes,
-                    device: device_override.clone().unwrap_or_else(|| "GPU".into()),
+                    device: device_override.clone().unwrap_or_else(|| "auto".into()),
                     gpu_precision: None,
                 })
             })
@@ -295,13 +314,15 @@ fn jobs(args: &Args, config: &Config) -> Result<Vec<Job>> {
             let path = blue_onyx_prism::resolve_path(&m.path);
             let classes_path = m.classes.as_deref().map(blue_onyx_prism::resolve_path);
             let classes = resolve_class_names(&path, classes_path.as_deref())?;
+            let device = match &device_override {
+                Some(d) => d.clone(),
+                None => config.device_spec_for(m)?.to_string(),
+            };
             Ok(Job {
                 name: m.effective_name(),
                 family: args.family.unwrap_or(m.family),
                 classes,
-                device: device_override
-                    .clone()
-                    .unwrap_or_else(|| config.device_for(m)),
+                device,
                 gpu_precision: m.gpu_precision.clone(),
                 path,
             })
@@ -339,7 +360,13 @@ fn run(args: Args) -> Result<bool> {
         intra_threads: args.threads.unwrap_or(config.intra_threads),
         openvino_dir,
     };
-    let mut runtimes = Runtimes::new(&opts);
+    let ort_opts = OrtOptions {
+        onnxruntime_dir: config
+            .onnxruntime_dir
+            .as_deref()
+            .map(blue_onyx_prism::resolve_path),
+    };
+    let mut runtimes = Runtimes::new_with(&opts, &ort_opts);
     runtimes.require_any()?;
     let info = runtimes.info();
     let mut report = Report {
@@ -381,6 +408,24 @@ fn run(args: Args) -> Result<bool> {
     };
 
     for job in &jobs {
+        if args.all_devices {
+            match bench_all_devices(&bench, &mut runtimes, job) {
+                Ok(m) => {
+                    if !args.json {
+                        print_all_devices(&m);
+                    }
+                    report.models.push(m);
+                }
+                Err(e) => {
+                    let msg = format!("{}: {e:#}", job.name);
+                    if !args.json {
+                        eprintln!("error: {msg}");
+                    }
+                    report.errors.push(msg);
+                }
+            }
+            continue;
+        }
         let primary = match bench.run(&mut runtimes, job, &job.device) {
             Ok(r) => r,
             Err(e) => {
@@ -397,6 +442,8 @@ fn run(args: Args) -> Result<bool> {
             cpu: None,
             comparison: None,
             note: None,
+            all_devices: Vec::new(),
+            skipped_devices: Vec::new(),
         };
         if args.compare_cpu {
             if model_report.primary.device == "CPU" {
@@ -432,6 +479,94 @@ fn run(args: Args) -> Result<bool> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     }
     Ok(report.errors.is_empty())
+}
+
+/// Run `job` on every runnable option of the selection for its model.
+fn bench_all_devices(bench: &Bench, runtimes: &mut Runtimes, job: &Job) -> Result<ModelReport> {
+    let selection = runtimes.selection(Some(&job.path));
+    let mut runs: Vec<RunResult> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for opt in &selection.options {
+        let spec = opt.spec.to_string();
+        if !opt.runnable {
+            skipped.push(format!(
+                "{spec}: {}",
+                opt.reason.as_deref().unwrap_or("not runnable")
+            ));
+            continue;
+        }
+        match bench.run(runtimes, job, &spec) {
+            Ok(r) if r.fell_back => {
+                skipped.push(format!("{spec}: fell back to {}, result dropped", r.device))
+            }
+            Ok(r) => runs.push(r),
+            Err(e) => skipped.push(format!("{spec}: {e:#}")),
+        }
+    }
+    let Some(best) = runs
+        .iter()
+        .min_by(|a, b| a.stages_ms.total.p50.total_cmp(&b.stages_ms.total.p50))
+        .cloned()
+    else {
+        bail!(
+            "no device option could run this model ({})",
+            skipped.join("; ")
+        );
+    };
+    Ok(ModelReport {
+        primary: best,
+        cpu: None,
+        comparison: None,
+        note: None,
+        all_devices: runs,
+        skipped_devices: skipped,
+    })
+}
+
+/// Comparison table of an `--all-devices` model report, fastest first.
+fn print_all_devices(m: &ModelReport) {
+    println!();
+    println!(
+        "== {}: all runnable devices ({} runs each, ms)",
+        m.primary.model, m.primary.repeat
+    );
+    println!(
+        "  {:<18} {:<28} {:>9} {:>9} {:>9} {:>9} {:>8} {:>6}",
+        "requested", "device", "compile", "infer p50", "total p50", "total p95", "img/s", "dets"
+    );
+    let mut runs: Vec<&RunResult> = m.all_devices.iter().collect();
+    runs.sort_by(|a, b| a.stages_ms.total.p50.total_cmp(&b.stages_ms.total.p50));
+    let fastest = runs
+        .first()
+        .map(|r| r.stages_ms.total.p50)
+        .unwrap_or_default();
+    for r in &runs {
+        let name = if r.device_name.is_empty() {
+            r.device.clone()
+        } else {
+            format!("{} ({})", r.device, r.device_name)
+        };
+        let name: String = name.chars().take(28).collect();
+        println!(
+            "  {:<18} {:<28} {:>9.0} {:>9.2} {:>9.2} {:>9.2} {:>8.1} {:>6}{}",
+            r.requested_device,
+            name,
+            r.compile_ms,
+            r.stages_ms.infer.p50,
+            r.stages_ms.total.p50,
+            r.stages_ms.total.p95,
+            r.throughput_fps,
+            r.detections.len(),
+            if r.stages_ms.total.p50 == fastest && runs.len() > 1 {
+                "  <- fastest"
+            } else {
+                ""
+            }
+        );
+    }
+    for s in &m.skipped_devices {
+        println!("  skipped {s}");
+    }
 }
 
 struct Bench<'a> {
@@ -874,5 +1009,17 @@ mod tests {
         assert!(a.compare_cpu && a.json);
         let a = Args::try_parse_from(["x"]).unwrap();
         assert_eq!(a.repeat, 100);
+        assert!(!a.all_devices);
+    }
+
+    #[test]
+    fn device_and_all_devices_flags() {
+        let a = Args::try_parse_from(["x", "--device", "ORT:CUDA:1"]).unwrap();
+        assert_eq!(a.device.as_deref(), Some("ORT:CUDA:1"));
+        assert!(Args::try_parse_from(["x", "--device", "vulkan"]).is_err());
+        let a = Args::try_parse_from(["x", "--all-devices"]).unwrap();
+        assert!(a.all_devices);
+        assert!(Args::try_parse_from(["x", "--all-devices", "--device", "cpu"]).is_err());
+        assert!(Args::try_parse_from(["x", "--all-devices", "--force-cpu"]).is_err());
     }
 }

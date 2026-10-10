@@ -8,7 +8,8 @@ Usage (inside the project venv: `.venv/Scripts/python.exe scripts/export_yolo26.
     python scripts/export_yolo26.py --int8 --data coco128.yaml
     python scripts/export_yolo26.py --out C:/BlueOnyx/models
 
-Produces `<name>.xml`, `<name>.bin` and `<name>.yaml` (a `NAMES:` list) per model and prints the
+Produces `<name>.xml`, `<name>.bin`, `<name>.onnx` (for the ONNX Runtime devices, FP32, nms=False,
+opset 17) and `<name>.yaml` (a `NAMES:` list) per model and prints the
 config snippet to paste into `blue_onyx_prism_config.json`.
 
 YOLO26 weights and the Ultralytics exporter are AGPL-3.0: export locally, do not commit weights.
@@ -33,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--int8", action="store_true", help="INT8 post-training quantization (needs --data)")
     p.add_argument("--data", default="coco128.yaml", help="dataset yaml used for INT8 calibration")
     p.add_argument("--fp32", action="store_true", help="keep FP32 weights instead of FP16")
+    p.add_argument("--opset", type=int, default=17, help="ONNX opset for the .onnx export")
+    p.add_argument("--no-onnx", action="store_true", help="skip the <name>.onnx export")
     p.add_argument("--work", type=Path, default=Path(__file__).resolve().parent.parent / ".export_work")
     return p.parse_args()
 
@@ -64,6 +67,20 @@ def export_one(size: str, args: argparse.Namespace) -> Path:
         out = model.export(**new_kwargs)
     except TypeError:
         out = model.export(**kwargs)
+    return Path(out)
+
+
+def export_onnx(size: str, args: argparse.Namespace) -> Path:
+    """Export `<name>.onnx` (FP32, static 640x640, NMS-free [1,300,6] output) for ONNX Runtime."""
+    from ultralytics import YOLO
+
+    name = f"yolo26{size}"
+    args.work = args.work.resolve()
+    args.work.mkdir(parents=True, exist_ok=True)
+    os.chdir(args.work)
+    weights = args.work / f"{name}.pt"
+    model = YOLO(str(weights) if weights.exists() else f"{name}.pt")
+    out = model.export(format="onnx", imgsz=args.imgsz, dynamic=False, nms=False, batch=1, opset=args.opset)
     return Path(out)
 
 
@@ -110,6 +127,11 @@ def main() -> int:
         dst_xml = args.out / f"{name}.xml"
         shutil.copy2(xml, dst_xml)
         shutil.copy2(binf, args.out / f"{name}.bin")
+        if not args.no_onnx:
+            onnx = export_onnx(size, args)
+            dst_onnx = args.out / f"{name}.onnx"
+            shutil.copy2(onnx, dst_onnx)
+            print(f"{name}: ONNX -> {dst_onnx}")
         names = names_from_metadata(export_dir)
         yaml_path = args.out / f"{name}.yaml"
         yaml_path.write_text("NAMES:\n" + "".join(f"  - {n}\n" for n in names), encoding="utf-8")

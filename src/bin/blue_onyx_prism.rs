@@ -1,11 +1,11 @@
-//! Main binary: CLI subcommands (setup-openvino, download-models, list-models, list-devices) or the
+//! Main binary: CLI subcommands (setup-openvino, setup-onnxruntime, download-models, list-models, list-devices) or the
 //! HTTP service.
 
 use anyhow::Result;
-use blue_onyx_prism::backend::{CoreOptions, Runtimes, select};
+use blue_onyx_prism::backend::{CoreOptions, OrtOptions, Runtimes, select};
 use blue_onyx_prism::cli::{self, Cli, Command};
 use blue_onyx_prism::config::{Config, LogLevel, ModelConfig};
-use blue_onyx_prism::{download, runner, setup_openvino, system_info};
+use blue_onyx_prism::{download, runner, setup_onnxruntime, setup_openvino, system_info};
 use clap::Parser;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -65,14 +65,22 @@ fn list_devices(cli: &Cli, models: &[PathBuf]) {
     if cli.force_cpu {
         cfg.force_cpu = true;
     }
-    let rt = Runtimes::new(&CoreOptions {
-        cache_dir: None,
-        intra_threads: 0,
-        openvino_dir: cfg
-            .openvino_dir
-            .as_deref()
-            .map(blue_onyx_prism::resolve_path),
-    });
+    let rt = Runtimes::new_with(
+        &CoreOptions {
+            cache_dir: None,
+            intra_threads: 0,
+            openvino_dir: cfg
+                .openvino_dir
+                .as_deref()
+                .map(blue_onyx_prism::resolve_path),
+        },
+        &OrtOptions {
+            onnxruntime_dir: cfg
+                .onnxruntime_dir
+                .as_deref()
+                .map(blue_onyx_prism::resolve_path),
+        },
+    );
     let hw = rt.hardware();
     println!("Platform: {} {}", hw.os, hw.arch);
     println!("GPUs:");
@@ -166,6 +174,21 @@ fn run(cli: Cli) -> Result<()> {
             };
             let dir = setup_openvino::run(&opts)?;
             println!("OpenVINO runtime installed in {}", dir.display());
+            return Ok(());
+        }
+        Some(Command::SetupOnnxruntime { flavor, dir }) => {
+            let _log = cli::init_logging(LogLevel::Info, None)?;
+            let opts = setup_onnxruntime::SetupOptions {
+                dest: dir,
+                flavor,
+                keep_archive: false,
+            };
+            let (dir, flavor) = setup_onnxruntime::run(&opts)?;
+            println!(
+                "ONNX Runtime ({}) installed in {}",
+                flavor.as_str(),
+                dir.display()
+            );
             return Ok(());
         }
         Some(Command::DownloadModels {
