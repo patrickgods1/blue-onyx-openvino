@@ -47,6 +47,8 @@ pub const CUDA_LIBS_ID: &str = "nvidia-cuda-libs";
 pub const CUDA_LIBS_DEST: &str = "onnxruntime/cuda-libs";
 /// Model resource ids are `model:<name>` (catalog spelling, matched case-insensitively).
 pub const MODEL_ID_PREFIX: &str = "model:";
+/// Id prefix of benchmark image sets: `bench:coco-cctv`.
+pub const BENCH_ID_PREFIX: &str = "bench:";
 
 /// `(os, arch)` as in `std::env::consts::{OS, ARCH}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -181,6 +183,15 @@ pub enum ResourceKind {
     /// NVIDIA CUDA/cuDNN shared libraries for the CUDA execution provider.
     CudaLibs,
     Model,
+    /// A benchmark image set (plain image files, `bench/<set>/`), from `assets/bench/<set>.json`.
+    BenchImages,
+}
+
+impl ResourceKind {
+    /// Plain verified files placed as is (models, benchmark images), not an extracted archive.
+    pub fn is_plain_files(self) -> bool {
+        matches!(self, ResourceKind::Model | ResourceKind::BenchImages)
+    }
 }
 
 /// Container format of a downloaded part.
@@ -242,6 +253,8 @@ pub enum Provides {
         name: &'static str,
         family: ModelFamilyKind,
     },
+    /// Benchmark images of dataset `set`.
+    BenchImages { set: &'static str },
 }
 
 impl Provides {
@@ -254,6 +267,7 @@ impl Provides {
                 .collect(),
             Provides::CudaLibs => vec!["ort:cuda".to_string(), "ort:tensorrt".to_string()],
             Provides::Model { name, .. } => vec![format!("{MODEL_ID_PREFIX}{name}")],
+            Provides::BenchImages { set } => vec![format!("{BENCH_ID_PREFIX}{set}")],
         }
     }
 
@@ -1110,6 +1124,76 @@ pub fn all() -> impl Iterator<Item = &'static Resource> {
         .chain(ONNXRUNTIME)
         .chain(CUDA_LIBS)
         .chain(MODELS)
+        .chain(bench_sets())
+}
+
+/// A `bench-images` resource for a benchmark set manifest: one plain-file part per image
+/// (URL, SHA-256, size and file name from the manifest; images without them are skipped),
+/// installed into `bench/<id>/`. Built once per manifest and kept for the process (`'static`
+/// like the rest of the catalog).
+pub fn bench_resource(m: &crate::benchmark::images::Manifest) -> Resource {
+    fn leak(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+    let parts: Vec<Part> = m
+        .images
+        .iter()
+        .filter(|i| crate::benchmark::images::safe_file_name(&i.file))
+        .filter_map(|i| {
+            Some(Part {
+                url: leak(i.url.clone()?),
+                sha256: leak(i.sha256.clone()?.to_ascii_lowercase()),
+                size: i.size?,
+                file_name: leak(i.file.clone()),
+                archive: None,
+                layout: Layout::File,
+            })
+        })
+        .collect();
+    let id = leak(format!("{BENCH_ID_PREFIX}{}", m.id));
+    let set = leak(m.id.clone());
+    Resource {
+        id,
+        kind: ResourceKind::BenchImages,
+        version: leak(if m.revision.is_empty() {
+            "1".to_string()
+        } else {
+            m.revision.clone()
+        }),
+        platform: None,
+        parts: Box::leak(parts.into_boxed_slice()),
+        dest: leak(format!("{}/{}", crate::benchmark::images::BENCH_DIR, m.id)),
+        provides: Provides::BenchImages { set },
+        title: leak(if m.title.is_empty() {
+            format!("Benchmark images {}", m.id)
+        } else {
+            m.title.clone()
+        }),
+        description: leak(if m.description.is_empty() {
+            format!("{} benchmark images", m.images.len())
+        } else {
+            m.description.clone()
+        }),
+        license: leak(m.license.clone()),
+    }
+}
+
+/// The benchmark image sets embedded in this build (`assets/bench/*.json`).
+pub fn bench_sets() -> &'static [Resource] {
+    static SETS: std::sync::OnceLock<Vec<Resource>> = std::sync::OnceLock::new();
+    SETS.get_or_init(|| {
+        crate::benchmark::images::builtin_manifests()
+            .iter()
+            .map(bench_resource)
+            .collect()
+    })
+}
+
+/// The `bench:<set>` resource.
+pub fn bench_set(set: &str) -> Option<&'static Resource> {
+    bench_sets()
+        .iter()
+        .find(|r| matches!(r.provides, Provides::BenchImages { set: s } if s.eq_ignore_ascii_case(set.trim())))
 }
 
 /// Resources usable on `(os, arch)` (`fetch --all-for-platform`).

@@ -20,6 +20,8 @@ cargo run -- fetch [--for-config] [--resource <id>] [--all-for-platform] [--allo
 cargo run -- list-resources [--check-urls]   # installed / needed / available; --check-urls checks every pinned URL (weekly CI)
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --force-cpu
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --device ort:cpu
+cargo run -- benchmark --all-devices [--apply] [--report r.html] [--dataset coco-cctv|bmd45-cctv|exdark-night|dir:<p>] [--max-images 20]   # grade models x devices; benchmark.json next to the config
+cargo run -- benchmark --list-datasets       # built-in image sets (assets/bench/*.json, resource bench:<id>)
 cargo build --no-default-features            # OpenVINO-only build (drops the `onnxruntime` feature / `ort`)
 cargo test                                   # unit tests need no OpenVINO
 cargo clippy --all-targets -- -D warnings

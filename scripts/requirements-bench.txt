@@ -1,0 +1,4 @@
+# Python deps for scripts/build_bench_sets.py (benchmark image manifests). Python 3.10+.
+# The export venv (.venv, scripts/requirements-export.txt) already has Pillow; otherwise:
+#   uv venv --python 3.11 .venv-bench && uv pip install -p .venv-bench -r scripts/requirements-bench.txt
+Pillow>=10

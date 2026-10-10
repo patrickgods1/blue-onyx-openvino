@@ -82,6 +82,11 @@ pub enum Command {
         #[arg(long)]
         check_urls: bool,
     },
+    /// Benchmark models with the production pipeline (same flags as `blue-onyx-prism-benchmark`).
+    /// `--all-devices` times every runnable device per model, checks detections against the CPU,
+    /// recommends the fastest agreeing device and saves `benchmark.json` (web UI Benchmark page);
+    /// `--apply` also writes the recommended per-model `device` into the config file.
+    Benchmark(Box<crate::benchmark::cli::BenchArgs>),
     /// Show detected GPUs, every device option (runnable or why not) and what `auto` picks.
     ListDevices {
         /// Also show the load plan for this model file (repeatable; default: the enabled models
@@ -240,7 +245,7 @@ impl Cli {
                 add_to_config,
             },
             Command::ListModels { dir } => Command::ListModels { dir: abs(&dir) },
-            Command::Fetch { .. } | Command::ListResources { .. } => cmd,
+            Command::Fetch { .. } | Command::ListResources { .. } | Command::Benchmark(_) => cmd,
             Command::ListDevices { model } => Command::ListDevices {
                 model: model.iter().map(|p| absolutize(p, base)).collect(),
             },
@@ -492,6 +497,26 @@ mod tests {
         assert_eq!(cli.family, Some(ModelFamilyKind::Yolo5));
         assert!(cli.force_cpu);
         assert_eq!(cli.object_filter.unwrap(), vec!["person", "car"]);
+        let cli = Cli::try_parse_from([
+            "x",
+            "--config",
+            "c.json",
+            "benchmark",
+            "--all-devices",
+            "--apply",
+            "--repeat",
+            "3",
+        ])
+        .unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("c.json")));
+        match cli.command {
+            Some(Command::Benchmark(a)) => {
+                assert!(a.all_devices && a.apply);
+                assert_eq!(a.repeat, Some(3));
+                assert_eq!(a.config, None);
+            }
+            _ => panic!("wrong command"),
+        }
         let cli =
             Cli::try_parse_from(["x", "download-models", "--name", "a", "--name", "b"]).unwrap();
         match cli.command {

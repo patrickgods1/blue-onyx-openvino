@@ -101,7 +101,7 @@ pub fn is_installed(resource: &Resource, dir: &Path) -> bool {
     };
     m.id == resource.id
         && m.version == resource.version
-        && (resource.kind != ResourceKind::Model
+        && (!resource.kind.is_plain_files()
             || resource
                 .parts
                 .iter()

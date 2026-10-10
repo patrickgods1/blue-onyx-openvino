@@ -209,7 +209,7 @@ impl Provisioner {
 /// model can run early), then the runtimes models wait for.
 fn priority(n: &Need) -> u8 {
     match (n.resource.kind, n.blocking_models.is_empty()) {
-        (ResourceKind::Model, _) => 0,
+        (ResourceKind::Model | ResourceKind::BenchImages, _) => 0,
         (_, true) => 1,
         _ => 2,
     }
@@ -226,7 +226,7 @@ pub struct Block {
 impl Block {
     /// A runtime (needs a new generation), not a model file.
     pub fn is_runtime(&self) -> bool {
-        self.resource.kind != ResourceKind::Model
+        !self.resource.kind.is_plain_files()
     }
 }
 
@@ -416,6 +416,9 @@ impl Provision {
     pub fn restart_for(&self, resource: &Resource, not_ready: &[String]) -> Result<(), String> {
         if resource.kind == ResourceKind::Model {
             return Err("model files are loaded without a restart".into());
+        }
+        if resource.kind == ResourceKind::BenchImages {
+            return Err("benchmark images need no restart".into());
         }
         if let (Some(f), Some(loaded)) = (resource.flavor(), self.loaded_ort)
             && f != loaded

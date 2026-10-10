@@ -212,3 +212,58 @@ label.inline-label { flex-direction: row; align-items: center; gap: 0.4rem; marg
   main { padding: 1rem 0.7rem; }
   .logline .tg { display: none; }
 }
+
+/* Benchmark page */
+.bench-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.5rem 1rem; }
+fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.8rem; margin: 0; min-width: 0; }
+legend { color: var(--muted); font-size: 0.9rem; padding: 0 0.3rem; }
+fieldset label.check { align-items: flex-start; }
+fieldset label.check input { margin-top: 0.3rem; }
+label.unavailable { opacity: 0.6; }
+.ds-available .ds-state, .ds-partial .ds-state, .ds-missing .ds-state, .ds-unavailable .ds-state { background: var(--warn-bg); color: var(--warn-fg); }
+.ds-installed .ds-state, .ds-embedded .ds-state, .ds-folder .ds-state { background: var(--ok-bg); color: var(--ok-fg); }
+button.small { padding: 0.15rem 0.6rem; font-size: 0.85rem; margin: 0.15rem 0.3rem 0.15rem 0; }
+span.small { font-size: 0.8rem; font-weight: normal; }
+.warn-list { margin: 0.3rem 0; padding-left: 1.2rem; color: var(--warn-fg); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.75rem; margin: 1rem 0; }
+.gcard { display: block; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.9rem; color: var(--fg); text-decoration: none; }
+.gcard:hover { border-color: var(--accent); }
+.gname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gbig .grade { font-size: 1.8rem; padding: 0.1rem 0.7rem; margin: 0.3rem 0; display: inline-block; }
+.gsub { font-size: 0.85rem; color: var(--muted); }
+.grade { display: inline-block; min-width: 1.5em; text-align: center; font-weight: 700; border-radius: 4px; padding: 0 0.3rem; }
+.grade-A { background: #1f8a4c; color: #fff; }
+.grade-B { background: #6aa84f; color: #fff; }
+.grade-C { background: #d6a400; color: #1d2330; }
+.grade-D { background: #e07a1f; color: #fff; }
+.grade-F { background: #c0392b; color: #fff; }
+.grade-none { background: var(--code-bg); color: var(--muted); }
+table.bench td, table.bench th { white-space: nowrap; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable[data-dir="asc"]::after { content: " \25B2"; }
+th.sortable[data-dir="desc"]::after { content: " \25BC"; }
+table.bench tr.fastest td { background: var(--ok-bg); }
+table.bench tr.bad td { color: var(--err-fg); }
+table.bench tr.failed td { color: var(--muted); }
+table.bench td .tag { margin-left: 0.35rem; }
+.tag.rec { background: #1f8a4c; color: #fff; }
+.tag.cfg { background: var(--code-bg); color: var(--fg); border: 1px solid var(--border); }
+td.actions-cell { white-space: nowrap; }
+details.bd { margin-top: 0.75rem; }
+details.bd h4 { margin: 0.8rem 0 0.3rem; font-size: 0.95rem; }
+dialog#drill { width: min(1200px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); padding: 0.8rem; }
+dialog#drill::backdrop { background: rgba(0, 0, 0, 0.5); }
+.drill-head { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; position: sticky; top: 0; background: var(--bg); padding-bottom: 0.5rem; }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.75rem; }
+.thumbs-note { grid-column: 1 / -1; }
+figure.thumb { margin: 0; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; }
+figure.thumb canvas { width: 100%; height: auto; display: block; }
+figure.thumb figcaption { font-size: 0.78rem; color: var(--muted); word-break: break-all; }
+.lg-gt { color: #2e9e4f; } .lg-miss { color: #e53935; } .lg-tp { color: #1f6fe0; } .lg-fp { color: #f08c00; } .lg-un { color: #8a93a5; }
+@media (max-width: 700px) {
+  table.bench.devices thead { display: none; }
+  table.bench.devices, table.bench.devices tbody, table.bench.devices tr, table.bench.devices td { display: block; width: 100%; }
+  table.bench.devices tr { border-bottom: 2px solid var(--border); padding: 0.3rem 0; }
+  table.bench.devices td { border: none; padding: 0.15rem 0.6rem; text-align: left; white-space: normal; }
+  table.bench.devices td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 0.8rem; }
+}

@@ -38,6 +38,8 @@ pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Delay between answering `POST /config/restart` and stopping the server, so the reply gets out.
 const RESTART_DELAY: Duration = Duration::from_millis(250);
 
+mod benchmark;
+
 static STYLE_CSS: &str = include_str!("../assets/style.css");
 static FAVICON_ICO: &[u8] = include_bytes!("../assets/favicon.ico");
 
@@ -57,6 +59,8 @@ pub struct AppState {
     /// Download manager and this generation's provisioning plan (None in tests that do not
     /// exercise resources).
     pub resources: Option<crate::resources::status::ResourcesCtx>,
+    /// Benchmark runner (one per process, shared by every generation).
+    pub benchmark: Arc<crate::benchmark::service::BenchmarkService>,
 }
 
 impl AppState {
@@ -76,6 +80,7 @@ impl AppState {
             log_reload: None,
             restart: CancellationToken::new(),
             resources: None,
+            benchmark: crate::benchmark::service::BenchmarkService::new(),
         }
     }
 
@@ -115,6 +120,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/config/loglevel", post(config_loglevel))
         .route("/logs", get(logs_page))
         .route("/logs.json", get(logs_json))
+        .route("/benchmark", get(benchmark::page))
+        .route(
+            "/v1/benchmark",
+            get(benchmark::status).post(benchmark::start),
+        )
+        .route("/v1/benchmark/cancel", post(benchmark::cancel))
+        .route("/v1/benchmark/apply", post(benchmark::apply))
+        .route("/v1/benchmark/settings", post(benchmark::settings))
+        .route("/v1/benchmark/images", get(benchmark::images_detail))
+        .route("/v1/benchmark/image", get(benchmark::image_file))
         .route("/static/style.css", get(style_css))
         .route("/favicon.ico", get(favicon))
         .fallback(fallback)
@@ -1204,20 +1219,126 @@ struct ModelSelectRow {
     exists: bool,
     enabled: bool,
     is_default: bool,
+    /// Per-model Device select: "Global (...)" first, then every device option.
+    devices: Vec<DeviceChoice>,
+    /// Execution provider of the loaded model (enabled models of this generation).
+    provider: Option<String>,
+    /// Latest benchmark recommendation for this model.
+    bench: Option<BenchHint>,
 }
 
-fn model_choices(c: &Config) -> Vec<ModelSelectRow> {
+/// "benchmark: ort:coreml" link on the Models card.
+struct BenchHint {
+    text: String,
+    title: String,
+    /// `/benchmark#m-<name>` (the Benchmark page's id for the model's card).
+    href: String,
+}
+
+/// JavaScript `encodeURIComponent` (the Benchmark page builds its card ids with it).
+fn encode_uri_component(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Display text of the global device: "auto (ort:coreml)", "openvino:gpu.1", "Force CPU".
+fn global_device_label(c: &Config, snap: &DevicesSnapshot) -> String {
+    if c.force_cpu {
+        return "Force CPU".to_string();
+    }
+    match spec::parse(&c.device) {
+        Ok(DeviceSpec::Auto) => match snap.selection.auto_pick() {
+            Some(o) => format!("auto \u{2192} {}", o.spec),
+            None => "auto".to_string(),
+        },
+        Ok(d) => d.with_default_index(c.gpu_index).to_string(),
+        Err(_) => c.device.trim().to_string(),
+    }
+}
+
+/// Options of a model's Device select. `current` None = follows the global device.
+fn model_device_choices(
+    snap: &DevicesSnapshot,
+    current: Option<&str>,
+    global: &str,
+) -> Vec<DeviceChoice> {
+    let mut v = device_choices(snap, current.unwrap_or("auto"), "0");
+    if current.is_none() {
+        for c in &mut v {
+            c.selected = false;
+        }
+    }
+    v.insert(
+        0,
+        DeviceChoice {
+            value: String::new(),
+            label: format!("Global ({global})"),
+            selected: current.is_none(),
+            disabled: false,
+        },
+    );
+    v
+}
+
+fn model_choices(
+    c: &Config,
+    snap: &DevicesSnapshot,
+    reg: &ModelRegistry,
+    results: Option<&crate::benchmark::BenchmarkResults>,
+) -> Vec<ModelSelectRow> {
     let default = c.effective_default_index();
+    let global = global_device_label(c, snap);
     c.models
         .iter()
         .enumerate()
-        .map(|(i, m)| ModelSelectRow {
-            name: m.effective_name(),
-            family: m.family.to_string(),
-            path: m.path.display().to_string(),
-            exists: c.data_path(&m.path).is_file(),
-            enabled: m.enabled,
-            is_default: default == Some(i),
+        .map(|(i, m)| {
+            let name = m.effective_name();
+            let provider = m
+                .enabled
+                .then(|| reg.by_name(&name))
+                .flatten()
+                .map(|w| w.execution_provider());
+            let bench = results.and_then(|r| r.find(&name)).map(|r| {
+                let configured = crate::benchmark::configured_device(c, m, &snap.selection);
+                let text = match &r.recommended {
+                    Some(d) if configured.as_deref() == Some(d.as_str()) => {
+                        format!("benchmark: {d} (in use)")
+                    }
+                    Some(d) => format!("benchmark recommends {d}"),
+                    None => "benchmark: no recommendation".to_string(),
+                };
+                BenchHint {
+                    text,
+                    title: r.recommendation.clone(),
+                    href: format!("/benchmark#m-{}", encode_uri_component(&r.model)),
+                }
+            });
+            ModelSelectRow {
+                devices: model_device_choices(snap, m.device.as_deref(), &global),
+                name,
+                family: m.family.to_string(),
+                path: m.path.display().to_string(),
+                exists: c.data_path(&m.path).is_file(),
+                enabled: m.enabled,
+                is_default: default == Some(i),
+                provider,
+                bench,
+            }
         })
         .collect()
 }
@@ -1247,6 +1368,8 @@ struct ConfigTemplate {
     /// Resolved `models_dir` (where YOLO26 exports go).
     models_dir: String,
     force_cpu_note: Option<String>,
+    /// One line about the `benchmark` config section and the last results.
+    bench_summary: String,
 }
 
 /// One `<option>` of the Device select.
@@ -1324,15 +1447,21 @@ fn config_template(
     error: Option<String>,
     submitted: Option<&HashMap<String, String>>,
 ) -> ConfigTemplate {
+    let snap = devices_snapshot(state);
+    let results = crate::benchmark::BenchmarkResults::load_or_warn(
+        &crate::benchmark::results_path(&state.config_path),
+    );
     let (mut c, models) = {
         let cfg = state.config_read();
-        (ConfigView::from_config(&cfg), model_choices(&cfg))
+        (
+            ConfigView::from_config(&cfg),
+            model_choices(&cfg, &snap, &state.registry, results.as_ref()),
+        )
     };
     if let Some(form) = submitted {
         c.overlay(form);
     }
     let log_levels = level_choices(&c.log_level);
-    let snap = devices_snapshot(state);
     let device_choices = device_choices(&snap, &c.device, &c.gpu_index);
     let (resource_groups, local_models, models_dir, force_cpu_note) = {
         let cfg = state.config_read();
@@ -1346,7 +1475,36 @@ fn config_template(
             force_cpu_note(&cfg, &snap),
         )
     };
+    let bench_summary = {
+        let cfg = state.config_read();
+        let b = &cfg.benchmark;
+        let datasets: Vec<String> = b.datasets.iter().map(|d| d.label()).collect();
+        let last = match &results {
+            Some(r) => format!(
+                " Last results: {} model(s), updated {}.",
+                r.models.len(),
+                r.timestamp
+            ),
+            None => " No results yet.".to_string(),
+        };
+        format!(
+            "Datasets: {}; {} image(s) per dataset; {} timed run(s) per image; grades weigh accuracy {:.0}%.{last}",
+            if datasets.is_empty() {
+                "none".to_string()
+            } else {
+                datasets.join(", ")
+            },
+            if b.max_images_per_dataset == 0 {
+                "all".to_string()
+            } else {
+                b.max_images_per_dataset.to_string()
+            },
+            b.repeat_per_image,
+            b.weights.accuracy_share() * 100.0
+        )
+    };
     ConfigTemplate {
+        bench_summary,
         resource_groups,
         local_models,
         models_dir,
@@ -1495,7 +1653,19 @@ async fn config_models(
     let enabled: Vec<String> = field(&form, "enabled").map(str::to_string).collect();
     let default = field(&form, "default_model").next();
     let restart = field(&form, "action").any(|a| a == "restart");
-    match save_config(&state, |c| apply_models_selection(c, &enabled, default)) {
+    // Per-model Device selects: `device.<model name>` = spec, or "" for the global device.
+    let devices: Vec<(String, Option<String>)> = form
+        .iter()
+        .filter_map(|(k, v)| {
+            k.strip_prefix("device.")
+                .map(|name| (name.to_string(), Some(v.clone())))
+        })
+        .collect();
+    match save_config(&state, |c| {
+        apply_models_selection(c, &enabled, default)?;
+        crate::config::apply_model_devices(c, &devices)?;
+        Ok(())
+    }) {
         Ok(_) if restart => restart_response(&state),
         Ok(msg) => render(&config_template(&state, Some(msg), None, None)),
         Err(e) => {
@@ -1548,14 +1718,19 @@ fn restart_response(state: &AppState) -> Response {
     )
 }
 
-/// Restart like `POST /config/restart`, showing `message`.
-fn restart_response_with(state: &AppState, message: String) -> Response {
+/// Cancel this generation's restart token after [`RESTART_DELAY`] (so the reply gets out).
+fn schedule_restart(state: &AppState) {
     info!("restart requested from the web UI");
     let token = state.restart.clone();
     tokio::spawn(async move {
         tokio::time::sleep(RESTART_DELAY).await;
         token.cancel();
     });
+}
+
+/// Restart like `POST /config/restart`, showing `message`.
+fn restart_response_with(state: &AppState, message: String) -> Response {
+    schedule_restart(state);
     render(&MessageTemplate {
         nav: "config",
         version: crate::VERSION,

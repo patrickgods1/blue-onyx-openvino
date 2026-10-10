@@ -135,6 +135,7 @@ fn kind_str(k: ResourceKind) -> &'static str {
         ResourceKind::OnnxRuntime(_) => "onnx-runtime",
         ResourceKind::CudaLibs => "cuda-libs",
         ResourceKind::Model => "model",
+        ResourceKind::BenchImages => "bench-images",
     }
 }
 
@@ -146,6 +147,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("models-rt-detr", "Models \u{b7} RT-DETRv2"),
     ("models-d-fine", "Models \u{b7} D-FINE"),
     ("models-rf-detr", "Models \u{b7} RF-DETR"),
+    ("bench-images", "Benchmark images"),
 ];
 
 /// Group key of the local (unconfigured) model files.
@@ -158,6 +160,7 @@ pub fn group_of(r: &Resource) -> &'static str {
         ResourceKind::OpenVinoRuntime | ResourceKind::OnnxRuntime(_) => "runtimes",
         ResourceKind::CudaLibs => "gpu-libraries",
         ResourceKind::Model => model_group(r.id),
+        ResourceKind::BenchImages => "bench-images",
     }
 }
 
@@ -385,6 +388,7 @@ fn model_installed(res: &Resource, dir: &Path) -> bool {
 fn is_installed(res: &Resource, installed: &Installed, config: &Config) -> bool {
     match res.kind {
         ResourceKind::Model => model_installed(res, &target_dir(config, res)),
+        ResourceKind::BenchImages => manager::is_installed(res, &target_dir(config, res)),
         _ => installed.has(res.id),
     }
 }
@@ -528,7 +532,7 @@ pub fn rows(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<ResourceRow> {
                 ResourceKind::OpenVinoRuntime => on_disk && ctx.is_some_and(|c| c.openvino_loaded),
                 ResourceKind::OnnxRuntime(f) => ctx.is_some_and(|c| c.ort_loaded == Some(f)),
                 ResourceKind::CudaLibs => crate::backend::libs::cuda_libs_preloaded().is_some(),
-                ResourceKind::Model => false,
+                ResourceKind::Model | ResourceKind::BenchImages => false,
             };
             let blocked = if on_disk {
                 remove_blocked(ctx, r, config, status)

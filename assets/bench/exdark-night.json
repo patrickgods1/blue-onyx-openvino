@@ -1,0 +1,7185 @@
+{
+ "id": "exdark-night",
+ "title": "ExDark low-light / night",
+ "description": "160 low-light photos (very low light to twilight) from the ExDark test split, 6.7 MB (6689717 bytes) in total. Images were resized (stretched) to 640x640 by the Roboflow YOLO export, so resolution is uniform (res:sd) and aspect ratios are distorted. Scored labels: person (ExDark 'People'), bicycle, car, motorbike, bus, dog, cat; boat/bottle/chair/cup/diningtable boxes are ignore regions. Selection favours outdoor street, people, vehicle and animal scenes.",
+ "license": "BSD-3-Clause (original ExDark, https://github.com/cs-chan/Exclusively-Dark-Image-Dataset/blob/master/LICENSE); authors ask that commercial use be cleared with Dr. Chee Seng Chan. Roboflow export labelled CC BY 4.0.",
+ "attribution": "ExDark (Exclusively Dark Image Dataset), Yuen Peng Loh and Chee Seng Chan, Universiti Malaya: 'Getting to Know Low-light Images with The Exclusively Dark Dataset', CVIU 178 (2019) 30-42, doi:10.1016/j.cviu.2018.10.010. YOLO export by Roboflow Universe workspace my-workspace-ohnbt (exclusively-dark-image v2), redistributed by dronefreak/ExDark on Hugging Face. Subset selection and class mapping by Blue Onyx Prism.",
+ "source": "https://huggingface.co/datasets/dronefreak/ExDark",
+ "revision": "980c106507f08ce9200b84b8308028eea1f41c97",
+ "scored_labels": [
+  "person",
+  "bicycle",
+  "car",
+  "motorbike",
+  "bus",
+  "dog",
+  "cat"
+ ],
+ "images": [
+  {
+   "file": "2015_00013_jpg.rf.1ccbc5a451029f00e87a4e0d4181841b.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00013_jpg.rf.1ccbc5a451029f00e87a4e0d4181841b.jpg",
+   "sha256": "63d562a420a8de1845d4d998362819f4abe79ee04103695076798223675e230c",
+   "size": 32026,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [139.5, 270.25, 209.5, 531.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [413.5, 296.5, 460.5, 456.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [407.75, 357.25, 468.25, 490.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [146.75, 367.5, 222.25, 542.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00074_jpg.rf.a41d7af808b25b6fb23f25bab66985ab.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00074_jpg.rf.a41d7af808b25b6fb23f25bab66985ab.jpg",
+   "sha256": "a353c44fd1973e2d688374eb055f2545231af722d074f7feeff4ae804891b232",
+   "size": 53138,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bicycle",
+     "bbox": [294.25, 199.75, 481.75, 594.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [142.25, 237.25, 231.75, 392.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [250.75, 240.0, 311.25, 402.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [128.0, 323.25, 231.0, 505.75],
+     "ignore": false
+    },
+    {
+     "label": "chair",
+     "bbox": [250.25, 335.25, 297.75, 461.75],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_00109_jpg.rf.a46f507606849566d654e5484510bf71.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00109_jpg.rf.a46f507606849566d654e5484510bf71.jpg",
+   "sha256": "aa94e65bd96813e2e1c39bb48da92e89e967b8c0c391be4df472655f8536873b",
+   "size": 32598,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [228.0, 336.5, 359.0, 545.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [220.25, 404.25, 375.75, 575.75],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [543.0, 463.5, 615.0, 555.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00114_jpg.rf.d904d5a038a5b301940aa8addf147c75.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00114_jpg.rf.d904d5a038a5b301940aa8addf147c75.jpg",
+   "sha256": "a2daa0f9ef6b3114a2cc3824b894b959340d0f56fcc1c2053dc025a73057b37a",
+   "size": 51726,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [10.0, 298.5, 207.0, 623.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [280.0, 317.75, 294.0, 361.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [216.0, 353.75, 285.0, 511.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00133_jpg.rf.f0770b27ef1a6d346bd332ba2a870901.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00133_jpg.rf.f0770b27ef1a6d346bd332ba2a870901.jpg",
+   "sha256": "1e5df32d003b4add285156b479999c90261661aca4cc44a13e1631155340708e",
+   "size": 80440,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [182.0, 250.25, 259.0, 566.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [322.0, 314.75, 346.0, 427.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [343.0, 320.75, 368.0, 424.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [129.0, 343.25, 171.0, 392.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [177.0, 347.75, 271.0, 580.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00142_jpg.rf.bc86a90a1ce04ee6cd6aadbc5c43b8cd.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00142_jpg.rf.bc86a90a1ce04ee6cd6aadbc5c43b8cd.jpg",
+   "sha256": "7c0c35ee054f95d03ba2142b0e34a3e94416c7e7e294dd451e06d1c62b89ea70",
+   "size": 23402,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [222.0, 196.0, 287.0, 440.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [353.0, 236.25, 398.0, 398.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [347.75, 300.0, 394.25, 432.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [201.0, 309.5, 290.0, 485.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00161_jpg.rf.140c2944117cff80f01a88ec0726fc1b.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00161_jpg.rf.140c2944117cff80f01a88ec0726fc1b.jpg",
+   "sha256": "0b27647fb8f70c92fd9447c6cb8d03d8b884425223b12a36a10c1a10e9eaa258",
+   "size": 29799,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": []
+  },
+  {
+   "file": "2015_00180_jpg.rf.a52311b6316ba7165ae263ecb8ea97cc.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00180_jpg.rf.a52311b6316ba7165ae263ecb8ea97cc.jpg",
+   "sha256": "5eaae48b2c50ee393dac29aff82098eccd81f1c24038ad205b9ab0235f15788f",
+   "size": 51004,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [410.0, 135.75, 482.0, 422.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [333.0, 207.5, 399.0, 432.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [270.0, 212.75, 358.0, 536.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [126.75, 234.5, 169.25, 412.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [64.5, 271.75, 104.5, 437.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [401.5, 276.75, 489.5, 484.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [21.0, 279.0, 52.0, 457.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [127.75, 299.0, 170.25, 452.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [266.0, 318.75, 394.0, 588.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [64.5, 323.5, 99.5, 464.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [21.25, 340.75, 54.75, 479.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00235_jpg.rf.7cb2de0f468ad743c1ed87254cc995ec.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00235_jpg.rf.7cb2de0f468ad743c1ed87254cc995ec.jpg",
+   "sha256": "3d67b9fdbf13759be289eb9fad2541be2de7040730d869d93d1cae704cc24f6e",
+   "size": 36694,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [113.75, 333.25, 189.25, 440.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [58.75, 333.5, 125.25, 425.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [293.25, 353.5, 624.75, 497.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [56.75, 374.75, 132.25, 440.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [106.0, 381.0, 195.0, 448.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00273_jpg.rf.8feb74ca5316274a6e1de8b8678a9a51.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00273_jpg.rf.8feb74ca5316274a6e1de8b8678a9a51.jpg",
+   "sha256": "399ebeb32d82825d1e99b0254d0508c0eba3e960f960be815a30ca19ab47d811",
+   "size": 64501,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [83.0, 241.25, 160.0, 354.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [227.0, 250.75, 242.0, 297.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [35.0, 260.25, 134.0, 382.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [396.0, 262.75, 421.0, 313.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [413.0, 265.5, 460.0, 333.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [315.0, 267.75, 344.0, 329.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [338.0, 267.75, 375.0, 337.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [257.0, 268.0, 299.0, 328.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [361.0, 272.25, 397.0, 374.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [3.0, 274.75, 92.0, 528.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [140.0, 281.25, 182.0, 399.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [180.0, 281.25, 205.0, 339.75],
+     "ignore": false
+    },
+    {
+     "label": "diningtable",
+     "bbox": [425.0, 327.75, 475.0, 417.25],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [468.0, 328.0, 520.0, 428.0],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [266.0, 333.25, 316.0, 431.75],
+     "ignore": true
+    },
+    {
+     "label": "diningtable",
+     "bbox": [300.0, 335.75, 379.0, 429.25],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [327.0, 346.75, 383.0, 448.25],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [406.0, 349.5, 454.0, 441.5],
+     "ignore": true
+    },
+    {
+     "label": "bicycle",
+     "bbox": [30.0, 351.75, 161.0, 593.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00288_jpg.rf.3040938903600eba4ffb3161f93f28cf.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00288_jpg.rf.3040938903600eba4ffb3161f93f28cf.jpg",
+   "sha256": "aa48e8a4cc1593b65da86c42a0e19ae1e281d0b0833c6b89c4640ff8b16f2dd0",
+   "size": 37311,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [618.0, 263.5, 637.0, 379.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [273.0, 265.5, 293.0, 352.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [309.5, 267.0, 330.5, 341.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [14.75, 268.75, 64.25, 349.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [176.5, 268.75, 214.5, 334.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [81.0, 269.75, 101.0, 333.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [585.0, 270.0, 602.0, 348.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [556.75, 270.5, 581.25, 348.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [601.25, 270.5, 623.75, 333.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [242.5, 270.75, 259.5, 341.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [501.5, 270.75, 516.5, 334.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [294.5, 271.5, 311.5, 331.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [263.5, 272.5, 280.5, 331.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [120.5, 272.75, 147.5, 358.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [139.5, 273.0, 164.5, 329.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [397.5, 276.25, 413.5, 344.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [334.5, 277.25, 353.5, 325.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [357.5, 277.25, 402.5, 387.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [424.5, 278.25, 444.5, 346.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [527.75, 279.5, 548.25, 350.5],
+     "ignore": false
+    },
+    {
+     "label": "chair",
+     "bbox": [575.75, 304.75, 600.25, 353.25],
+     "ignore": true
+    },
+    {
+     "label": "bicycle",
+     "bbox": [336.75, 308.5, 409.25, 396.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [181.75, 328.0, 252.25, 400.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00292_jpg.rf.1c29aa538876b419374b6f76802e7b08.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00292_jpg.rf.1c29aa538876b419374b6f76802e7b08.jpg",
+   "sha256": "447f8ce31e7283c7a56ec4d9092e858d6ce0969745d4f5387f341e050065671e",
+   "size": 72787,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [122.0, 100.5, 568.0, 584.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [330.0, 274.25, 396.0, 377.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [117.0, 356.5, 318.0, 563.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [579.0, 362.5, 612.0, 404.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00293_jpg.rf.952e390c8df8eeab4d6f350799e14b51.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00293_jpg.rf.952e390c8df8eeab4d6f350799e14b51.jpg",
+   "sha256": "0acd2ffd3ef72fc6469bdd0ae503628c8ebd2ec05be026244e4c7793f8d0660a",
+   "size": 75289,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [495.5, 260.5, 578.5, 308.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [564.75, 260.75, 637.25, 315.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [206.75, 261.75, 220.25, 302.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [383.5, 262.0, 395.5, 309.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [178.25, 263.75, 201.75, 315.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [423.0, 269.5, 534.0, 333.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [40.5, 275.75, 81.5, 314.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [277.5, 277.0, 371.5, 327.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [72.0, 277.75, 116.0, 333.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [551.25, 286.5, 638.75, 363.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [202.5, 291.5, 236.5, 321.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [285.75, 333.25, 354.25, 468.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [459.5, 340.75, 611.5, 502.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [4.25, 356.75, 158.75, 506.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00340_jpg.rf.dd9912183151d4791ffc1fbb2dc174e0.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00340_jpg.rf.dd9912183151d4791ffc1fbb2dc174e0.jpg",
+   "sha256": "0b9643af110a27a50d0f91a46457bf396587e296dc97949dda54245168f83876",
+   "size": 63078,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [184.0, 194.0, 257.0, 348.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [9.0, 195.25, 41.0, 315.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [138.0, 197.0, 162.0, 272.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [430.0, 200.75, 482.0, 254.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [457.0, 200.75, 520.0, 293.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [101.0, 201.0, 146.0, 332.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [367.0, 203.5, 421.0, 397.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [50.0, 203.75, 83.0, 352.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [266.0, 207.75, 298.0, 336.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [581.0, 207.75, 610.0, 277.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [289.0, 218.25, 362.0, 259.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [559.0, 246.25, 638.0, 393.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [176.0, 249.0, 341.0, 363.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [87.0, 259.75, 162.0, 341.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [7.0, 265.25, 84.0, 413.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [472.0, 265.25, 536.0, 357.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [304.0, 282.5, 429.0, 404.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00370_jpg.rf.59da610401e74a771e8a84134f14e202.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00370_jpg.rf.59da610401e74a771e8a84134f14e202.jpg",
+   "sha256": "c7424f9675d0f898fcc0836863e78896e8533295a1441af7cfd7686f230318f3",
+   "size": 50281,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [137.0, 309.5, 158.0, 365.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [177.0, 311.0, 217.0, 370.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [244.0, 311.0, 267.0, 373.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [284.0, 317.0, 308.0, 373.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [367.0, 329.0, 394.0, 388.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [473.0, 332.25, 488.0, 410.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [314.0, 338.0, 337.0, 400.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [501.0, 341.0, 525.0, 436.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [211.0, 342.75, 233.0, 421.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [481.0, 344.0, 502.0, 439.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [228.0, 344.25, 252.0, 419.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [340.0, 344.25, 361.0, 425.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [525.0, 345.75, 545.0, 427.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [262.0, 347.0, 281.0, 448.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [405.0, 347.25, 427.0, 398.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [188.0, 351.5, 214.0, 419.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [441.0, 351.5, 466.0, 443.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [581.0, 352.0, 615.0, 450.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [17.0, 354.75, 46.0, 480.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [164.0, 357.5, 184.0, 416.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [381.0, 357.75, 405.0, 445.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [58.0, 375.75, 93.0, 469.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [286.0, 377.5, 316.0, 504.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [317.0, 382.0, 341.0, 501.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [347.0, 383.5, 372.0, 499.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [408.0, 385.0, 439.0, 483.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [449.0, 386.5, 487.0, 525.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [551.0, 389.5, 580.0, 508.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [596.0, 394.0, 627.0, 521.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [228.0, 431.5, 282.0, 597.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [385.0, 437.5, 415.0, 561.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [503.0, 441.0, 538.0, 616.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [177.0, 469.5, 243.0, 632.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [470.0, 484.5, 582.0, 614.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00377_jpg.rf.4f958f1045fad02451c5dcfacedfba8a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00377_jpg.rf.4f958f1045fad02451c5dcfacedfba8a.jpg",
+   "sha256": "438bba99417fa8b8addd674a8ff8fb8420924dfedd5e0ba4e45b8947bf738eee",
+   "size": 82496,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [489.0, 142.75, 509.0, 180.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [302.0, 151.75, 322.0, 217.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [389.0, 153.5, 410.0, 201.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [319.0, 158.75, 335.0, 189.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [252.0, 160.25, 276.0, 202.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [174.0, 162.75, 217.0, 213.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [222.0, 164.0, 248.0, 208.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [233.0, 166.75, 581.0, 533.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [88.0, 172.0, 127.0, 260.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [141.0, 180.0, 367.0, 292.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [23.0, 242.75, 257.0, 537.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [156.0, 249.5, 561.0, 633.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00394_jpg.rf.c4d657ef8f0ed930a4b5bbeedbf60e8d.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00394_jpg.rf.c4d657ef8f0ed930a4b5bbeedbf60e8d.jpg",
+   "sha256": "c24f0572137dc45b47733b6a28355fdddbf44d2eca7fc7f6c635898ad825cb86",
+   "size": 106816,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bicycle",
+     "bbox": [311.0, 184.0, 429.0, 287.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [505.0, 205.0, 576.0, 492.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [144.0, 208.0, 194.0, 323.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [27.0, 209.25, 77.0, 298.75],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [555.0, 212.5, 610.0, 266.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [48.0, 215.25, 202.0, 621.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [332.0, 216.75, 384.0, 438.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [184.0, 221.5, 255.0, 381.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [65.0, 224.25, 112.0, 303.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [182.0, 227.5, 354.0, 408.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [559.0, 249.5, 600.0, 306.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [389.0, 251.0, 519.0, 423.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [154.0, 297.5, 292.0, 430.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [460.0, 318.5, 579.0, 463.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [14.0, 415.5, 278.0, 635.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00415_jpg.rf.5d317c144a73fe1e57ee3152bf4d5589.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00415_jpg.rf.5d317c144a73fe1e57ee3152bf4d5589.jpg",
+   "sha256": "3032112ffc525c1f3f8a00c29e6f62ac017f640362d4a6b0c48bd085dc53e076",
+   "size": 66910,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [213.0, 257.5, 473.0, 479.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [507.0, 289.25, 600.0, 578.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [4.0, 292.25, 90.0, 621.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [290.0, 316.0, 383.0, 592.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [45.0, 325.0, 94.0, 577.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [95.0, 335.75, 181.0, 589.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [240.0, 338.75, 289.0, 514.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [78.0, 362.75, 112.0, 475.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [186.0, 376.25, 219.0, 413.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [232.0, 407.5, 287.0, 536.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [300.0, 418.25, 368.0, 617.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [486.0, 419.5, 617.0, 617.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00432_jpg.rf.4364281fef498d3eaa8fffced2d8afc1.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00432_jpg.rf.4364281fef498d3eaa8fffced2d8afc1.jpg",
+   "sha256": "096d4156e4adb3c11adcddc241b73d4f2e6eef6e41c8c347a7be8df2a9a9f82d",
+   "size": 30460,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [414.5, 29.75, 555.5, 452.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [228.0, 43.0, 347.0, 539.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [54.5, 59.0, 181.5, 479.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [413.25, 76.5, 488.75, 256.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [313.5, 94.75, 370.5, 268.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [371.5, 228.25, 637.5, 470.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [223.5, 232.75, 418.5, 579.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [4.25, 263.5, 246.75, 478.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00436_JPEG.rf.53aaf075752cd27ddce21c01f8777bcf.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00436_JPEG.rf.53aaf075752cd27ddce21c01f8777bcf.jpg",
+   "sha256": "126eb359759a67d3bdb8e5bf7144cfa177077ef2b902030c16000d8d2df94750",
+   "size": 60489,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [46.0, 129.5, 138.0, 211.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [367.0, 129.75, 453.0, 230.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [456.0, 133.0, 484.0, 239.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [143.25, 133.25, 232.75, 233.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [485.0, 138.25, 513.0, 235.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [279.0, 140.0, 311.0, 246.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [514.75, 140.0, 545.25, 239.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [547.75, 140.0, 572.25, 251.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [572.0, 145.0, 604.0, 232.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [311.0, 146.75, 343.0, 244.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [611.75, 148.5, 636.25, 223.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [240.5, 160.25, 276.5, 257.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [14.25, 174.0, 71.75, 278.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [279.0, 206.75, 343.0, 360.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [494.0, 216.75, 563.0, 387.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [99.75, 220.25, 148.25, 339.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [338.0, 235.5, 498.0, 380.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [562.0, 238.75, 636.0, 346.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [14.0, 249.0, 119.0, 372.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [212.5, 264.75, 295.5, 413.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [139.5, 281.5, 185.5, 419.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [10.5, 353.25, 637.5, 552.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00438_JPEG.rf.b4f1e3e3e45ffe028f00e045c6f0568c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00438_JPEG.rf.b4f1e3e3e45ffe028f00e045c6f0568c.jpg",
+   "sha256": "5135dd8294d975f4888b75174b405811df621bce68a371475bb8854103b3cc91",
+   "size": 56682,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [494.25, 331.25, 509.75, 387.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [542.5, 336.5, 601.5, 416.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [516.0, 338.25, 552.0, 397.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [578.75, 380.75, 636.25, 483.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00440_JPEG.rf.6e48012e7d00b6eabc30fea0bdb384fa.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00440_JPEG.rf.6e48012e7d00b6eabc30fea0bdb384fa.jpg",
+   "sha256": "8b4c2f16429db585bb326805cc2be822685982482a767384099d01853fcf6c7b",
+   "size": 55643,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [237.25, 98.5, 629.75, 610.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [208.25, 175.5, 332.75, 348.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [29.0, 181.75, 138.0, 376.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [8.75, 185.75, 70.25, 329.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [152.0, 192.0, 198.0, 275.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [133.0, 235.5, 239.0, 289.5],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [3.5, 251.0, 39.5, 328.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [25.75, 265.0, 128.25, 415.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [172.25, 265.0, 424.75, 388.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [133.0, 330.25, 638.0, 634.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00441_JPEG.rf.5985bacbedb57ff936df4d0b22926aca.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00441_JPEG.rf.5985bacbedb57ff936df4d0b22926aca.jpg",
+   "sha256": "d7e3edc52bd3291e4154876475a1aa55a0935c14fa6110b0d45c4b2c54f41579",
+   "size": 50238,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [408.0, 207.25, 432.0, 241.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [460.75, 207.25, 500.25, 246.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [515.5, 212.75, 549.5, 247.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [512.0, 229.0, 635.0, 499.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [338.0, 239.5, 483.0, 513.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00469_jpg.rf.c0e8dfa4a836e29e8e99c6c6c1608a5c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00469_jpg.rf.c0e8dfa4a836e29e8e99c6c6c1608a5c.jpg",
+   "sha256": "6eb7cf6b3242975a2a381eb5f7d27653f90d6fe59996c2cf8d9db8d5d4456a08",
+   "size": 24988,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [62.25, 153.75, 235.75, 610.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [534.5, 154.0, 636.5, 529.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [246.5, 188.25, 377.5, 491.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [507.5, 300.75, 636.5, 588.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [54.75, 379.0, 251.25, 631.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00608_png.rf.dde3267c47cd90a926231ec9c89aa0eb.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00608_png.rf.dde3267c47cd90a926231ec9c89aa0eb.jpg",
+   "sha256": "e952e68eba9355fba58c02fec64304fdf4539dabcf1bb000080e92b5fa0232f9",
+   "size": 27045,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [52.0, 359.75, 87.0, 401.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [165.0, 365.25, 209.0, 402.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [199.0, 412.0, 251.0, 448.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [279.0, 414.75, 295.0, 461.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [254.0, 418.75, 271.0, 468.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [257.0, 446.75, 293.0, 484.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [302.0, 447.75, 326.0, 477.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [303.0, 474.75, 373.0, 532.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [355.0, 492.0, 426.0, 556.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_00807_jpg.rf.5be01e1febc9c96ee8c7c4542a8144fb.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00807_jpg.rf.5be01e1febc9c96ee8c7c4542a8144fb.jpg",
+   "sha256": "18dfb5dfb190706bf6ba404bd11f8d84e1b7b774b321250fe45eb167858f8c69",
+   "size": 30416,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [41.25, 110.0, 554.75, 320.0],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_00822_jpg.rf.58920b3a058fd3553cc984dd08d0933f.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00822_jpg.rf.58920b3a058fd3553cc984dd08d0933f.jpg",
+   "sha256": "6b7c2717b1fdfebebbdc312794234da1605e62a968789f248a76d5cfaf16daaa",
+   "size": 49315,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [2.75, 365.0, 196.25, 432.0],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [225.0, 368.0, 574.0, 485.0],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_00829_jpg.rf.ae42219c973d7fff18c96c155288cf6d.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00829_jpg.rf.ae42219c973d7fff18c96c155288cf6d.jpg",
+   "sha256": "84a37bbd479c5f06ebbabc658986d95a3c4510b2310384f209ad4cd68e32fc6b",
+   "size": 29248,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [540.0, 238.0, 618.0, 414.0],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [273.0, 262.0, 529.0, 444.0],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [177.0, 405.0, 511.0, 554.0],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_00924_jpg.rf.93dba1030201ef651345405786476a21.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00924_jpg.rf.93dba1030201ef651345405786476a21.jpg",
+   "sha256": "90f78862217d5caed6d8d692e97c066a0ec62e9dbca50328a85e828fc78a8728",
+   "size": 79507,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [462.0, 304.0, 522.0, 350.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [395.25, 307.0, 448.75, 356.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [296.25, 311.5, 317.75, 351.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [337.5, 315.75, 383.5, 354.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [248.25, 318.75, 295.75, 353.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [290.0, 320.25, 334.0, 351.75],
+     "ignore": false
+    },
+    {
+     "label": "boat",
+     "bbox": [101.75, 340.25, 194.25, 404.75],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [187.25, 341.75, 434.75, 571.25],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_00974_jpg.rf.03eca855aa7da49edeedb5f9de3f4ff4.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_00974_jpg.rf.03eca855aa7da49edeedb5f9de3f4ff4.jpg",
+   "sha256": "45e1e4115160147c036523aaea79e25ae09ab48b0dd115b65ad375fe5bf0bdba",
+   "size": 38957,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [60.0, 338.25, 215.0, 455.75],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [195.0, 437.5, 255.0, 520.5],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [82.0, 455.75, 121.0, 498.25],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [271.0, 469.5, 356.0, 573.5],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01022_jpg.rf.ffd06b8a7cad165fb36d95889299656a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01022_jpg.rf.ffd06b8a7cad165fb36d95889299656a.jpg",
+   "sha256": "ff5642d7a6d06355e9ab7b5e42e3fe6d89a9c396474086c83ab557bb29df4463",
+   "size": 47601,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [4.0, 46.5, 270.0, 533.5],
+     "ignore": true
+    },
+    {
+     "label": "boat",
+     "bbox": [367.0, 142.5, 634.0, 503.5],
+     "ignore": true
+    },
+    {
+     "label": "dog",
+     "bbox": [335.0, 394.0, 359.0, 460.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_01133_jpg.rf.b044da7bf65aa088d602ecfec2035f07.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01133_jpg.rf.b044da7bf65aa088d602ecfec2035f07.jpg",
+   "sha256": "99692224d36c6a3103d050aadb67b37f6cb5ed745f054d629d079a63dc558017",
+   "size": 25381,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [225.25, 421.0, 548.75, 559.0],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01152_JPEG.rf.2a495ec64de7154dcc534ba2f6df2ad0.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01152_JPEG.rf.2a495ec64de7154dcc534ba2f6df2ad0.jpg",
+   "sha256": "d1168b81adbb498bf318f672c06ff4dc87f386d9dce154112e5d4e0672eb2301",
+   "size": 36680,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [251.0, 345.25, 634.0, 634.75],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01177_JPEG.rf.4f0e9b1db1a4d9adbbf3083cd5d5a76b.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01177_JPEG.rf.4f0e9b1db1a4d9adbbf3083cd5d5a76b.jpg",
+   "sha256": "7d529c325f5706e5144ce48543bd24cf151d1b0152d60ed878ebb5a3f7f0d5e2",
+   "size": 40479,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [84.75, 267.75, 627.25, 621.25],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01243_jpg.rf.4d4b0fe42a16eb1ca5bb795f0814fc97.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01243_jpg.rf.4d4b0fe42a16eb1ca5bb795f0814fc97.jpg",
+   "sha256": "8818e138401fd64700020f4e0b462f928e2f2c8b03974a74708b53ef386ae292",
+   "size": 35268,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [2.5, 326.75, 410.5, 547.25],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01260_jpg.rf.09ef0f8c8536176b8f013e537268b393.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01260_jpg.rf.09ef0f8c8536176b8f013e537268b393.jpg",
+   "sha256": "8654ca26460e7859215a612a5bf4947290c99325aa8fb3cbb91014a589229028",
+   "size": 34183,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [250.25, 444.25, 448.75, 620.75],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01331_jpg.rf.05c6d01bed02d38517da1f447c983457.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01331_jpg.rf.05c6d01bed02d38517da1f447c983457.jpg",
+   "sha256": "fd8e5f19e9d6b6a721b8950e24709e7a8f644335326c685c118cbdb1b19ae141",
+   "size": 38521,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "empty",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "boat",
+     "bbox": [10.0, 402.5, 401.0, 631.5],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01642_jpg.rf.117a20e01731f3a1adfa3ab730ff2683.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01642_jpg.rf.117a20e01731f3a1adfa3ab730ff2683.jpg",
+   "sha256": "80373bf0b206cea7b10e82a439857dbabf855ca6298a5ba600a1c286f1af9cbb",
+   "size": 41225,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [111.0, 237.25, 178.0, 351.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [61.0, 265.5, 106.0, 489.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [251.0, 290.75, 292.0, 364.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [205.0, 292.25, 235.0, 366.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [183.0, 299.75, 227.0, 389.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [298.0, 301.25, 334.0, 350.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [345.0, 301.25, 400.0, 386.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [389.0, 303.75, 430.0, 393.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [131.0, 305.25, 187.0, 431.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [418.0, 313.25, 504.0, 422.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [245.0, 331.75, 308.0, 469.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [269.0, 333.5, 376.0, 537.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [523.0, 334.75, 586.0, 468.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [582.0, 349.5, 637.0, 517.5],
+     "ignore": false
+    },
+    {
+     "label": "diningtable",
+     "bbox": [175.0, 350.75, 524.0, 584.25],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [111.0, 353.5, 144.0, 485.5],
+     "ignore": true
+    },
+    {
+     "label": "bottle",
+     "bbox": [358.0, 359.75, 376.0, 429.25],
+     "ignore": true
+    },
+    {
+     "label": "person",
+     "bbox": [459.0, 372.25, 578.0, 630.75],
+     "ignore": false
+    },
+    {
+     "label": "chair",
+     "bbox": [139.0, 378.75, 216.0, 576.25],
+     "ignore": true
+    },
+    {
+     "label": "bottle",
+     "bbox": [468.0, 386.5, 494.0, 466.5],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [201.0, 393.5, 248.0, 617.5],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [402.0, 394.75, 418.0, 424.25],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [242.0, 406.75, 313.0, 628.25],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [408.0, 421.25, 425.0, 458.75],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [288.0, 430.75, 428.0, 629.25],
+     "ignore": true
+    },
+    {
+     "label": "chair",
+     "bbox": [474.0, 499.75, 634.0, 637.25],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_01910_jpg.rf.230e1abe58a365abdb853d04a44008aa.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01910_jpg.rf.230e1abe58a365abdb853d04a44008aa.jpg",
+   "sha256": "5996e9ba2b00de9397f947e526f9a50c4ab6820ddbf70bced5afc81e08e88d2f",
+   "size": 44674,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [134.0, 95.25, 467.0, 635.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [409.0, 382.0, 442.0, 492.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [353.0, 391.0, 406.0, 501.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [247.0, 395.5, 305.0, 468.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [461.0, 410.25, 502.0, 632.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [509.0, 417.25, 555.0, 636.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [563.0, 420.25, 633.0, 635.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [51.0, 490.75, 83.0, 574.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [88.0, 496.5, 121.0, 578.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_01911_jpg.rf.0c557aa214fb55423d3df4f8f3af5455.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01911_jpg.rf.0c557aa214fb55423d3df4f8f3af5455.jpg",
+   "sha256": "1df5317323d2be6ef73099c7277978caf78c7e87c8eb1df7e8432bd7a5c65b08",
+   "size": 37236,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [30.5, 224.0, 297.5, 522.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [286.0, 358.75, 359.0, 482.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [340.0, 364.5, 582.0, 533.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [510.25, 364.5, 560.75, 398.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_01916_jpg.rf.8f2dc45bff32ddb0d0d41e8f80ab0cd7.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01916_jpg.rf.8f2dc45bff32ddb0d0d41e8f80ab0cd7.jpg",
+   "sha256": "447878a6655a5c8bd7694583aab21c03d88d888ac15ada465a424a342409cf0b",
+   "size": 38364,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [10.25, 63.0, 538.75, 622.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [126.75, 257.75, 187.25, 347.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [600.5, 324.0, 637.5, 452.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [294.25, 342.0, 403.75, 637.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [515.0, 344.25, 567.0, 506.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_01931_jpg.rf.7c8c43d435365a683ba39b697d5f25b7.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01931_jpg.rf.7c8c43d435365a683ba39b697d5f25b7.jpg",
+   "sha256": "fca3e8bf38e66c0868f3541a29c1d304b1ae100203464e25ee5521bfdabc38d8",
+   "size": 59360,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [298.25, 217.25, 383.75, 301.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [407.5, 255.5, 423.5, 282.5],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [252.25, 263.5, 305.75, 357.5],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [371.5, 282.75, 412.5, 367.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [413.5, 286.5, 443.5, 315.5],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [197.75, 288.25, 267.25, 397.75],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [350.25, 299.75, 398.75, 388.25],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [405.0, 303.75, 467.0, 419.25],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [108.0, 336.25, 190.0, 468.75],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [241.25, 369.25, 366.75, 622.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [72.0, 375.0, 113.0, 446.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [480.75, 384.75, 554.25, 440.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [619.0, 432.25, 639.0, 491.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [595.25, 443.75, 613.75, 507.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [565.25, 499.75, 634.75, 632.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_01974_jpg.rf.7c69e56084e6d90e859c6a29e748e040.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01974_jpg.rf.7c69e56084e6d90e859c6a29e748e040.jpg",
+   "sha256": "2800446cf1f5e052f31bb485f9db243f262befc2bc304616f1c49a53f1599aae",
+   "size": 34427,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [56.5, 111.0, 504.5, 488.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [194.75, 184.5, 243.25, 300.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [394.25, 228.5, 491.75, 561.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [477.5, 228.75, 551.5, 587.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_01984_jpg.rf.01c998f297a7c2b796ac390788a308c8.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_01984_jpg.rf.01c998f297a7c2b796ac390788a308c8.jpg",
+   "sha256": "17f64cec2fbddd9093c860a9b36086bfcd5fb44126c8937f611c573080692ec1",
+   "size": 60312,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [362.0, 186.75, 429.0, 269.25],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [298.0, 280.25, 556.0, 454.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [362.0, 310.5, 406.0, 422.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [106.0, 355.75, 126.0, 433.25],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [360.0, 355.75, 401.0, 449.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [58.0, 356.0, 77.0, 432.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [13.0, 369.25, 27.0, 431.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [593.0, 370.75, 620.0, 437.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [216.0, 373.5, 272.0, 437.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [29.0, 386.5, 43.0, 430.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [89.0, 386.5, 109.0, 430.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [129.0, 386.5, 143.0, 430.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [190.0, 400.25, 221.0, 430.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02003_jpg.rf.0de4321e38488364aeec5d23395aee8e.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02003_jpg.rf.0de4321e38488364aeec5d23395aee8e.jpg",
+   "sha256": "8a0a6c78b69623c084c3a2797959b0c66184506ca4cf45bfa2c2683d31524896",
+   "size": 45911,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [113.75, 162.5, 600.25, 540.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [310.0, 229.5, 381.0, 279.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [398.0, 242.0, 489.0, 283.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [316.5, 365.0, 416.5, 433.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [415.5, 372.0, 477.5, 422.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02085_jpg.rf.45e93b78a7b1c58831b7ad103cce321a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02085_jpg.rf.45e93b78a7b1c58831b7ad103cce321a.jpg",
+   "sha256": "582202be1302800fa79806a09bd4e84e9abbb3f78247d6ebf4f3be5ee83470ea",
+   "size": 35273,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [97.5, 36.25, 615.5, 615.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [444.0, 206.75, 548.0, 312.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [168.75, 208.25, 264.25, 295.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02099_jpg.rf.0d47e8e251715677dcb1b6e6bda22167.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02099_jpg.rf.0d47e8e251715677dcb1b6e6bda22167.jpg",
+   "sha256": "5fd46ab3762d8fe87b890916dcafe6e4bca52dddc229d114b7a99963f2ee4107",
+   "size": 41006,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [85.0, 368.0, 397.0, 588.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [275.0, 437.25, 297.0, 491.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [457.0, 448.0, 538.0, 532.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02111_jpg.rf.cd7d9dbccaf3bde64583804d1c9bf07b.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02111_jpg.rf.cd7d9dbccaf3bde64583804d1c9bf07b.jpg",
+   "sha256": "e28adf8032bf8654c219f3b7dfad48339ae60f43f60276bced93f2e4e167ca96",
+   "size": 60808,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [9.0, 122.75, 328.0, 257.25],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [303.0, 124.0, 500.0, 256.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [353.0, 194.75, 468.0, 252.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02113_jpg.rf.a47694aa0e211d14b5069c7221be8cc1.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02113_jpg.rf.a47694aa0e211d14b5069c7221be8cc1.jpg",
+   "sha256": "4236790d41776f22e2680270f74fd1872fe412953121ba79e54a8b716c86919f",
+   "size": 53116,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [169.5, 149.75, 472.5, 621.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [297.75, 273.75, 344.25, 413.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [216.5, 293.75, 272.5, 401.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [462.5, 301.75, 496.5, 359.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [7.25, 350.5, 165.75, 478.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02201_jpg.rf.4703dc964d2748bae6eeb001916a6e19.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02201_jpg.rf.4703dc964d2748bae6eeb001916a6e19.jpg",
+   "sha256": "1578a42233190b7e3ae2abd3eb7634cae94a01f6b326bee196e12fc425115bfe",
+   "size": 51245,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [464.0, 282.5, 636.0, 382.5],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [226.0, 293.0, 348.0, 371.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [140.0, 318.5, 173.0, 354.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [14.0, 323.0, 63.0, 401.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [360.0, 323.0, 456.0, 395.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [65.0, 329.0, 91.0, 401.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [154.0, 330.75, 184.0, 420.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [6.0, 333.25, 51.0, 497.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [91.0, 334.75, 137.0, 490.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [387.0, 334.75, 416.0, 484.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [521.0, 339.25, 636.0, 403.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [215.0, 341.0, 235.0, 416.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [255.0, 341.0, 284.0, 441.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [344.0, 341.25, 379.0, 457.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [192.0, 342.75, 213.0, 426.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [289.0, 349.75, 332.0, 478.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [413.0, 350.0, 444.0, 477.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [457.0, 361.75, 527.0, 562.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [315.0, 387.25, 373.0, 527.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02202_jpg.rf.ef9122915580ef27814fbd9be892c807.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02202_jpg.rf.ef9122915580ef27814fbd9be892c807.jpg",
+   "sha256": "99375e0bda6b63b7ce191b80370d358b1a98553f9a47ebbd360519a54d8f6710",
+   "size": 88954,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [324.0, 152.0, 468.0, 479.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [536.0, 308.5, 639.0, 632.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [393.0, 313.25, 423.0, 372.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [247.0, 337.5, 282.0, 483.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [186.0, 338.75, 312.0, 451.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [493.0, 342.25, 541.0, 527.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [213.0, 343.75, 245.0, 500.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [65.0, 349.75, 122.0, 404.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [3.0, 355.75, 19.0, 430.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [66.0, 364.75, 192.0, 462.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02240_JPEG.rf.587b1aa0c47856f9ef50b55d84163d45.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02240_JPEG.rf.587b1aa0c47856f9ef50b55d84163d45.jpg",
+   "sha256": "9c2cc857e8e57fbc4b9e02771fb012adb1cd7a341218f4fed3ddcc4b3c422556",
+   "size": 36902,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [79.25, 148.5, 638.75, 609.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [455.75, 351.5, 623.25, 629.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [279.25, 375.25, 405.75, 629.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [57.5, 407.75, 176.5, 626.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [157.5, 415.0, 258.5, 594.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02241_JPEG.rf.514f50f63155f0528ebdf705b8a82fc2.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02241_JPEG.rf.514f50f63155f0528ebdf705b8a82fc2.jpg",
+   "sha256": "ec5d2fd563f3cdea4c1d717570634395872abdec910123b5b58822e84000ad32",
+   "size": 44263,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [305.75, 151.0, 634.25, 475.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [226.75, 344.25, 309.25, 455.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [134.5, 375.0, 251.5, 435.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02376_jpg.rf.4878dc1b85b91b0666913ae7c2143328.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02376_jpg.rf.4878dc1b85b91b0666913ae7c2143328.jpg",
+   "sha256": "50b794782c5d53d2f10f56cfb695b3a498098b1ada03e940a9fe082f179329e9",
+   "size": 27665,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [400.5, 79.25, 636.5, 361.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [300.25, 237.0, 379.75, 412.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [296.0, 303.0, 377.0, 477.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02396_jpg.rf.778190535b8cc8b584528273476bd45c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02396_jpg.rf.778190535b8cc8b584528273476bd45c.jpg",
+   "sha256": "f29d8de65664999f4ca35392bf067ff9b1846a602ea9863595ad23ff00f739fa",
+   "size": 32415,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [189.25, 144.25, 404.75, 426.75],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [112.25, 213.5, 207.75, 407.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [551.25, 272.75, 581.75, 420.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [477.25, 295.25, 502.75, 409.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [413.0, 300.25, 442.0, 416.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02399_png.rf.2fb8447e32f8e10d00ef62c4dddeddd8.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02399_png.rf.2fb8447e32f8e10d00ef62c4dddeddd8.jpg",
+   "sha256": "e9c84bac69987ae1a60c5b5757eb50363f0f07097d37dc000352d2888ee0eeab",
+   "size": 54573,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [333.75, 212.25, 354.25, 275.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [341.75, 251.75, 358.25, 298.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [341.25, 307.75, 356.75, 334.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [378.75, 329.5, 401.25, 384.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [331.25, 347.75, 344.75, 382.25],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [562.0, 347.75, 615.0, 450.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [511.5, 356.75, 540.5, 402.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [273.0, 364.25, 314.0, 415.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [411.25, 371.25, 460.75, 434.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [236.5, 387.75, 260.5, 433.25],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [264.0, 409.75, 403.0, 512.25],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [83.25, 411.0, 182.75, 510.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [454.25, 415.25, 485.75, 460.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [508.75, 425.0, 543.25, 467.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [426.5, 442.75, 462.5, 488.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [3.75, 469.5, 38.25, 531.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [341.25, 480.0, 426.75, 621.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [430.75, 483.75, 599.25, 629.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [112.0, 506.5, 153.0, 568.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [61.25, 511.0, 96.75, 603.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [259.25, 524.25, 272.75, 570.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [189.75, 534.0, 218.25, 596.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [267.5, 543.25, 315.5, 620.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [240.5, 548.0, 255.5, 590.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [128.5, 573.0, 162.5, 628.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [169.0, 588.5, 199.0, 630.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02618_JPEG.rf.daa26615ae76353ac5d438c2161a7688.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02618_JPEG.rf.daa26615ae76353ac5d438c2161a7688.jpg",
+   "sha256": "4f0333828b647c6d6c3c4408738faf82ea18f601117d9d160ebfd9dc3dfdb261",
+   "size": 34335,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [75.25, 373.75, 145.75, 433.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [229.25, 373.75, 277.75, 406.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [29.25, 377.0, 67.75, 406.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [322.5, 377.25, 354.5, 407.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [167.5, 382.5, 240.5, 457.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [481.5, 384.0, 527.5, 437.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [248.25, 387.25, 328.75, 455.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [513.25, 392.25, 592.75, 431.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [413.25, 394.0, 488.75, 464.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [258.5, 406.25, 487.5, 631.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [3.5, 416.25, 217.5, 627.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [477.5, 424.75, 637.5, 631.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02773_jpg.rf.92d7da13301b48321be12b5c3e1b059f.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02773_jpg.rf.92d7da13301b48321be12b5c3e1b059f.jpg",
+   "sha256": "09a15411ea14a0240cb4c658d6d11586b2289b047694538c7263de90a1c93693",
+   "size": 44603,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [405.5, 317.25, 630.5, 527.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [310.75, 337.0, 348.25, 409.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [350.25, 339.75, 364.75, 380.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02857_jpg.rf.0789632310dca6ebf0df05c620c2b972.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02857_jpg.rf.0789632310dca6ebf0df05c620c2b972.jpg",
+   "sha256": "985eb8141b1e5527bdacfee85ab9191cb7b23927c6a1cade6a4906467643e47a",
+   "size": 49012,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [287.0, 330.75, 328.0, 381.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [113.0, 334.25, 171.0, 372.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [207.0, 343.75, 242.0, 368.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [166.25, 344.0, 211.75, 374.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [238.75, 345.75, 268.25, 369.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [65.0, 354.25, 484.0, 561.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [562.5, 370.0, 636.5, 541.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02924_jpg.rf.912d1c982a1921c101a9d3074b06406d.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02924_jpg.rf.912d1c982a1921c101a9d3074b06406d.jpg",
+   "sha256": "ba243c407b3e3abeaa2171b5d8c2e6e6d7f1f0299874f7d8aba1dfaf678b6689",
+   "size": 56198,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [557.5, 457.75, 591.5, 574.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [473.0, 467.5, 516.0, 563.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [447.0, 484.5, 474.0, 553.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [137.25, 494.25, 421.75, 615.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [360.0, 494.25, 380.0, 535.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [340.75, 496.75, 356.25, 533.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [3.0, 497.75, 95.0, 570.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [28.25, 500.75, 50.75, 577.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [5.5, 506.75, 25.5, 570.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_02952_jpg.rf.8036fa9eb3f059edc5e9d539047488f4.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_02952_jpg.rf.8036fa9eb3f059edc5e9d539047488f4.jpg",
+   "sha256": "ca7c8ba5f49cdb90b6546ddfed7649d53c1b50391f316559f69b93c90f40173e",
+   "size": 43771,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [357.5, 339.75, 485.5, 416.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [304.0, 341.25, 340.0, 364.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [274.0, 342.75, 309.0, 363.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03006_png.rf.d0a5860d746ac8437c83ce82ab07da64.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03006_png.rf.d0a5860d746ac8437c83ce82ab07da64.jpg",
+   "sha256": "9c5fdb86b3e3e20d66524b5d433577f7fe9b554609d2e9441e46038cefe87848",
+   "size": 28636,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [330.75, 394.75, 383.25, 548.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [371.5, 408.5, 505.5, 557.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [440.75, 426.25, 468.25, 462.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03062_jpg.rf.050264df86f550430478a83990be53a2.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03062_jpg.rf.050264df86f550430478a83990be53a2.jpg",
+   "sha256": "7952dd07753df4037e18bcfade3fd4423b32e1969cea20b5149356dbebd55c96",
+   "size": 26713,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [158.5, 77.75, 630.5, 590.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03070_jpg.rf.ced635e299dcd4cb8c562c7fffbd41cc.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03070_jpg.rf.ced635e299dcd4cb8c562c7fffbd41cc.jpg",
+   "sha256": "ef462d845dd11bb4502df074e78c29964742521aba8d3b0923a66870dd142fc3",
+   "size": 58544,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [105.0, 126.25, 205.0, 558.75],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [470.5, 315.5, 533.5, 379.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03084_jpg.rf.b707b4b42eb47a946255453fb752e202.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03084_jpg.rf.b707b4b42eb47a946255453fb752e202.jpg",
+   "sha256": "b4a52645366049d7a5d58724d44edf1119a02fd69e1d177289433317525fcb9e",
+   "size": 75125,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [361.0, 414.75, 453.0, 485.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03090_jpg.rf.63ed1b8655e829477eb5eb40e0eef86c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03090_jpg.rf.63ed1b8655e829477eb5eb40e0eef86c.jpg",
+   "sha256": "504dc22f3c8a38a86bd72c1ed5b09ff0e1bed5e2e6700d0e0cb88f99d340b0da",
+   "size": 53390,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [202.0, 112.25, 255.0, 324.75],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [142.0, 469.5, 194.0, 554.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03093_jpg.rf.386b9c08a91f29383109099e0ece182c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03093_jpg.rf.386b9c08a91f29383109099e0ece182c.jpg",
+   "sha256": "20626e320b553b8217a0e55ff1f08b8e40b48f1005f24398a6fee9bd9d4ffa51",
+   "size": 12612,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [192.0, 262.75, 479.0, 456.25],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [54.0, 285.25, 190.0, 451.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03142_jpg.rf.1a9d0ed324e05b65b5c4b2660345df53.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03142_jpg.rf.1a9d0ed324e05b65b5c4b2660345df53.jpg",
+   "sha256": "717c35eb85f46a36f6e29b08d632cabe1f221dd49dcb55909ebf2bae61404e19",
+   "size": 29609,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [146.75, 19.0, 388.25, 226.0],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [332.0, 320.0, 588.0, 460.0],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [288.0, 466.0, 452.0, 619.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03155_jpg.rf.25bb813acd3b6f2fa07f29a014222bc3.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03155_jpg.rf.25bb813acd3b6f2fa07f29a014222bc3.jpg",
+   "sha256": "d551882bd066a7c868d0e15986b1d24aab20c88798620b31085468649e9b3e33",
+   "size": 37357,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [61.0, 66.5, 412.0, 638.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03159_jpg.rf.0bbe0438b48d5408cc53f1d6ffbf21e9.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03159_jpg.rf.0bbe0438b48d5408cc53f1d6ffbf21e9.jpg",
+   "sha256": "2bda46548b5f9303500838fad48c837da51ab64573b3914507abae4e0e8b05db",
+   "size": 67764,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [244.75, 391.25, 342.25, 454.75],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [387.5, 564.75, 489.5, 612.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03162_jpg.rf.8fbecc6c8108f74fc1eb9a9a2edd2452.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03162_jpg.rf.8fbecc6c8108f74fc1eb9a9a2edd2452.jpg",
+   "sha256": "f48635586c9fc8f76b253cf6edc933c530ed5ff81d4302a523bf4365906f9e76",
+   "size": 37177,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [195.0, 249.25, 339.0, 371.75],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [314.0, 269.25, 526.0, 414.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [544.0, 275.75, 637.0, 349.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [414.0, 300.25, 475.0, 354.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03166_jpg.rf.3d78b8af48bd5b76c63c77cfcef4ffaf.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03166_jpg.rf.3d78b8af48bd5b76c63c77cfcef4ffaf.jpg",
+   "sha256": "32d8ab8a50aca05c583c38a7927a4b33d443aafbda68c95ef8101ed7aca9fcc4",
+   "size": 38413,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [258.0, 410.75, 364.0, 505.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03180_jpg.rf.c49ea30ed23c0a809abd4ebaf734df0a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03180_jpg.rf.c49ea30ed23c0a809abd4ebaf734df0a.jpg",
+   "sha256": "3084b2c400b5244c0ddf84a45d2b0476c6b28a1bdaec7623972093d8f689fad6",
+   "size": 29917,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [155.0, 42.5, 614.0, 634.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03202_jpg.rf.ebc21886b5b51e68939ee0c27b0da121.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03202_jpg.rf.ebc21886b5b51e68939ee0c27b0da121.jpg",
+   "sha256": "11b7b8375adfa9a2d80d0ee2f0ef9870f0d646ff411b3e8b1e00c509bf962b40",
+   "size": 45247,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [356.0, 264.25, 506.0, 452.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03254_jpg.rf.d55c86efce6bd31af156da5e1f12a233.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03254_jpg.rf.d55c86efce6bd31af156da5e1f12a233.jpg",
+   "sha256": "189ac0328d0b69a85bb4c9125e0dad6d50160b266319da995a56b3db96a5010b",
+   "size": 33018,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [375.0, 251.0, 543.0, 532.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03284_jpg.rf.96531eac957783a58fb2e81eea601bd1.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03284_jpg.rf.96531eac957783a58fb2e81eea601bd1.jpg",
+   "sha256": "393046019c920937302520b065695891d2056c9e87d8cfce37bee65c466ae787",
+   "size": 68279,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [311.5, 476.25, 365.5, 494.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03286_jpg.rf.84acf27238bae5d6e04494ee7b97f84a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03286_jpg.rf.84acf27238bae5d6e04494ee7b97f84a.jpg",
+   "sha256": "9d68acac6f838c0a2e98a43d57a5bd172795476b295b7e7a5617e78e4b23f54b",
+   "size": 55331,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [302.5, 189.5, 389.5, 428.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03293_jpg.rf.203a9dff72894e3d9fc262cbef629299.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03293_jpg.rf.203a9dff72894e3d9fc262cbef629299.jpg",
+   "sha256": "fefde1885a1a7952981fe32d524c82c4dba9259aaded96be5393fca200e36bff",
+   "size": 17874,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [129.0, 160.5, 479.0, 463.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03300_jpg.rf.d233b546fff3cd10257438005aa7b185.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03300_jpg.rf.d233b546fff3cd10257438005aa7b185.jpg",
+   "sha256": "16b36511a5a3fe086b962ff9feee94892ae7a1bacaab783a8ebedad55051e4bb",
+   "size": 59821,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [84.0, 63.0, 321.0, 592.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03443_jpg.rf.7319dfa1256a1e9ae4a290731dafc99f.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03443_jpg.rf.7319dfa1256a1e9ae4a290731dafc99f.jpg",
+   "sha256": "345d28cc6af4fa50ad72a86cba9d041d0aa5792a8a33fa63c73339201b6e3ab8",
+   "size": 32876,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [18.0, 192.5, 352.0, 553.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03451_jpg.rf.48acd55e2f381acdf838b4d33eabdb13.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03451_jpg.rf.48acd55e2f381acdf838b4d33eabdb13.jpg",
+   "sha256": "d2792ab7927ebdcf15f3b4beb013a8c4a0aeea4f9f65f39c41424966b7f2a4c3",
+   "size": 25400,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [195.0, 173.5, 632.0, 562.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03461_jpg.rf.1c11c4178de4adccb7a19407c77e3727.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03461_jpg.rf.1c11c4178de4adccb7a19407c77e3727.jpg",
+   "sha256": "d9dc0bea9377cb9d35facbde5546ed3e5e736f9a149849201635f148ab22e8b2",
+   "size": 36928,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [127.5, 135.25, 521.5, 542.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03507_jpg.rf.ba3682945fea032927d95124eca5658e.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03507_jpg.rf.ba3682945fea032927d95124eca5658e.jpg",
+   "sha256": "fe9e2c2a781ad6cab73a64131b9f630f9a62d6dfd1fcbc2b8366cbbc167b9342",
+   "size": 38190,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [194.25, 143.5, 376.75, 551.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03513_jpg.rf.ca7d630b14775783b06b24ec6022dade.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03513_jpg.rf.ca7d630b14775783b06b24ec6022dade.jpg",
+   "sha256": "c77d0283f0707c06fe84d67a60cbd765acd00d27bf01846e6f8efe65cb5c0939",
+   "size": 25905,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "bicycle",
+     "bbox": [12.25, 17.5, 314.75, 624.5],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [340.75, 144.0, 591.25, 466.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03570_jpg.rf.5e0d47368681a8e9a11be69c040948b6.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03570_jpg.rf.5e0d47368681a8e9a11be69c040948b6.jpg",
+   "sha256": "974181a5bbfa94e7fbc9e71e1aa0333605cf9891c382420a5eef5c7d14428eb7",
+   "size": 13833,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [181.5, 10.0, 613.5, 505.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03575_jpg.rf.052e4ef2b887e772c3ddacb425bd8fe9.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03575_jpg.rf.052e4ef2b887e772c3ddacb425bd8fe9.jpg",
+   "sha256": "17a316869070b1b3cd9221cfaf928c8edac5a400c709a1a21eac4ce95006ead1",
+   "size": 59652,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [51.75, 54.0, 179.25, 147.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [433.5, 66.25, 611.5, 181.75],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [34.5, 250.25, 403.5, 522.75],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [366.0, 322.0, 623.0, 620.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03613_jpg.rf.4eb5d9c4a7eb19d55994f1cb3ba43e56.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03613_jpg.rf.4eb5d9c4a7eb19d55994f1cb3ba43e56.jpg",
+   "sha256": "fa17de6b3cc5e7832e0651813ebeb9f66a504156643c23229705198e0047e3a0",
+   "size": 29256,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [96.75, 68.25, 630.25, 460.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03624_JPEG.rf.2a654c220103d5bae35fe712994b2ab7.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03624_JPEG.rf.2a654c220103d5bae35fe712994b2ab7.jpg",
+   "sha256": "7753d40eb0b88332e670749642c738ebbb909dafb44d00307ee7afa79027301e",
+   "size": 28886,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [116.0, 51.25, 493.0, 611.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03666_jpg.rf.bd065d4a545a606f90e991ce19ad5552.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03666_jpg.rf.bd065d4a545a606f90e991ce19ad5552.jpg",
+   "sha256": "c0910e4a23766fa1ea4dd9c90fb847a410e2936ba512d7d047c490e89f261f88",
+   "size": 14347,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [63.75, 54.0, 545.25, 617.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03676_jpg.rf.0eac854d8bbb5ea60591e3ed3da70516.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03676_jpg.rf.0eac854d8bbb5ea60591e3ed3da70516.jpg",
+   "sha256": "17a865213d1fead94cc685ab695d1ecede0e87a9d66f1dfbb207f377cdacb154",
+   "size": 37081,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [81.75, 28.5, 603.25, 574.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03687_jpg.rf.fbe478142ada01661b8f84d9964f4d72.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03687_jpg.rf.fbe478142ada01661b8f84d9964f4d72.jpg",
+   "sha256": "f835bb1fa8cd5035b7d275bc63dca24a1b78adad56f7a1e3b02e2f3167b46b98",
+   "size": 11030,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [241.25, 86.5, 456.75, 507.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03723_jpg.rf.0213e814a1eb35ca6341b7429b7d95f5.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03723_jpg.rf.0213e814a1eb35ca6341b7429b7d95f5.jpg",
+   "sha256": "f5b6b71868575f5bff63d232df6c5d03014f0e24f518ae32d46baa9ad8b30bbd",
+   "size": 33665,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [195.5, 165.0, 613.5, 547.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03724_jpg.rf.5cdc46f06f32bac91b4388a16b455bc3.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03724_jpg.rf.5cdc46f06f32bac91b4388a16b455bc3.jpg",
+   "sha256": "eebfb981d55c367bf8a783b5d4b91e31011c36e8a825b2ab613b9eaab259f23d",
+   "size": 40839,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [258.25, 267.75, 611.75, 462.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03732_png.rf.e911987b54da13c6127020464fe171c6.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03732_png.rf.e911987b54da13c6127020464fe171c6.jpg",
+   "sha256": "8e28e4fff938476914cb5d3dd0c1c728ce27b76241543bd2ba01355fb43afba0",
+   "size": 14177,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [187.5, 75.75, 348.5, 328.25],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [96.5, 238.5, 339.5, 536.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03740_png.rf.9b54f8a9bef1a9515437522a74693c8c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03740_png.rf.9b54f8a9bef1a9515437522a74693c8c.jpg",
+   "sha256": "b4fbf1359f224cc1b2e2b27426622efc097f16ced0b6e2adf434b6ee427fb8aa",
+   "size": 43620,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [210.25, 7.0, 313.75, 121.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [172.5, 65.5, 373.5, 627.5],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [89.25, 75.5, 212.75, 157.5],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [161.5, 124.75, 241.5, 287.25],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [295.0, 234.0, 405.0, 393.0],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [143.75, 329.75, 204.25, 591.25],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [326.25, 341.5, 435.75, 445.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03762_jpg.rf.fee307c19bc471a7e88ee54a16f3ea86.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03762_jpg.rf.fee307c19bc471a7e88ee54a16f3ea86.jpg",
+   "sha256": "f8b568c312d74dc85c999fe22edd58b44af156f3e45365a23cfc6c3c37e4f67b",
+   "size": 25589,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [178.0, 51.25, 418.0, 601.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03765_jpg.rf.887f4d26de8a144b4a4bee3bd858c40e.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03765_jpg.rf.887f4d26de8a144b4a4bee3bd858c40e.jpg",
+   "sha256": "f119d6e06e5ae02caacf9d923965c7084f5ac821abd8d1f47f1fd408ce4c2dde",
+   "size": 25693,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [18.0, 270.25, 277.0, 635.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_03773_jpg.rf.f614cbb91e0f59afd0dda96887c65e5e.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_03773_jpg.rf.f614cbb91e0f59afd0dda96887c65e5e.jpg",
+   "sha256": "41a0b43e4d267a91bb070f0a739c24823e744beb24789383054b1c6963515b63",
+   "size": 24253,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "cat",
+     "bbox": [141.5, 10.0, 525.5, 532.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05015_jpg.rf.48d9815e0e7f3ceea19bd8031572feac.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05015_jpg.rf.48d9815e0e7f3ceea19bd8031572feac.jpg",
+   "sha256": "c4ba4c031e97d1bfc4b7bdc4a570d77a7b9a0a4951dd8a44d50fe08c0b5bdc85",
+   "size": 40550,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "motorbike",
+     "bbox": [6.0, 43.5, 198.0, 453.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [390.75, 171.5, 563.25, 442.5],
+     "ignore": false
+    },
+    {
+     "label": "chair",
+     "bbox": [502.5, 362.0, 634.5, 636.0],
+     "ignore": true
+    },
+    {
+     "label": "dog",
+     "bbox": [306.25, 372.75, 445.75, 630.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05037_jpg.rf.06e2740fc2b220f23f6b7771d3dfb082.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05037_jpg.rf.06e2740fc2b220f23f6b7771d3dfb082.jpg",
+   "sha256": "185dedbd4623c1a9815d8a791bb49140e050a62645a9204c5268f844537217df",
+   "size": 13799,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [276.0, 284.0, 368.0, 532.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [239.0, 381.5, 318.0, 517.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05048_jpg.rf.0fe2a912e3f65d6d2c8bf9f7078009ff.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05048_jpg.rf.0fe2a912e3f65d6d2c8bf9f7078009ff.jpg",
+   "sha256": "c4409a8eca1eb096081d9d8031d68018b7fb197e70b0e3b62b572f28c1a52db8",
+   "size": 43726,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [348.0, 188.25, 381.0, 385.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [139.0, 192.25, 171.0, 298.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [265.0, 194.0, 295.0, 249.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [234.0, 204.25, 280.0, 248.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [297.0, 204.5, 324.0, 245.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [388.0, 286.25, 419.0, 392.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05061_jpg.rf.3dd02833107f807b741af83547e920e8.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05061_jpg.rf.3dd02833107f807b741af83547e920e8.jpg",
+   "sha256": "f37bea616cbfad6fac86f789b32f2dbcb529f12bef1d800a3e8eae390e6a3984",
+   "size": 27642,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [291.0, 380.75, 423.0, 525.25],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [80.5, 404.25, 225.5, 495.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05088_jpg.rf.0cd4567c681feb4d89bada6f38d5b771.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05088_jpg.rf.0cd4567c681feb4d89bada6f38d5b771.jpg",
+   "sha256": "c6ece04323a8ccfd38355ef256b1c867961790b6b8e5f54ce8bb211ac3acff35",
+   "size": 38402,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [4.25, 5.5, 243.75, 487.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [207.5, 38.75, 376.5, 374.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [358.0, 90.5, 638.0, 362.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [196.25, 135.0, 293.75, 478.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [337.25, 154.25, 509.75, 508.75],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [274.5, 158.25, 439.5, 485.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05095_jpg.rf.aa94ef992b94eec0359405f9bacb419c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05095_jpg.rf.aa94ef992b94eec0359405f9bacb419c.jpg",
+   "sha256": "87432687111b8ea84389122ff9adea4325863b0c8557d3783b6fa7cc4bc2eae1",
+   "size": 41524,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [19.0, 201.0, 390.0, 459.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [367.0, 355.5, 465.0, 493.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05148_jpg.rf.7752191e55b230b920a45ab67279b4c8.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05148_jpg.rf.7752191e55b230b920a45ab67279b4c8.jpg",
+   "sha256": "60060830e2c1b0b789c3ecac75bbcef92c3ed1d1f4b416a110221ef54b9a80d6",
+   "size": 22402,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [235.0, 98.75, 549.0, 497.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05151_jpg.rf.95215b4525a3a5d11636fc95a5f3eb8c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05151_jpg.rf.95215b4525a3a5d11636fc95a5f3eb8c.jpg",
+   "sha256": "8408130d5916e3bd94f45453df5808d99c25377a93fb7cfc0fef798d59b59c67",
+   "size": 51676,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [367.5, 183.5, 433.5, 544.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [91.0, 235.25, 191.0, 305.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [226.0, 236.25, 245.0, 318.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [193.0, 237.25, 222.0, 315.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [242.5, 243.75, 264.5, 314.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [260.5, 254.75, 342.5, 303.25],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [359.25, 442.25, 468.75, 594.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05166_jpg.rf.e8cee47dedfbf6dd39be61d3a50096dd.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05166_jpg.rf.e8cee47dedfbf6dd39be61d3a50096dd.jpg",
+   "sha256": "74b9fed8efce3c72112e0ff5edb0c853536b8b16d98e44d0b230935b265a5ad1",
+   "size": 27760,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [7.75, 111.25, 191.25, 626.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [457.75, 179.5, 608.25, 513.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [249.0, 181.5, 506.0, 634.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [116.25, 392.75, 237.75, 634.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05183_jpg.rf.7b9891442ef6147d97717e05514bdd56.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05183_jpg.rf.7b9891442ef6147d97717e05514bdd56.jpg",
+   "sha256": "868f04082ae9aad9c77641274c6011ed176484bea78f563909a60d1a52b88c4b",
+   "size": 16790,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [81.75, 26.5, 389.25, 625.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [257.25, 333.25, 560.75, 573.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05209_jpg.rf.f50a090d0131f4e92c8db1abe34a6c5a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05209_jpg.rf.f50a090d0131f4e92c8db1abe34a6c5a.jpg",
+   "sha256": "94692c58d6396390aecbb4413fa078e4fc4186905554ecd18db0cdfd5ad58400",
+   "size": 56072,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [397.75, 189.0, 474.25, 312.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [335.0, 199.0, 386.0, 246.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [515.75, 211.0, 626.25, 262.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [480.0, 218.0, 516.0, 260.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [172.0, 470.0, 326.0, 602.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05214_jpg.rf.72953eb23766dd8f9ded2cd3cd2ac297.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05214_jpg.rf.72953eb23766dd8f9ded2cd3cd2ac297.jpg",
+   "sha256": "7b594d1ccb8bda3437425b2424b41d298e988749c374967fabda1e99be60665d",
+   "size": 28864,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [265.0, 215.5, 330.0, 503.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [362.0, 392.75, 463.0, 526.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05256_jpg.rf.f632154be6d705314b84070f31535f0f.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05256_jpg.rf.f632154be6d705314b84070f31535f0f.jpg",
+   "sha256": "984b585966f744c34683c94387ad68759d3b6211e24083c2efac12eca121d2cd",
+   "size": 60553,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [60.0, 165.75, 248.0, 599.25],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [209.0, 399.25, 412.0, 613.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05263_jpg.rf.ce61ac0f6ba087699389e80088af36bd.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05263_jpg.rf.ce61ac0f6ba087699389e80088af36bd.jpg",
+   "sha256": "3fd30ffb0c65d9eaed2277b1a6eb125cf90212346295b27440986930be4e7d3a",
+   "size": 71825,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [381.0, 12.0, 545.0, 628.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [110.0, 16.5, 301.0, 184.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [227.0, 42.0, 636.0, 297.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [3.0, 64.5, 222.0, 370.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [285.0, 266.5, 425.0, 482.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [92.0, 284.75, 295.0, 626.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05277_jpg.rf.913eaf2de8569cd2746649d22f20c994.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05277_jpg.rf.913eaf2de8569cd2746649d22f20c994.jpg",
+   "sha256": "a4e8810aa4fc5d37c08936fcd2f1303655901342e6dec5c86d4b0a86072dc038",
+   "size": 23459,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [130.0, 305.75, 247.0, 379.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [242.0, 315.5, 312.0, 372.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [300.5, 382.0, 357.5, 444.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05278_jpg.rf.d41ad4dc3bb41de34dece5c549fac730.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05278_jpg.rf.d41ad4dc3bb41de34dece5c549fac730.jpg",
+   "sha256": "9aebddabcb2ec28ddaa7f3a1c631ee38dd34e50d24db147994248c90ffe84ce7",
+   "size": 27218,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [183.0, 181.5, 393.0, 473.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05281_jpg.rf.2f3ae055645fdac00e503489621899d3.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05281_jpg.rf.2f3ae055645fdac00e503489621899d3.jpg",
+   "sha256": "0ff523a8760390753643b66d55171fe96dd54c8ac613f082dae6364a4a092cb8",
+   "size": 29629,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [531.0, 307.0, 597.0, 411.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [444.5, 359.25, 505.5, 408.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05310_jpg.rf.0149d689ea789d886d98f95f3a6f4b1d.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05310_jpg.rf.0149d689ea789d886d98f95f3a6f4b1d.jpg",
+   "sha256": "019cd5eb1aa0c43d01a7607054a9197cda537cb96a415f7873ce2ae13bd281ae",
+   "size": 66935,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [34.0, 139.75, 632.0, 631.25],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [209.0, 257.0, 367.0, 410.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05349_jpg.rf.8b85c341201beb78f24441f5e6bff9ce.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05349_jpg.rf.8b85c341201beb78f24441f5e6bff9ce.jpg",
+   "sha256": "23ceb86d597a401a02692d74794354335e114a88c922ee4918a5be76220085d9",
+   "size": 16250,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [295.75, 179.0, 386.25, 530.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [293.25, 241.25, 495.75, 428.75],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [355.0, 398.0, 401.0, 528.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05389_jpg.rf.10e259dfadf2fe14cde2d957587150fc.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05389_jpg.rf.10e259dfadf2fe14cde2d957587150fc.jpg",
+   "sha256": "709fdb92120dead0aed84f615e1c9401112e43327d69a40157f3a0a6b8288194",
+   "size": 38689,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [14.25, 32.25, 617.75, 531.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05427_jpg.rf.43ea6a684c52c1142388b45d00371f78.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05427_jpg.rf.43ea6a684c52c1142388b45d00371f78.jpg",
+   "sha256": "6a34ce6c79aa3b78542dbf1dc384884efdc2082e9d19056908f6a453041e7312",
+   "size": 10824,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [219.5, 135.75, 448.5, 593.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05467_jpg.rf.137bef7a8e1d7370e82673e96812d954.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05467_jpg.rf.137bef7a8e1d7370e82673e96812d954.jpg",
+   "sha256": "817af69ee0d6ca6541f806680ada11c4b57ab7016d80a081c08aace8c3983732",
+   "size": 49154,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [273.0, 247.75, 389.0, 452.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05472_jpg.rf.4cf3d909c440df6ad06c292ac3700605.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05472_jpg.rf.4cf3d909c440df6ad06c292ac3700605.jpg",
+   "sha256": "a8a5d402d2583270c80feba6c0e9c33c38028f0d82a1cc045fe3bd2bc0a55dad",
+   "size": 42145,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [294.5, 288.0, 349.5, 520.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [273.0, 302.25, 311.0, 519.75],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [353.25, 413.0, 412.75, 536.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05486_jpg.rf.5df72a5b7acf0f5b280735526754219e.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05486_jpg.rf.5df72a5b7acf0f5b280735526754219e.jpg",
+   "sha256": "2b12434b1ccef9052ed6b07facae50f5cf683538fb9f625c491afc122285b11e",
+   "size": 25974,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [100.25, 155.75, 537.75, 568.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05535_JPEG.rf.b374b921e1b0beba346dbf821d7b4568.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05535_JPEG.rf.b374b921e1b0beba346dbf821d7b4568.jpg",
+   "sha256": "0ce2985dcca5404d585294ad4201c470caa707a848883415c296d046975b2811",
+   "size": 34707,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [140.75, 22.5, 303.25, 510.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [272.75, 317.5, 357.25, 536.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05580_jpg.rf.c90e37994375c929a7a579c7267522b2.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05580_jpg.rf.c90e37994375c929a7a579c7267522b2.jpg",
+   "sha256": "25f594a4162ff747619a85d58c6e359bcaeb6c5fc11e36826639b83f00138448",
+   "size": 15287,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [381.5, 393.0, 446.5, 537.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [432.5, 483.0, 465.5, 534.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05672_png.rf.94ae1968620c6a0c2b48a2eb7fa0a266.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05672_png.rf.94ae1968620c6a0c2b48a2eb7fa0a266.jpg",
+   "sha256": "90f2134ec2eac9c6067b6c36af5b8f6efb398c081c35c076cdc5d7062d5c5664",
+   "size": 34974,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [268.75, 340.5, 307.25, 558.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [289.25, 439.75, 324.75, 613.25],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [401.0, 453.25, 455.0, 603.75],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [341.25, 464.0, 368.75, 589.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05680_png.rf.6f86c06c3d12250d6446bade5fddf1b5.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05680_png.rf.6f86c06c3d12250d6446bade5fddf1b5.jpg",
+   "sha256": "d9b51d1f97f3af35a4f0beee0c52e2ac2c6875b266bdb146813f2da586c831c4",
+   "size": 24321,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [140.5, 30.5, 311.5, 630.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [401.25, 140.75, 476.75, 487.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [262.25, 177.0, 341.75, 565.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [508.25, 185.25, 555.75, 375.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [483.25, 189.0, 512.75, 377.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [4.25, 220.75, 85.75, 389.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [546.75, 226.5, 635.25, 368.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [313.75, 229.0, 410.25, 355.0],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [363.0, 383.0, 533.0, 628.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05692_png.rf.1234b6bf0b76c34734ce46a45597177c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05692_png.rf.1234b6bf0b76c34734ce46a45597177c.jpg",
+   "sha256": "812c8b30e85d806e182b6eed1e0e11a641e9fb157de418f2f2e134f763de04d0",
+   "size": 17514,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [297.75, 57.25, 494.25, 620.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05693_png.rf.772af928e063c7826843678e43e9849f.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05693_png.rf.772af928e063c7826843678e43e9849f.jpg",
+   "sha256": "fcdf26f54cbe2ed9f11ea192114e3ffc6f136a348cea264964653c96a1bdc83f",
+   "size": 23818,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [491.25, 240.25, 558.75, 603.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [113.0, 261.75, 166.0, 448.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [169.75, 261.75, 262.25, 625.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [51.75, 265.25, 104.25, 570.75],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [487.0, 423.0, 593.0, 584.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05700_png.rf.f89e08e47a504144bc5fd7feeff3a97d.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05700_png.rf.f89e08e47a504144bc5fd7feeff3a97d.jpg",
+   "sha256": "5286404621be87e9f14c4e38ffdc6695c45cadbad4a440ab31fb0998fd401b08",
+   "size": 21793,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "dog",
+     "bbox": [373.5, 325.5, 488.5, 459.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [168.25, 334.0, 272.75, 458.0],
+     "ignore": false
+    },
+    {
+     "label": "cat",
+     "bbox": [338.5, 354.25, 372.5, 395.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05709_png.rf.1a93541244f50e41858edfe6b3abf36e.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05709_png.rf.1a93541244f50e41858edfe6b3abf36e.jpg",
+   "sha256": "3fd95cc49e79c41e69cb462dd11da3769bb9e69d30f0c6202ddbaa240a03963b",
+   "size": 21494,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [248.0, 155.5, 286.0, 316.5],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [96.25, 353.0, 161.75, 525.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05781_jpg.rf.0bdc6d5117765cc2ae4fec6eaab30ae8.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05781_jpg.rf.0bdc6d5117765cc2ae4fec6eaab30ae8.jpg",
+   "sha256": "fe793ca0230749124e338b7125e68e9cc66c354bb34e7c9a98446a3d3bfb778b",
+   "size": 37943,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [20.0, 212.75, 96.0, 487.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [280.0, 225.0, 316.0, 341.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [232.0, 226.5, 266.0, 362.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [345.0, 231.25, 388.0, 333.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [315.0, 238.5, 341.0, 324.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [169.0, 238.75, 197.0, 323.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [482.0, 241.5, 528.0, 354.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [401.0, 243.25, 448.0, 357.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [115.0, 258.0, 162.0, 338.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [227.0, 273.25, 273.0, 401.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [272.0, 279.25, 332.0, 390.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [163.0, 282.25, 202.0, 360.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [474.0, 282.25, 564.0, 390.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [401.0, 290.0, 462.0, 391.0],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [339.0, 291.25, 401.0, 384.75],
+     "ignore": false
+    },
+    {
+     "label": "bicycle",
+     "bbox": [7.0, 298.75, 110.0, 528.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05807_jpg.rf.23ba12c898a5018e5f2cc120b5d012ed.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05807_jpg.rf.23ba12c898a5018e5f2cc120b5d012ed.jpg",
+   "sha256": "46243df2aa451784e0f2d794b65c687dce8eaba3ab5dccd0c73876f1770b3489",
+   "size": 80679,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [434.5, 171.25, 552.5, 546.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [413.0, 205.25, 458.0, 308.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [257.0, 208.75, 367.0, 491.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [203.0, 228.0, 269.0, 435.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [384.25, 228.75, 414.75, 298.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [98.75, 229.5, 171.25, 453.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [362.0, 231.5, 390.0, 291.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [153.25, 247.5, 185.75, 363.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [189.25, 248.5, 211.75, 315.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [57.5, 258.75, 96.5, 344.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [369.25, 261.75, 423.75, 379.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [459.0, 268.25, 605.0, 545.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [410.0, 269.0, 470.0, 415.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [268.75, 276.75, 359.25, 526.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [204.5, 296.25, 271.5, 451.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [65.0, 306.75, 194.0, 538.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [43.5, 307.0, 98.5, 421.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05812_jpg.rf.6d5f2a3763d8dc5a237337517501dce7.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05812_jpg.rf.6d5f2a3763d8dc5a237337517501dce7.jpg",
+   "sha256": "14fb36dde08abd86b30c0951340350c8e1a98b0007f4409b1a8ddf9d35c23a82",
+   "size": 60600,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [110.0, 219.5, 227.0, 580.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [42.0, 229.5, 122.0, 547.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [290.0, 259.75, 343.0, 416.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [236.0, 265.75, 264.0, 364.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [318.0, 268.75, 375.0, 364.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [258.0, 271.5, 292.0, 356.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [161.0, 277.5, 216.0, 344.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [9.0, 283.75, 38.0, 337.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [13.0, 314.75, 347.0, 619.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [290.0, 323.5, 423.0, 435.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05834_jpg.rf.bfe7027bdd9412da44fab2e696cd1c78.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05834_jpg.rf.bfe7027bdd9412da44fab2e696cd1c78.jpg",
+   "sha256": "00e06875181f72223e17944d53673c5b0cb1cfda87fb67ccb70a59683e0bfdbf",
+   "size": 57854,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "motorbike",
+     "bbox": [352.0, 117.5, 507.0, 433.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [70.5, 121.5, 248.5, 225.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [108.75, 127.25, 380.25, 614.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [4.0, 139.0, 114.0, 266.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05844_jpg.rf.60470f3bd649bf8e1a5bc61fbb7db487.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05844_jpg.rf.60470f3bd649bf8e1a5bc61fbb7db487.jpg",
+   "sha256": "9ade9940840ede757b0ada14c8c8490b3c6e23d6ab07c25652abcc16f5df5b65",
+   "size": 44056,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [108.0, 85.0, 274.0, 612.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [192.0, 142.0, 381.0, 297.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [44.0, 143.5, 90.0, 241.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [573.0, 161.0, 615.0, 265.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [87.0, 161.25, 109.0, 219.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [480.0, 171.25, 558.0, 254.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [338.0, 174.5, 404.0, 228.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [375.0, 177.25, 521.0, 282.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [86.0, 181.5, 115.0, 250.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [12.0, 192.0, 367.0, 567.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [549.0, 200.75, 627.0, 293.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05912_jpg.rf.fbb0d651c1f76e570501e3f2da5a2213.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05912_jpg.rf.fbb0d651c1f76e570501e3f2da5a2213.jpg",
+   "sha256": "44c145e1dc476b0f001e711d0e1a819a05e064f504a7029a1dfb1bf51586a334",
+   "size": 50726,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [499.0, 183.75, 547.0, 352.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [536.75, 221.5, 582.25, 344.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [582.0, 223.25, 621.0, 304.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [444.75, 270.75, 495.25, 475.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [276.0, 295.25, 314.0, 465.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [235.75, 299.0, 277.25, 458.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [318.5, 299.5, 366.5, 456.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [65.5, 312.25, 103.5, 444.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [109.75, 312.25, 136.25, 431.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [136.0, 322.0, 228.0, 585.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [322.5, 323.75, 443.5, 613.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [8.75, 335.0, 35.25, 409.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [129.5, 418.25, 259.5, 622.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [293.5, 456.25, 502.5, 620.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05931_jpg.rf.6b3bc8d57f3c7638552ec1aaa34f5ea2.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05931_jpg.rf.6b3bc8d57f3c7638552ec1aaa34f5ea2.jpg",
+   "sha256": "a057f5f7eabeb19a0ba0b7e9d87b486bdb9b4a835c27d674cec2f65657cd6cc8",
+   "size": 59445,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [238.0, 259.0, 287.0, 391.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [255.0, 260.75, 386.0, 629.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [186.0, 262.0, 209.0, 382.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [461.0, 263.75, 526.0, 436.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [203.0, 266.75, 235.0, 364.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [33.0, 272.75, 66.0, 388.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [85.0, 277.25, 143.0, 425.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [272.0, 286.0, 325.0, 379.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [24.0, 293.75, 200.0, 496.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [198.0, 361.25, 479.0, 635.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [505.0, 403.0, 638.0, 637.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05969_jpg.rf.0915ae0430479fcce7f4e4abfd95f2c5.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05969_jpg.rf.0915ae0430479fcce7f4e4abfd95f2c5.jpg",
+   "sha256": "b2456e9ee578eff809602fd25cff0c6531186f08e17905ebcde2989960b35eb4",
+   "size": 52053,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "motorbike",
+     "bbox": [19.25, 401.25, 60.75, 478.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [319.5, 405.0, 348.5, 475.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [358.5, 414.5, 627.5, 630.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [206.0, 416.75, 230.0, 479.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [312.75, 418.5, 545.25, 545.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [244.0, 422.25, 269.0, 480.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [168.0, 426.25, 188.0, 471.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [126.25, 429.75, 157.75, 473.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05988_jpg.rf.8ce30884e2be1a7898ca05e9877d943a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05988_jpg.rf.8ce30884e2be1a7898ca05e9877d943a.jpg",
+   "sha256": "29da98e119ade0b45e9719ded0814e11550305c4ac223bccbe32125a3609f053",
+   "size": 79559,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "motorbike",
+     "bbox": [8.0, 6.0, 86.0, 408.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [16.0, 12.25, 374.0, 615.75],
+     "ignore": false
+    },
+    {
+     "label": "bus",
+     "bbox": [542.0, 66.5, 632.0, 288.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_05997_jpg.rf.556ff034d2b9afbe2ad827878e9923d6.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_05997_jpg.rf.556ff034d2b9afbe2ad827878e9923d6.jpg",
+   "sha256": "99087df9ed0fe5bec2f1984ae5a919a58eb3c48c7593827980411e15e2ff1f69",
+   "size": 44635,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [225.0, 45.0, 419.0, 622.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [373.0, 114.0, 481.0, 589.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [571.0, 126.0, 634.0, 520.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [40.0, 151.5, 122.0, 509.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [460.0, 194.75, 638.0, 457.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [101.0, 226.25, 544.0, 630.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06030_jpg.rf.7ad9179415e21405aece72dedeb9b128.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06030_jpg.rf.7ad9179415e21405aece72dedeb9b128.jpg",
+   "sha256": "7888b50d5d2406653bce0b0a6d4a7e2f60eb04abed80433fbbae7b765749c771",
+   "size": 75605,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "bottle",
+     "bbox": [317.0, 33.5, 374.0, 92.5],
+     "ignore": true
+    },
+    {
+     "label": "bottle",
+     "bbox": [419.0, 35.5, 446.0, 92.5],
+     "ignore": true
+    },
+    {
+     "label": "bottle",
+     "bbox": [466.0, 43.25, 494.0, 94.75],
+     "ignore": true
+    },
+    {
+     "label": "bottle",
+     "bbox": [250.0, 52.5, 283.0, 90.5],
+     "ignore": true
+    },
+    {
+     "label": "bottle",
+     "bbox": [215.0, 97.25, 313.0, 189.75],
+     "ignore": true
+    },
+    {
+     "label": "bottle",
+     "bbox": [309.0, 102.25, 489.0, 153.75],
+     "ignore": true
+    },
+    {
+     "label": "person",
+     "bbox": [444.0, 152.75, 515.0, 314.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [391.0, 172.0, 441.0, 261.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [293.0, 173.0, 369.0, 290.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [222.0, 189.75, 314.0, 301.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [11.0, 245.5, 96.0, 371.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [158.0, 248.5, 257.0, 364.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [599.0, 257.5, 638.0, 335.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [269.0, 264.25, 365.0, 373.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [516.0, 265.25, 598.0, 368.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [431.0, 265.5, 506.0, 371.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [393.0, 271.0, 489.0, 348.0],
+     "ignore": false
+    },
+    {
+     "label": "cup",
+     "bbox": [565.0, 291.25, 589.0, 365.75],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [101.0, 293.5, 129.0, 362.5],
+     "ignore": true
+    },
+    {
+     "label": "motorbike",
+     "bbox": [295.0, 309.0, 635.0, 618.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [73.0, 318.75, 473.0, 625.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06113_jpg.rf.b4b7595e7d08444b4d261e2b55fd0785.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06113_jpg.rf.b4b7595e7d08444b4d261e2b55fd0785.jpg",
+   "sha256": "c030f4c2adcbf10c8780c8a385b347670f1ba3bd7235a1076dd6974005fde57d",
+   "size": 40932,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [291.25, 378.75, 386.75, 486.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [120.75, 397.75, 318.25, 592.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [288.75, 428.75, 362.25, 613.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06117_jpg.rf.bb6bc4d3b8008438ac80a108acd87724.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06117_jpg.rf.bb6bc4d3b8008438ac80a108acd87724.jpg",
+   "sha256": "905a855398ae1fb32c75a63aeff5501c572a71c8e714acec9334baf99c93460c",
+   "size": 39341,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [480.0, 386.75, 539.0, 460.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [9.0, 390.75, 47.0, 501.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [387.0, 393.25, 448.0, 578.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [438.0, 393.25, 485.0, 443.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [550.0, 393.25, 574.0, 475.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [379.0, 394.5, 418.0, 466.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [192.0, 396.25, 241.0, 498.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [141.0, 397.5, 178.0, 481.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [366.0, 399.75, 398.0, 433.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [276.0, 402.5, 332.0, 450.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [245.0, 411.75, 273.0, 461.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [128.0, 426.75, 184.0, 505.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [191.0, 430.75, 252.0, 529.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [349.0, 435.75, 397.0, 505.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [2.0, 436.25, 42.0, 526.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [349.0, 455.75, 475.0, 577.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06134_jpg.rf.efaf579177df63bf42ee11d43b5dc9a8.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06134_jpg.rf.efaf579177df63bf42ee11d43b5dc9a8.jpg",
+   "sha256": "dcf14dd7b274da3f8dd73374107433cea4af77016a6cc466a854f6a25307d23b",
+   "size": 39098,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [106.25, 42.0, 235.75, 471.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [295.75, 63.25, 404.25, 437.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [580.0, 73.75, 638.0, 557.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [399.0, 75.5, 490.0, 374.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [225.0, 77.5, 287.0, 337.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [223.0, 154.75, 282.0, 376.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [403.25, 175.75, 484.75, 450.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [303.5, 177.5, 408.5, 511.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [120.25, 212.5, 232.75, 541.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06143_JPEG.rf.72c30fcd0bf688872b0d77a87af49a71.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06143_JPEG.rf.72c30fcd0bf688872b0d77a87af49a71.jpg",
+   "sha256": "70968a711d685abc4a04c9c04daa40a304100af65800193f9dd7e37d353fb501",
+   "size": 43304,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [27.0, 73.25, 173.0, 221.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [57.75, 124.5, 220.25, 276.5],
+     "ignore": false
+    },
+    {
+     "label": "diningtable",
+     "bbox": [343.0, 124.5, 449.0, 158.5],
+     "ignore": true
+    },
+    {
+     "label": "bicycle",
+     "bbox": [311.0, 128.0, 375.0, 232.0],
+     "ignore": false
+    },
+    {
+     "label": "chair",
+     "bbox": [375.25, 135.0, 436.75, 239.0],
+     "ignore": true
+    },
+    {
+     "label": "bicycle",
+     "bbox": [514.75, 150.0, 636.25, 360.0],
+     "ignore": false
+    },
+    {
+     "label": "diningtable",
+     "bbox": [531.0, 163.5, 636.0, 240.5],
+     "ignore": true
+    },
+    {
+     "label": "motorbike",
+     "bbox": [112.75, 168.75, 312.25, 428.25],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [131.75, 254.0, 436.25, 529.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [178.25, 281.5, 569.75, 629.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06164_jpg.rf.0d95e2cb6599add8943074f0c100e37e.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06164_jpg.rf.0d95e2cb6599add8943074f0c100e37e.jpg",
+   "sha256": "651c85b5af6e5cb35fade4853219e628a20eb3441105833b7ab1be01b242209b",
+   "size": 41148,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [12.75, 357.25, 296.25, 525.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [254.75, 406.5, 401.25, 547.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [362.75, 420.25, 607.25, 552.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06185_jpg.rf.1b8a1be299cbe9d08e3fe19ee42aeef9.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06185_jpg.rf.1b8a1be299cbe9d08e3fe19ee42aeef9.jpg",
+   "sha256": "8c2afce4f43ac3fc16d225a79a70b3b1e2f1183d4f46ec3d13ecf5dc5e1ac2de",
+   "size": 45909,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "car",
+     "bbox": [14.25, 500.0, 236.75, 637.0],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [348.75, 504.25, 418.25, 556.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [216.5, 513.0, 284.5, 585.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [324.25, 516.25, 375.75, 561.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [287.75, 521.75, 327.25, 581.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06218_png.rf.6e8a903c77e3dfd3abadbe1fd735caeb.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06218_png.rf.6e8a903c77e3dfd3abadbe1fd735caeb.jpg",
+   "sha256": "da20772589eec5eecc36c783796833e3a4d495330b8fe4297b867507e2122fe3",
+   "size": 40344,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [515.25, 52.75, 632.75, 449.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [37.25, 106.0, 122.75, 380.0],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [436.75, 188.25, 631.25, 538.75],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [12.0, 212.0, 158.0, 440.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06220_png.rf.2058be73e42045d4b35c347c626dade7.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06220_png.rf.2058be73e42045d4b35c347c626dade7.jpg",
+   "sha256": "b60fcdb399ab5940bcec549d0c7aec60059aa0cc96d0af344b1448dda102b566",
+   "size": 24017,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [308.25, 138.5, 332.75, 219.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [270.5, 145.5, 294.5, 234.5],
+     "ignore": false
+    },
+    {
+     "label": "motorbike",
+     "bbox": [258.75, 220.5, 348.25, 358.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06266_jpg.rf.e6abd601209bb0f3adc5ce4763f6b8ce.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06266_jpg.rf.e6abd601209bb0f3adc5ce4763f6b8ce.jpg",
+   "sha256": "958d5edd6666419b1233e085ebdb05a9148e913208255aefd836944a6348f44c",
+   "size": 24074,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [292.0, 254.75, 337.0, 403.25],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [353.0, 365.5, 375.0, 407.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06276_jpg.rf.cfe06f5ccfdc4e3dcfffcefdb7d97a6d.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06276_jpg.rf.cfe06f5ccfdc4e3dcfffcefdb7d97a6d.jpg",
+   "sha256": "0b076d4847f9e307984f0a2894689498cf6bd161db6674ed1845bd24b2fea444",
+   "size": 49404,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [456.0, 226.75, 537.0, 604.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [374.0, 228.25, 466.0, 630.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [548.0, 232.25, 601.0, 422.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [131.0, 234.75, 227.0, 636.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [606.0, 234.75, 638.0, 380.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [341.0, 242.75, 379.0, 313.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [266.0, 244.0, 303.0, 328.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [214.0, 250.5, 253.0, 330.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [120.0, 260.25, 162.0, 326.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [288.0, 262.75, 373.0, 577.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [24.0, 266.5, 50.0, 334.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [4.0, 268.25, 61.0, 586.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [224.0, 272.0, 301.0, 600.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [69.0, 302.75, 153.0, 632.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06399_jpg.rf.2ed685c44ce0e8fd6811e54a21099b01.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06399_jpg.rf.2ed685c44ce0e8fd6811e54a21099b01.jpg",
+   "sha256": "a3aabf3c9b7c9d2322c5b51560f1a662e480d6fb156e233a7d7560bd6bd0be61",
+   "size": 35900,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [385.0, 108.75, 426.0, 215.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [480.0, 110.25, 522.0, 280.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [429.0, 121.0, 468.0, 272.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [598.0, 170.5, 635.0, 298.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [16.0, 181.25, 91.0, 271.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [197.0, 190.0, 230.0, 366.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [126.0, 232.75, 163.0, 323.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [413.0, 250.5, 456.0, 353.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [316.0, 254.25, 353.0, 362.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [500.0, 263.0, 557.0, 377.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [33.0, 270.25, 102.0, 426.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [602.0, 273.75, 637.0, 396.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [556.0, 284.5, 595.0, 389.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [12.0, 323.5, 80.0, 490.5],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06606_jpg.rf.9212680bcd485f2f8b3c670b062cc87c.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06606_jpg.rf.9212680bcd485f2f8b3c670b062cc87c.jpg",
+   "sha256": "62f9e7bcc66b895a1275b5e846c44553e932d583f333acbe58acf9ac882a81b6",
+   "size": 58813,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "bus",
+     "bbox": [4.0, 304.25, 201.0, 449.75],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [327.0, 364.75, 356.0, 408.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [268.0, 365.0, 316.0, 549.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [466.0, 366.5, 479.0, 428.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [555.0, 378.75, 638.0, 442.25],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [340.0, 380.25, 411.0, 438.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [461.0, 394.25, 538.0, 590.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06614_JPG.rf.c3a618dfe9300f1d654a4d9842b64da9.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06614_JPG.rf.c3a618dfe9300f1d654a4d9842b64da9.jpg",
+   "sha256": "abc9651a8f7dbd96575dd5f9cec48bc1aa127addd25be57b238440ccdd4f76e6",
+   "size": 46961,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [280.5, 31.0, 631.5, 625.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [253.75, 150.0, 392.25, 471.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [326.5, 197.25, 509.5, 623.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [8.75, 204.0, 167.25, 627.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [161.0, 247.25, 271.0, 634.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [3.0, 301.75, 134.0, 632.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06712_jpg.rf.ef338abcd9c6e6f26cc5d07a2b958341.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06712_jpg.rf.ef338abcd9c6e6f26cc5d07a2b958341.jpg",
+   "sha256": "ab7c51cf373e78fcd131c016cc3813a2896287dc7d80b00ead29ff6ca402230a",
+   "size": 41173,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:medium",
+    "res:sd",
+    "small-objects"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [553.75, 354.0, 577.25, 435.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [529.25, 358.5, 555.75, 442.5],
+     "ignore": false
+    },
+    {
+     "label": "car",
+     "bbox": [347.75, 364.25, 452.25, 449.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [77.75, 366.75, 103.25, 432.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [219.5, 367.0, 235.5, 421.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [187.75, 369.75, 209.25, 425.25],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06752_jpg.rf.a1389388f2e83cfb2b3a83b81c1b087a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06752_jpg.rf.a1389388f2e83cfb2b3a83b81c1b087a.jpg",
+   "sha256": "66b98b342acde44273b6a219ba3af55b1d953b17cddd6c0f9a94d832ee9963c5",
+   "size": 48575,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [482.0, 324.0, 592.0, 594.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [386.25, 349.25, 420.75, 421.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [269.75, 350.75, 299.25, 468.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [195.5, 351.75, 225.5, 498.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [125.5, 354.25, 150.5, 430.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [578.75, 355.25, 608.25, 496.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [220.25, 355.75, 245.75, 467.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [162.0, 359.0, 196.0, 483.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [303.0, 363.5, 326.0, 458.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [53.0, 377.0, 103.0, 471.0],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_06774_jpg.rf.45bcf9e50cbb4326c43fa4856135a208.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06774_jpg.rf.45bcf9e50cbb4326c43fa4856135a208.jpg",
+   "sha256": "c9e8c22a1c3b9010a4318f16ae2a1a194fcd1e7e0051eaf9d784d7da3af03e4b",
+   "size": 31704,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "small-objects",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [509.75, 395.5, 562.25, 446.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [481.5, 398.0, 520.5, 475.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [249.25, 398.75, 341.75, 443.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [61.0, 401.0, 117.0, 533.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [98.5, 406.75, 137.5, 489.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [161.75, 409.5, 188.25, 442.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [119.0, 416.25, 184.0, 578.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [150.25, 426.0, 241.75, 622.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [291.0, 433.75, 351.0, 513.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [496.5, 434.25, 597.5, 636.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [383.5, 434.5, 522.5, 629.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [26.75, 440.0, 84.25, 545.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [222.5, 461.0, 282.5, 511.0],
+     "ignore": false
+    },
+    {
+     "label": "chair",
+     "bbox": [224.25, 463.25, 376.75, 500.75],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_06809_png.rf.fb63b714e17bf7d416470951c46b460a.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_06809_png.rf.fb63b714e17bf7d416470951c46b460a.jpg",
+   "sha256": "77eade92d96df429778cd64ef113ac34b2619a04e8310d5575d9293dfd180b14",
+   "size": 11378,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:easy",
+    "res:sd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [320.0, 315.25, 356.0, 514.75],
+     "ignore": false
+    },
+    {
+     "label": "dog",
+     "bbox": [301.75, 403.25, 334.25, 525.75],
+     "ignore": false
+    }
+   ]
+  },
+  {
+   "file": "2015_07138_jpg.rf.c9554e4f9fcbbd44346db3934f7542d9.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_07138_jpg.rf.c9554e4f9fcbbd44346db3934f7542d9.jpg",
+   "sha256": "d8ad54a077f66905d7275c9420a2b90bda418303932f98a3dbec6d2ff752f74e",
+   "size": 37273,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [248.25, 240.25, 291.75, 562.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [286.75, 256.0, 344.25, 584.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [167.75, 266.75, 197.25, 480.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [360.0, 266.75, 388.0, 408.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [367.5, 269.25, 412.5, 551.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [437.75, 269.5, 485.25, 581.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [234.5, 272.25, 257.5, 522.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [344.5, 277.25, 367.5, 407.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [138.0, 282.5, 165.0, 410.5],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [217.75, 295.75, 257.25, 573.25],
+     "ignore": false
+    },
+    {
+     "label": "diningtable",
+     "bbox": [390.5, 485.25, 490.5, 626.75],
+     "ignore": true
+    }
+   ]
+  },
+  {
+   "file": "2015_07350_png.rf.44e86db4dc27986f5129d240529ddb92.jpg",
+   "url": "https://huggingface.co/datasets/dronefreak/ExDark/resolve/980c106507f08ce9200b84b8308028eea1f41c97/data/test/images/2015_07350_png.rf.44e86db4dc27986f5129d240529ddb92.jpg",
+   "sha256": "80c45f926fce114af8307865ecc7b2f9035b268c13b42f55e0bb3eb73f5b458e",
+   "size": 28352,
+   "width": 640,
+   "height": 640,
+   "tags": [
+    "night",
+    "general",
+    "complexity:hard",
+    "res:sd",
+    "crowd"
+   ],
+   "objects": [
+    {
+     "label": "person",
+     "bbox": [427.75, 6.0, 634.25, 616.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [4.25, 8.0, 191.75, 624.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [51.25, 30.25, 228.75, 561.75],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [353.25, 62.0, 532.75, 590.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [254.25, 112.75, 325.75, 460.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [398.5, 115.75, 455.5, 294.25],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [111.5, 122.0, 279.5, 505.0],
+     "ignore": false
+    },
+    {
+     "label": "person",
+     "bbox": [341.0, 181.5, 400.0, 302.5],
+     "ignore": false
+    },
+    {
+     "label": "cup",
+     "bbox": [177.0, 276.75, 217.0, 327.25],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [214.5, 280.75, 241.5, 324.25],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [386.75, 283.75, 419.25, 326.25],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [237.25, 287.0, 256.75, 318.0],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [326.0, 292.5, 349.0, 318.5],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [359.75, 292.5, 386.25, 323.5],
+     "ignore": true
+    },
+    {
+     "label": "cup",
+     "bbox": [346.75, 294.0, 367.25, 320.0],
+     "ignore": true
+    },
+    {
+     "label": "diningtable",
+     "bbox": [78.5, 304.0, 550.5, 631.0],
+     "ignore": true
+    }
+   ]
+  }
+ ]
+}
