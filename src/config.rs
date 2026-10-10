@@ -230,9 +230,254 @@ impl Config {
     }
 }
 
+/// Fields edited by the `/config` web form, besides `models_json` (the `models` array as JSON).
+/// Checkboxes (`force_cpu`, `save_ref_image`) are true when present with any value but
+/// `false`/`off`/`0`, and false when absent (browsers omit unchecked boxes).
+pub const FORM_FIELDS: &[&str] = &[
+    "port",
+    "request_timeout_secs",
+    "worker_queue_size",
+    "device",
+    "gpu_index",
+    "force_cpu",
+    "cache_dir",
+    "confidence_threshold",
+    "nms_iou",
+    "object_filter",
+    "log_level",
+    "log_path",
+    "save_image_path",
+    "save_ref_image",
+    "intra_threads",
+    "default_model",
+];
+
+/// Apply a submitted `/config` form to `config`. All fields are validated first; on any error
+/// `config` is left untouched. Text fields that are absent keep their current value; empty
+/// optional paths / `default_model` become `None`.
+pub fn apply_config_form(
+    config: &mut Config,
+    form: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    use anyhow::bail;
+    let mut c = config.clone();
+    let get = |k: &str| form.get(k).map(|v| v.trim());
+    fn num<T: std::str::FromStr>(field: &str, v: &str) -> Result<T> {
+        v.parse::<T>()
+            .map_err(|_| anyhow::anyhow!("{field}: '{v}' is not a valid number"))
+    }
+    let checkbox = |k: &str| {
+        get(k).is_some_and(|v| !matches!(v.to_ascii_lowercase().as_str(), "false" | "off" | "0"))
+    };
+    let opt_path = |v: &str| (!v.is_empty()).then(|| PathBuf::from(v));
+
+    if let Some(v) = get("port") {
+        c.port = num("port", v)?;
+        if c.port == 0 {
+            bail!("port: must be 1-65535");
+        }
+    }
+    if let Some(v) = get("request_timeout_secs") {
+        c.request_timeout_secs = num("request_timeout_secs", v)?;
+        if c.request_timeout_secs == 0 {
+            bail!("request_timeout_secs: must be at least 1");
+        }
+    }
+    if let Some(v) = get("worker_queue_size") {
+        c.worker_queue_size = num("worker_queue_size", v)?;
+    }
+    if let Some(v) = get("device") {
+        if v.is_empty() || v.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+            bail!("device: expected GPU, GPU.N or CPU, got '{v}'");
+        }
+        c.device = v.to_string();
+    }
+    if let Some(v) = get("gpu_index") {
+        c.gpu_index = num("gpu_index", v)?;
+    }
+    c.force_cpu = checkbox("force_cpu");
+    if let Some(v) = get("cache_dir") {
+        c.cache_dir = v.to_string();
+    }
+    for (field, slot) in [
+        ("confidence_threshold", &mut c.confidence_threshold),
+        ("nms_iou", &mut c.nms_iou),
+    ] {
+        if let Some(v) = get(field) {
+            let x: f32 = num(field, v)?;
+            if !(0.0..=1.0).contains(&x) {
+                bail!("{field}: must be between 0 and 1, got {x}");
+            }
+            *slot = x;
+        }
+    }
+    if let Some(v) = get("object_filter") {
+        c.object_filter = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    if let Some(v) = get("log_level") {
+        c.log_level = v.parse().map_err(|e| anyhow::anyhow!("log_level: {e}"))?;
+    }
+    if let Some(v) = get("log_path") {
+        c.log_path = opt_path(v);
+    }
+    if let Some(v) = get("save_image_path") {
+        c.save_image_path = opt_path(v);
+    }
+    c.save_ref_image = checkbox("save_ref_image");
+    if let Some(v) = get("intra_threads") {
+        c.intra_threads = num("intra_threads", v)?;
+    }
+    if let Some(v) = form.get("models_json") {
+        c.models = serde_json::from_str(v).map_err(|e| anyhow::anyhow!("models: {e}"))?;
+    }
+    if let Some(v) = get("default_model") {
+        c.default_model = (!v.is_empty()).then(|| v.to_string());
+    }
+
+    if c.models.is_empty() {
+        bail!("models: at least one model is required");
+    }
+    let mut seen = std::collections::HashSet::new();
+    for m in &c.models {
+        if m.path.as_os_str().is_empty() {
+            bail!("models: every entry needs a `path`");
+        }
+        let key = crate::registry::normalize_name(&m.effective_name());
+        if !seen.insert(key.clone()) {
+            bail!("models: duplicate model name '{key}'; set a distinct `name` for each entry");
+        }
+    }
+    if let Some(name) = &c.default_model
+        && c.default_model_index().is_none()
+    {
+        bail!("default_model: '{name}' is not one of the configured models");
+    }
+    *config = c;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn form(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn with_model() -> Config {
+        Config {
+            models: vec![ModelConfig {
+                path: "models/IPcam-general.onnx".into(),
+                family: ModelFamilyKind::Yolo5,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn config_form_applies_all_fields() {
+        let mut c = with_model();
+        let models = r#"[{"name":"a","path":"m/a.xml","family":"yolo26"},
+                         {"path":"m/IPcam-general.onnx","family":"yolo5","lazy":true}]"#;
+        let f = form(&[
+            ("port", " 4000 "),
+            ("request_timeout_secs", "20"),
+            ("worker_queue_size", "8"),
+            ("device", "GPU.1"),
+            ("gpu_index", "1"),
+            ("force_cpu", "on"),
+            ("cache_dir", ""),
+            ("confidence_threshold", "0.35"),
+            ("nms_iou", "0.6"),
+            ("object_filter", " person, car ,,dog "),
+            ("log_level", "DEBUG"),
+            ("log_path", "logs"),
+            ("save_image_path", ""),
+            ("save_ref_image", "true"),
+            ("intra_threads", "4"),
+            ("default_model", "ipcam-general.onnx"),
+            ("models_json", models),
+        ]);
+        apply_config_form(&mut c, &f).unwrap();
+        assert_eq!(c.port, 4000);
+        assert_eq!(c.request_timeout_secs, 20);
+        assert_eq!(c.worker_queue_size, 8);
+        assert_eq!(c.device, "GPU.1");
+        assert_eq!(c.gpu_index, 1);
+        assert!(c.force_cpu);
+        assert_eq!(c.cache_dir, "");
+        assert_eq!(c.confidence_threshold, 0.35);
+        assert_eq!(c.nms_iou, 0.6);
+        assert_eq!(c.object_filter, vec!["person", "car", "dog"]);
+        assert_eq!(c.log_level, LogLevel::Debug);
+        assert_eq!(c.log_path, Some(PathBuf::from("logs")));
+        assert_eq!(c.save_image_path, None);
+        assert!(c.save_ref_image);
+        assert_eq!(c.intra_threads, 4);
+        assert_eq!(c.models.len(), 2);
+        assert!(c.models[1].lazy);
+        assert_eq!(c.default_model_index(), Some(1));
+
+        // Unchecked boxes are absent from the form; absent text fields keep their values.
+        apply_config_form(&mut c, &form(&[("default_model", "")])).unwrap();
+        assert!(!c.force_cpu && !c.save_ref_image);
+        assert_eq!(c.port, 4000);
+        assert_eq!(c.default_model, None);
+        assert_eq!(c.models.len(), 2);
+    }
+
+    #[test]
+    fn config_form_rejects_invalid_input_atomically() {
+        let original = with_model();
+        let cases: &[(&str, &str, &str)] = &[
+            ("port", "0", "port"),
+            ("port", "70000", "port"),
+            ("port", "abc", "port"),
+            ("request_timeout_secs", "0", "request_timeout_secs"),
+            ("worker_queue_size", "-1", "worker_queue_size"),
+            ("confidence_threshold", "1.5", "confidence_threshold"),
+            ("nms_iou", "x", "nms_iou"),
+            ("log_level", "loud", "log_level"),
+            ("device", "G P U", "device"),
+            ("models_json", "[{not json", "models"),
+            ("models_json", "[]", "at least one"),
+            ("models_json", r#"{"path":"a.xml"}"#, "models"),
+            (
+                "models_json",
+                r#"[{"path":"a/x.onnx"},{"path":"b/X.xml"}]"#,
+                "duplicate",
+            ),
+            ("models_json", r#"[{"name":"x"}]"#, "path"),
+            ("default_model", "nope", "default_model"),
+        ];
+        for (field, value, needle) in cases {
+            let mut c = original.clone();
+            let f = form(&[(field, value), ("force_cpu", "on"), ("port", "1234")]);
+            let f = if *field == "port" {
+                form(&[(field, value), ("force_cpu", "on")])
+            } else {
+                f
+            };
+            let err = apply_config_form(&mut c, &f)
+                .err()
+                .unwrap_or_else(|| panic!("{field}={value} must fail"));
+            assert!(
+                format!("{err:#}").contains(needle),
+                "{field}={value}: {err:#}"
+            );
+            assert_eq!(c, original, "{field}={value} must not modify the config");
+        }
+    }
 
     #[test]
     fn roundtrip_and_defaults() {

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% block head %}{% endblock %}
+<title>{% block title %}Blue Onyx OpenVINO{% endblock %} - Blue Onyx OpenVINO</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">Blue Onyx OpenVINO</a>
+  <nav>
+    <a href="/"{% if nav == "home" %} class="active"{% endif %}>Home</a>
+    <a href="/stats"{% if nav == "stats" %} class="active"{% endif %}>Stats</a>
+    <a href="/test"{% if nav == "test" %} class="active"{% endif %}>Test</a>
+    <a href="/config"{% if nav == "config" %} class="active"{% endif %}>Config</a>
+    <a href="/prometheus">Prometheus</a>
+  </nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>Blue Onyx OpenVINO {{ version }} &middot; CodeProject.AI compatible API</footer>
+</body>
+</html>

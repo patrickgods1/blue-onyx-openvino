@@ -1,0 +1,95 @@
+/* Blue Onyx OpenVINO web UI. Light and dark via prefers-color-scheme. */
+:root {
+  --bg: #f6f7f9;
+  --fg: #1d2330;
+  --muted: #5d6677;
+  --card: #ffffff;
+  --border: #d9dde5;
+  --accent: #1f5fbf;
+  --accent-fg: #ffffff;
+  --head: #0f2747;
+  --head-fg: #e8eefb;
+  --ok-bg: #e7f4ea;
+  --ok-fg: #1d5e2c;
+  --err-bg: #fbe9e9;
+  --err-fg: #8a1c1c;
+  --code-bg: #eef1f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b;
+    --fg: #dfe4ec;
+    --muted: #949db0;
+    --card: #1b2029;
+    --border: #2d3442;
+    --accent: #5b9bff;
+    --accent-fg: #0b1220;
+    --head: #0a0d12;
+    --head-fg: #dfe4ec;
+    --ok-bg: #173022;
+    --ok-fg: #9fe0b1;
+    --err-bg: #3a1a1a;
+    --err-fg: #ffb3b3;
+    --code-bg: #232a36;
+  }
+}
+* { box-sizing: border-box; }
+html { color-scheme: light dark; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 2rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--head);
+  color: var(--head-fg);
+}
+header .brand { color: var(--head-fg); font-weight: 600; text-decoration: none; font-size: 1.1rem; }
+nav { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+nav a { color: var(--head-fg); text-decoration: none; padding: 0.3rem 0.7rem; border-radius: 6px; opacity: 0.8; }
+nav a:hover, nav a.active { opacity: 1; background: rgba(255, 255, 255, 0.12); }
+main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 2rem 1rem; }
+h1 { font-size: 1.6rem; margin: 0 0 1rem; }
+h2 { font-size: 1.15rem; margin: 1.5rem 0 0.6rem; }
+a { color: var(--accent); }
+code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; }
+code { background: var(--code-bg); padding: 0.05rem 0.3rem; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 0.8rem 1rem; border-radius: 6px; overflow: auto; max-height: 32rem; }
+.muted { color: var(--muted); }
+.notice { background: var(--ok-bg); color: var(--ok-fg); padding: 0.6rem 0.9rem; border-radius: 6px; }
+.error { background: var(--err-bg); color: var(--err-fg); padding: 0.6rem 0.9rem; border-radius: 6px; white-space: pre-wrap; }
+.tag { font-size: 0.75rem; background: var(--accent); color: var(--accent-fg); padding: 0 0.4rem; border-radius: 4px; }
+.facts { display: flex; flex-wrap: wrap; gap: 0.5rem 2rem; }
+.facts .k { color: var(--muted); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 6px; }
+th, td { padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+th { font-weight: 600; font-size: 0.85rem; color: var(--muted); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:last-child td { border-bottom: none; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin: 1rem 0; }
+.card h2:first-child { margin-top: 0; }
+form label { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.5rem 0; font-size: 0.9rem; color: var(--muted); }
+form label.check { flex-direction: row; align-items: center; gap: 0.5rem; color: var(--fg); }
+form.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 1.5rem; }
+form.grid h2, form.grid textarea, form.grid p, form.grid .actions { grid-column: 1 / -1; }
+form.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+input, select, textarea, button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+}
+textarea { width: 100%; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85rem; }
+button { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); cursor: pointer; padding: 0.45rem 1.1rem; }
+button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+img.result { max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; }

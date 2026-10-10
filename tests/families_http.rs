@@ -13,7 +13,7 @@ use blue_onyx_openvino::model::ModelFamilyKind;
 use blue_onyx_openvino::registry::ModelRegistry;
 use blue_onyx_openvino::server::{self, AppState};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -91,12 +91,17 @@ async fn yolo26_and_rtdetr_over_http() {
     let metrics = Arc::new(Metrics::new(blue_onyx_openvino::VERSION));
     let registry =
         Arc::new(ModelRegistry::start(&config, &metrics, token.clone()).expect("registry"));
-    let state = Arc::new(AppState {
-        registry: registry.clone(),
+    let config_path = std::env::temp_dir().join(format!(
+        "bo_it_config_{}_{}.json",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let state = Arc::new(AppState::new(
+        registry.clone(),
         metrics,
-        config: Arc::new(RwLock::new(config)),
-        started: Instant::now(),
-    });
+        config,
+        config_path,
+    ));
     let port = free_port();
     let server = tokio::spawn(server::serve(state, port, token.clone()));
     let base = format!("http://127.0.0.1:{port}");

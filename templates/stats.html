@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="5">{% endblock %}
+{% block title %}Stats{% endblock %}
+{% block content %}
+<h1>Stats</h1>
+<p class="muted">Uptime {{ uptime }} &middot; OpenVINO {{ openvino_version }} &middot; refreshes every 5 s &middot; <a href="/stats.json">JSON</a></p>
+<div class="scroll">
+<table>
+<thead>
+<tr><th rowspan="2">Model</th><th rowspan="2">State</th><th rowspan="2">Device</th><th rowspan="2">Fell back</th>
+<th rowspan="2">Requests</th><th rowspan="2">Dropped</th><th rowspan="2">Queue</th>
+<th colspan="3">Inference ms</th><th colspan="3">Process ms</th><th colspan="3">Round trip ms</th></tr>
+<tr><th>avg</th><th>min</th><th>max</th><th>avg</th><th>min</th><th>max</th><th>avg</th><th>min</th><th>max</th></tr>
+</thead>
+<tbody>
+{% for m in models %}
+<tr>
+<td>{{ m.name }}{% if m.is_default %} <span class="tag">default</span>{% endif %}</td>
+<td>{{ m.state }}</td>
+<td title="{{ m.device }}">{{ m.provider }}</td>
+<td>{{ m.fell_back }}</td>
+<td class="num">{{ m.requests }}</td>
+<td class="num">{{ m.dropped }}</td>
+<td class="num">{{ m.queue }}</td>
+{% for s in m.timings %}<td class="num">{{ s.avg }}</td><td class="num">{{ s.min }}</td><td class="num">{{ s.max }}</td>{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

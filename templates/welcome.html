@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<h1>Blue Onyx OpenVINO {{ version }}</h1>
+<p id="update-hint" class="notice" hidden></p>
+<section class="facts">
+  <div><span class="k">OpenVINO</span> <span class="v">{{ openvino_version }}</span></div>
+  <div><span class="k">Devices</span> <span class="v">{{ devices }}</span></div>
+  <div><span class="k">Uptime</span> <span class="v">{{ uptime }}</span></div>
+</section>
+<h2>Models</h2>
+<table>
+<thead><tr><th>Model</th><th>Default</th><th>State</th><th>Device</th><th>Requests</th><th>Queue</th></tr></thead>
+<tbody>
+{% for m in models %}
+<tr><td>{{ m.name }}</td><td>{% if m.is_default %}yes{% endif %}</td><td>{{ m.state }}</td><td>{{ m.provider }}</td><td class="num">{{ m.requests }}</td><td class="num">{{ m.queue }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+<h2>Usage</h2>
+<p>Point Blue Iris (Settings &rarr; AI) at this server's address and port {{ port }}.</p>
+<ul>
+  <li><code>POST /v1/vision/detection</code> &mdash; multipart field <code>image</code>, optional <code>min_confidence</code>; served by the default model{% if !default_model.is_empty() %} (<code>{{ default_model }}</code>){% endif %}.</li>
+  <li><code>POST /v1/vision/custom/&lt;model&gt;</code> &mdash; same, served by a named model.</li>
+  <li><a href="/v1/vision/custom/list"><code>/v1/vision/custom/list</code></a> &mdash; configured model names.</li>
+  <li><a href="/stats.json"><code>/stats.json</code></a>, <a href="/prometheus"><code>/prometheus</code></a>, <a href="/v1/status/updateavailable"><code>/v1/status/updateavailable</code></a></li>
+</ul>
+<pre class="example">curl -F image=@test.jpg -F min_confidence=0.4 http://127.0.0.1:{{ port }}/v1/vision/detection</pre>
+<script>
+fetch("/v1/status/updateavailable").then(r => r.json()).then(u => {
+  if (u.success && u.updateAvailable && u.latest) {
+    const el = document.getElementById("update-hint");
+    el.textContent = "Update available: " + u.latest.major + "." + u.latest.minor + "." + u.latest.patch;
+    el.hidden = false;
+  }
+}).catch(() => {});
+</script>
+{% endblock %}

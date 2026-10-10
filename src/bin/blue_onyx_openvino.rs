@@ -117,8 +117,9 @@ fn run(cli: Cli) -> Result<()> {
         None => {}
     }
 
-    let (config, config_path) = cli::resolve_config(&cli)?;
-    let _log = cli::init_logging(config.log_level, config.log_path.as_deref())?;
+    let (mut config, config_path) = cli::resolve_config(&cli)?;
+    // Initialized once; later level changes go through the reload handle (web UI, restart).
+    let log = cli::init_logging(config.log_level, config.log_path.as_deref())?;
     info!(
         version = blue_onyx_openvino::VERSION,
         os = %system_info::os_description(),
@@ -135,41 +136,98 @@ fn run(cli: Cli) -> Result<()> {
         );
     }
 
-    let shutdown = CancellationToken::new();
-    let metrics = Arc::new(Metrics::new(blue_onyx_openvino::VERSION));
-    let registry = Arc::new(ModelRegistry::start(&config, &metrics, shutdown.clone())?);
-    info!(models = ?registry.names(), "models registered (compiling in the background)");
-
-    let port = config.port;
-    let state = Arc::new(AppState {
-        registry: registry.clone(),
-        metrics,
-        config: Arc::new(RwLock::new(config)),
-        started: Instant::now(),
-    });
-
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building tokio runtime")?;
-    let served = rt.block_on(async {
+    let shutdown = CancellationToken::new();
+    {
         let token = shutdown.clone();
-        tokio::spawn(async move {
+        rt.spawn(async move {
             wait_for_signal().await;
             info!("shutdown requested");
             token.cancel();
         });
-        server::serve(state, port, shutdown.clone()).await
-    });
-    shutdown.cancel();
-    drop(rt);
-
-    match Arc::try_unwrap(registry) {
-        Ok(reg) => reg.shutdown(),
-        Err(_) => warn!("registry still referenced at exit; workers stop via the shutdown token"),
     }
-    info!("bye");
-    served
+
+    let started = Instant::now();
+    // Config to fall back to when a restart with the edited config fails to start.
+    let mut previous: Option<Config> = None;
+    loop {
+        // One generation = one registry + one HTTP server. `POST /config/restart` cancels the
+        // generation token; Ctrl-C/SIGTERM cancel `shutdown`, which cancels it too.
+        let generation = shutdown.child_token();
+        let metrics = Arc::new(Metrics::new(blue_onyx_openvino::VERSION));
+        let registry = match ModelRegistry::start(&config, &metrics, generation.clone()) {
+            Ok(r) => Arc::new(r),
+            Err(e) => match previous.take() {
+                Some(prev) => {
+                    error!(
+                        "restart with the new config failed: {e:#}; restoring the previous config"
+                    );
+                    config = prev;
+                    continue;
+                }
+                None => return Err(e),
+            },
+        };
+        info!(models = ?registry.names(), "models registered (compiling in the background)");
+
+        let port = config.port;
+        let state = Arc::new(AppState {
+            registry: registry.clone(),
+            metrics,
+            config: Arc::new(RwLock::new(config.clone())),
+            started,
+            config_path: config_path.clone(),
+            log_reload: Some(log.clone()),
+            restart: generation.clone(),
+        });
+        let served = rt.block_on(server::serve(state, port, shutdown.clone()));
+        // Stop this generation's workers whatever ended the server.
+        generation.cancel();
+        match Arc::try_unwrap(registry) {
+            Ok(reg) => reg.shutdown(),
+            Err(_) => warn!("registry still referenced; workers stop via the shutdown token"),
+        }
+
+        if shutdown.is_cancelled() {
+            info!("bye");
+            return served;
+        }
+        if let Err(e) = served {
+            match previous.take() {
+                Some(prev) => {
+                    error!("{e:#}; restoring the previous config");
+                    config = prev;
+                    continue;
+                }
+                None => return Err(e),
+            }
+        }
+
+        info!(config = %config_path.display(), "restarting: reloading the config file");
+        let next = match Config::load(&config_path) {
+            Ok(c) if !c.models.is_empty() => c,
+            Ok(_) => {
+                warn!("reloaded config has no models; keeping the current config");
+                config.clone()
+            }
+            Err(e) => {
+                warn!("{e:#}; keeping the current config");
+                config.clone()
+            }
+        };
+        if next.log_level != config.log_level
+            && let Err(e) = log.set_level(next.log_level)
+        {
+            warn!("{e:#}");
+        }
+        if next.log_path != config.log_path {
+            warn!("log_path changes take effect after the process is restarted");
+        }
+        previous = Some(std::mem::replace(&mut config, next));
+    }
 }
 
 async fn wait_for_signal() {

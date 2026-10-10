@@ -15,7 +15,7 @@ use blue_onyx_openvino::registry::ModelRegistry;
 use blue_onyx_openvino::server::{self, AppState};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -52,10 +52,10 @@ async fn post_image(client: &reqwest::Client, url: &str, bytes: &[u8]) -> Vision
 
 async fn get_stats(client: &reqwest::Client, base: &str) -> serde_json::Value {
     client
-        .get(format!("{base}/stats"))
+        .get(format!("{base}/stats.json"))
         .send()
         .await
-        .expect("GET /stats")
+        .expect("GET /stats.json")
         .json()
         .await
         .expect("stats JSON")
@@ -72,14 +72,14 @@ async fn get_prometheus(client: &reqwest::Client, base: &str) -> String {
         .expect("prometheus text")
 }
 
-/// `/stats` row for `name`.
+/// `/stats.json` row for `name`.
 fn stats_model<'a>(stats: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
     stats["models"]
         .as_array()
         .expect("models array")
         .iter()
         .find(|m| m["name"] == name)
-        .unwrap_or_else(|| panic!("no /stats row for {name}: {stats}"))
+        .unwrap_or_else(|| panic!("no /stats.json row for {name}: {stats}"))
 }
 
 /// Value of the sample `blue_onyx_openvino_<metric>{model="<model>"}`.
@@ -165,12 +165,17 @@ async fn multiple_models_served_concurrently() {
     let t_start = Instant::now();
     let registry =
         Arc::new(ModelRegistry::start(&config, &metrics, token.clone()).expect("registry"));
-    let state = Arc::new(AppState {
-        registry: registry.clone(),
+    let config_path = std::env::temp_dir().join(format!(
+        "bo_it_config_{}_{}.json",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let state = Arc::new(AppState::new(
+        registry.clone(),
         metrics,
-        config: Arc::new(RwLock::new(config)),
-        started: Instant::now(),
-    });
+        config,
+        config_path,
+    ));
     let port = free_port();
     let server = tokio::spawn(server::serve(state, port, token.clone()));
     let base = format!("http://127.0.0.1:{port}");
@@ -179,7 +184,7 @@ async fn multiple_models_served_concurrently() {
     // Wait for the eager models; the lazy one must stay unloaded meanwhile.
     let deadline = Instant::now() + Duration::from_secs(300);
     loop {
-        if let Ok(r) = client.get(format!("{base}/stats")).send().await
+        if let Ok(r) = client.get(format!("{base}/stats.json")).send().await
             && let Ok(stats) = r.json::<serde_json::Value>().await
         {
             for m in stats["models"].as_array().unwrap() {
