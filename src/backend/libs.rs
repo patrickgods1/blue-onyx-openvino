@@ -635,6 +635,196 @@ pub fn read_ort_flavor(lib_dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+// ---------------------------------------------------------------------------------------------
+// NVIDIA CUDA libraries (`nvidia-cuda-libs`, extracted flat into `onnxruntime/cuda-libs`).
+//
+// ONNX Runtime's CUDA provider links cudart, cuBLAS(Lt), cuDNN 9, cuFFT and cuRAND by name
+// (`DT_NEEDED` / PE imports), and cuDNN loads its sub-libraries by name at run time. The
+// directory cannot be put on `LD_LIBRARY_PATH` after the process started, so every library is
+// preloaded by absolute path: a later by-name load then finds the already loaded module (glibc
+// matches loaded objects by soname; Windows uses an already loaded DLL of the same module
+// name). On Windows the directory is also prepended to `PATH` for anything loaded later.
+// ---------------------------------------------------------------------------------------------
+
+/// Subdirectory of the ONNX Runtime folder holding the NVIDIA libraries.
+pub const CUDA_LIBS_DIR_NAME: &str = "cuda-libs";
+
+/// Libraries that make a usable CUDA 12 / cuDNN 9 setup, by platform (any system install that
+/// can load all of these does not need `nvidia-cuda-libs`).
+pub fn cuda_core_libs(windows: bool) -> &'static [&'static str] {
+    if windows {
+        &["cudart64_12.dll", "cublas64_12.dll", "cudnn64_9.dll"]
+    } else {
+        &["libcudart.so.12", "libcublas.so.12", "libcudnn.so.9"]
+    }
+}
+
+/// Library family of a CUDA library file name: `libcublasLt.so.12` / `cublasLt64_12.dll` ->
+/// `cublaslt`, `cudnn_graph64_9.dll` -> `cudnn_graph`, `nvrtc-builtins64_128.dll` ->
+/// `nvrtc-builtins`. None when the name is not a shared library of that platform.
+pub fn cuda_lib_family(name: &str, windows: bool) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    let base = if windows {
+        lower.strip_suffix(".dll")?
+    } else {
+        let (b, _) = lower.split_once(".so")?;
+        b.strip_prefix("lib")?
+    };
+    let family = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_');
+    (!family.is_empty()).then(|| family.to_string())
+}
+
+/// Preload order: libraries before the ones that link them (cudart, nvJitLink and NVRTC, then
+/// cuBLASLt before cuBLAS, cuFFT, cuRAND, the cuDNN sub-libraries, cuDNN itself last).
+/// Unknown libraries go between the known ones and cuDNN; ties sort by name. The loader also
+/// retries failures after each pass, so this only has to be right in the common case.
+pub fn cuda_preload_order(names: &[&str], windows: bool) -> Vec<String> {
+    const ORDER: &[&str] = &[
+        "cudart",
+        "nvjitlink",
+        "nvrtc-builtins",
+        "nvrtc",
+        "cublaslt",
+        "cublas",
+        "cufft",
+        "curand",
+        "cudnn_graph",
+        "cudnn_engines_precompiled",
+        "cudnn_engines_runtime_compiled",
+        "cudnn_heuristic",
+        "cudnn_ops",
+        "cudnn_cnn",
+        "cudnn_adv",
+    ];
+    let rank = |family: &str| -> usize {
+        if family == "cudnn" {
+            ORDER.len() + 1
+        } else {
+            ORDER
+                .iter()
+                .position(|f| *f == family)
+                .unwrap_or(ORDER.len())
+        }
+    };
+    let mut out: Vec<(usize, String)> = names
+        .iter()
+        .filter_map(|n| cuda_lib_family(n, windows).map(|f| (rank(&f), n.to_string())))
+        .collect();
+    out.sort();
+    out.dedup_by(|a, b| a.1 == b.1);
+    out.into_iter().map(|(_, n)| n).collect()
+}
+
+/// What [`preload_cuda_libs`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CudaPreload {
+    pub loaded: Vec<PathBuf>,
+    /// Libraries that would not load, with the last error.
+    pub failed: Vec<(PathBuf, String)>,
+}
+
+/// Directory preloaded so far (once per process).
+static CUDA_PRELOADED: Mutex<Option<(PathBuf, CudaPreload)>> = Mutex::new(None);
+
+/// Preload every CUDA library in `dir` by absolute path (see the section comment), in
+/// [`cuda_preload_order`], retrying failures until no pass makes progress. Runs once per
+/// process; later calls return the first result. The libraries stay loaded for the process.
+pub fn preload_cuda_libs(dir: &Path) -> CudaPreload {
+    let mut slot = CUDA_PRELOADED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((d, r)) = slot.as_ref() {
+        if d != dir {
+            tracing::debug!(
+                "CUDA libraries already preloaded from {}; {} ignored",
+                d.display(),
+                dir.display()
+            );
+        }
+        return r.clone();
+    }
+    let windows = cfg!(windows);
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().is_file())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut pending: Vec<PathBuf> = cuda_preload_order(&refs, windows)
+        .into_iter()
+        .map(|n| dir.join(n))
+        .collect();
+    #[cfg(windows)]
+    prepend_to_path(&[dir.to_path_buf()]);
+    let mut report = CudaPreload::default();
+    let mut errors: std::collections::HashMap<PathBuf, String> = Default::default();
+    loop {
+        let before = pending.len();
+        pending.retain(|p| match open_cuda_lib(p) {
+            Ok(()) => {
+                report.loaded.push(p.clone());
+                false
+            }
+            Err(e) => {
+                errors.insert(p.clone(), e);
+                true
+            }
+        });
+        if pending.is_empty() || pending.len() == before {
+            break;
+        }
+    }
+    report.failed = pending
+        .into_iter()
+        .map(|p| {
+            let e = errors.remove(&p).unwrap_or_default();
+            (p, e)
+        })
+        .collect();
+    *slot = Some((dir.to_path_buf(), report.clone()));
+    report
+}
+
+/// Load one CUDA library by absolute path and keep it loaded.
+fn open_cuda_lib(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
+        // SAFETY: NVIDIA's CUDA/cuDNN redistributable libraries (verified by SHA-256 when
+        // downloaded) that ONNX Runtime's CUDA provider would load itself; their initializers
+        // run as they would then. The handle is leaked so they stay loaded for the process.
+        let lib = unsafe { Library::open(Some(path), RTLD_NOW | RTLD_GLOBAL) }
+            .map_err(|e| e.to_string())?;
+        std::mem::forget(lib);
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use libloading::os::windows::{LOAD_WITH_ALTERED_SEARCH_PATH, Library};
+        // SAFETY: as above. LOAD_WITH_ALTERED_SEARCH_PATH resolves the DLL's own imports from
+        // its directory first (the other CUDA DLLs next to it).
+        let lib = unsafe { Library::load_with_flags(path, LOAD_WITH_ALTERED_SEARCH_PATH) }
+            .map_err(|e| e.to_string())?;
+        std::mem::forget(lib);
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(format!("cannot load {} on this platform", path.display()))
+    }
+}
+
+/// Whether the system (driver/toolkit install, `PATH` / `LD_LIBRARY_PATH`) already provides
+/// CUDA 12 and cuDNN 9: every [`cuda_core_libs`] name loads by name.
+pub fn system_cuda_present() -> bool {
+    cuda_core_libs(cfg!(windows)).iter().all(|n| {
+        // SAFETY: probing CUDA libraries by name, which the CUDA provider would load itself; the
+        // handle is dropped right away and no symbol is used.
+        unsafe { libloading::Library::new(n) }.is_ok()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,6 +1008,103 @@ mod tests {
         assert_eq!(read_ort_flavor(&a), None);
         assert!(default_onnxruntime_dir().ends_with(ORT_DIR_NAME));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn cuda_library_families_and_order() {
+        assert_eq!(
+            cuda_lib_family("libcublasLt.so.12", false).as_deref(),
+            Some("cublaslt")
+        );
+        assert_eq!(
+            cuda_lib_family("cublasLt64_12.dll", true).as_deref(),
+            Some("cublaslt")
+        );
+        assert_eq!(
+            cuda_lib_family("cudnn_graph64_9.dll", true).as_deref(),
+            Some("cudnn_graph")
+        );
+        assert_eq!(
+            cuda_lib_family("libcudnn.so.9", false).as_deref(),
+            Some("cudnn")
+        );
+        assert_eq!(
+            cuda_lib_family("nvrtc-builtins64_128.dll", true).as_deref(),
+            Some("nvrtc-builtins")
+        );
+        assert_eq!(
+            cuda_lib_family("nvJitLink_120_0.dll", true).as_deref(),
+            Some("nvjitlink")
+        );
+        assert_eq!(cuda_lib_family("VERSION", false), None);
+        assert_eq!(cuda_lib_family("cudnn.h", true), None);
+        assert_eq!(cuda_lib_family(".installed.json", true), None);
+
+        let linux = [
+            "libcudnn.so.9",
+            "libcudnn_ops.so.9",
+            "libcublas.so.12",
+            "libcublasLt.so.12",
+            "libcudnn_graph.so.9",
+            "libcufft.so.11",
+            "libnvJitLink.so.12",
+            "libcudart.so.12",
+            "libcurand.so.10",
+            "libnvrtc.so.12",
+            "libcudnn_engines_precompiled.so.9",
+            "VERSION",
+            ".installed.json",
+        ];
+        assert_eq!(
+            cuda_preload_order(&linux, false),
+            [
+                "libcudart.so.12",
+                "libnvJitLink.so.12",
+                "libnvrtc.so.12",
+                "libcublasLt.so.12",
+                "libcublas.so.12",
+                "libcufft.so.11",
+                "libcurand.so.10",
+                "libcudnn_graph.so.9",
+                "libcudnn_engines_precompiled.so.9",
+                "libcudnn_ops.so.9",
+                "libcudnn.so.9",
+            ]
+        );
+        let win = [
+            "cudnn64_9.dll",
+            "cublas64_12.dll",
+            "cublasLt64_12.dll",
+            "cudart64_12.dll",
+            "cudnn_cnn64_9.dll",
+            "zlibwapi.dll",
+        ];
+        assert_eq!(
+            cuda_preload_order(&win, true),
+            [
+                "cudart64_12.dll",
+                "cublasLt64_12.dll",
+                "cublas64_12.dll",
+                "cudnn_cnn64_9.dll",
+                "zlibwapi.dll",
+                "cudnn64_9.dll",
+            ]
+        );
+        assert_eq!(cuda_core_libs(false)[2], "libcudnn.so.9");
+        // The catalog installs `nvidia-cuda-libs` where the loader looks.
+        assert_eq!(
+            crate::resources::catalog::CUDA_LIBS_DEST,
+            format!("{ORT_DIR_NAME}/{CUDA_LIBS_DIR_NAME}")
+        );
+    }
+
+    #[test]
+    fn cuda_preload_of_an_empty_dir_reports_nothing() {
+        let dir = std::env::temp_dir().join(format!("bop_cudalibs_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = preload_cuda_libs(&dir);
+        assert!(r.loaded.is_empty() && r.failed.is_empty(), "{r:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

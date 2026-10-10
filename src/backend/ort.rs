@@ -183,39 +183,71 @@ pub(crate) struct Dep {
     /// File names tried (the first is named in messages).
     pub names: &'static [&'static str],
     pub loadable: bool,
+    /// Part of `nvidia-cuda-libs` (downloadable), not the provider or TensorRT.
+    pub cuda_lib: bool,
 }
 
 /// Why an NVIDIA EP cannot run, naming every missing piece; None when all deps load.
+#[cfg(test)]
 pub(crate) fn missing_deps_reason(ep: &str, deps: &[Dep]) -> Option<String> {
-    let missing: Vec<String> = deps
-        .iter()
-        .filter(|d| !d.loadable)
-        .map(|d| format!("{} ({})", d.label, d.names.join(" / ")))
-        .collect();
+    missing_deps_reason_with(ep, deps, None)
+}
+
+/// [`missing_deps_reason`]; when a missing CUDA library (runtime, cuDNN) could be downloaded,
+/// `download_hint` says how (see [`cuda_download_hint`]).
+pub(crate) fn missing_deps_reason_with(
+    ep: &str,
+    deps: &[Dep],
+    download_hint: Option<&str>,
+) -> Option<String> {
+    let missing: Vec<&Dep> = deps.iter().filter(|d| !d.loadable).collect();
     if missing.is_empty() {
         return None;
     }
+    let list: Vec<String> = missing
+        .iter()
+        .map(|d| format!("{} ({})", d.label, d.names.join(" / ")))
+        .collect();
+    let fix = match download_hint {
+        Some(h) if missing.iter().any(|d| d.cuda_lib) => h.to_string(),
+        _ => format!(
+            "install it or add its directory to {}",
+            if cfg!(windows) {
+                "PATH"
+            } else {
+                "LD_LIBRARY_PATH"
+            }
+        ),
+    };
     Some(format!(
-        "{ep} execution provider needs {} which could not be loaded; install it or add its \
-         directory to {}",
-        missing.join(" and "),
-        if cfg!(windows) {
-            "PATH"
-        } else {
-            "LD_LIBRARY_PATH"
-        }
+        "{ep} execution provider needs {} which could not be loaded; {fix}",
+        list.join(" and ")
     ))
 }
 
-/// Whether any of `names` loads (system search path, or next to the ONNX Runtime library).
-fn any_loadable(names: &[&str], ort_dir: &Path) -> bool {
+/// "CUDA libraries missing — enable allow_large_downloads or run `blue-onyx-prism fetch
+/// --resource nvidia-cuda-libs` (1.9 GB), or install CUDA 12 and cuDNN 9" when the catalog has
+/// them for this platform; None otherwise.
+pub(crate) fn cuda_download_hint(os: &str, arch: &str) -> Option<String> {
+    let r = crate::resources::catalog::cuda_libs_for(os, arch)?;
+    Some(format!(
+        "CUDA libraries missing \u{2014} enable allow_large_downloads or run `blue-onyx-prism \
+         fetch --resource {}` ({}), or install CUDA 12 and cuDNN 9",
+        r.id,
+        crate::resources::catalog::format_size(r.size())
+    ))
+}
+
+/// Whether any of `names` loads (by name: system search path and libraries already preloaded
+/// from `cuda-libs`; or by path from one of `dirs`).
+fn any_loadable(names: &[&str], dirs: &[&Path]) -> bool {
     names.iter().any(|n| {
-        let local = ort_dir.join(n);
-        let candidates: Vec<PathBuf> = if local.is_file() {
-            vec![local, PathBuf::from(n)]
-        } else {
-            vec![PathBuf::from(n)]
-        };
+        let mut candidates: Vec<PathBuf> = dirs
+            .iter()
+            .map(|d| d.join(n))
+            .filter(|p| p.is_file())
+            .collect();
+        candidates.push(PathBuf::from(n));
         candidates.iter().any(|p| {
             // SAFETY: probing NVIDIA runtime libraries (cudart, cuDNN, TensorRT) that the CUDA
             // execution provider would load itself when a session is created; the handle is
@@ -225,22 +257,26 @@ fn any_loadable(names: &[&str], ort_dir: &Path) -> bool {
     })
 }
 
-fn nvidia_deps(target: Target, ort_dir: &Path) -> Vec<Dep> {
+fn nvidia_deps(target: Target, ort_dir: &Path, cuda_libs: Option<&Path>) -> Vec<Dep> {
+    let dirs: Vec<&Path> = std::iter::once(ort_dir).chain(cuda_libs).collect();
     let mut deps = vec![
         Dep {
             label: "the ONNX Runtime CUDA provider",
             names: &[dep_names::CUDA_PROVIDER],
             loadable: ort_dir.join(dep_names::CUDA_PROVIDER).is_file(),
+            cuda_lib: false,
         },
         Dep {
             label: "the CUDA runtime",
             names: dep_names::CUDART,
-            loadable: any_loadable(dep_names::CUDART, ort_dir),
+            loadable: any_loadable(dep_names::CUDART, &dirs),
+            cuda_lib: true,
         },
         Dep {
             label: "cuDNN 9",
             names: dep_names::CUDNN,
-            loadable: any_loadable(dep_names::CUDNN, ort_dir),
+            loadable: any_loadable(dep_names::CUDNN, &dirs),
+            cuda_lib: true,
         },
     ];
     if target == Target::TensorRt {
@@ -248,11 +284,13 @@ fn nvidia_deps(target: Target, ort_dir: &Path) -> Vec<Dep> {
             label: "the ONNX Runtime TensorRT provider",
             names: &[dep_names::TRT_PROVIDER],
             loadable: ort_dir.join(dep_names::TRT_PROVIDER).is_file(),
+            cuda_lib: false,
         });
         deps.push(Dep {
             label: "TensorRT 10",
             names: dep_names::NVINFER,
-            loadable: any_loadable(dep_names::NVINFER, ort_dir),
+            loadable: any_loadable(dep_names::NVINFER, &dirs),
+            cuda_lib: false,
         });
     }
     deps
@@ -282,10 +320,35 @@ impl std::fmt::Debug for OrtRuntime {
 impl OrtRuntime {
     /// Load the library at `path` (from [`libs::find_onnxruntime`]), then probe its execution
     /// providers.
-    pub fn new(path: &Path, opts: &super::CoreOptions, hw: &HardwareInfo) -> Result<Self> {
+    ///
+    /// `cuda_libs`: the `onnxruntime/cuda-libs` directory of `nvidia-cuda-libs`. When it exists,
+    /// an NVIDIA GPU is present and the CUDA provider is installed, its libraries are preloaded
+    /// first (see [`libs::preload_cuda_libs`]) so the CUDA provider finds them.
+    pub fn new(
+        path: &Path,
+        opts: &super::CoreOptions,
+        hw: &HardwareInfo,
+        cuda_libs: Option<&Path>,
+    ) -> Result<Self> {
         let lib = load_library(path)
             .with_context(|| format!("loading ONNX Runtime from {}", path.display()))?;
-        let probe = probe_providers(&lib, hw);
+        let ort_dir = lib.path.parent().unwrap_or(Path::new("."));
+        let cuda_libs = cuda_libs.filter(|d| d.is_dir());
+        if let Some(dir) = cuda_libs
+            && hw.has_vendor(GpuVendor::Nvidia)
+            && ort_dir.join(dep_names::CUDA_PROVIDER).is_file()
+        {
+            let r = libs::preload_cuda_libs(dir);
+            tracing::info!(
+                "preloaded {} CUDA libraries from {}",
+                r.loaded.len(),
+                dir.display()
+            );
+            for (p, e) in &r.failed {
+                tracing::warn!("could not preload {}: {e}", p.display());
+            }
+        }
+        let probe = probe_providers(&lib, hw, cuda_libs);
         tracing::info!(
             "ONNX Runtime {} loaded from {} (flavor {}); execution providers: {}",
             lib.version,
@@ -607,7 +670,7 @@ fn device_actual(cand: &Candidate) -> String {
     }
 }
 
-fn probe_providers(lib: &LoadedLib, hw: &HardwareInfo) -> OrtProbe {
+fn probe_providers(lib: &LoadedLib, hw: &HardwareInfo, cuda_libs: Option<&Path>) -> OrtProbe {
     let dir = lib.path.parent().unwrap_or(Path::new("."));
     let flavor = libs::read_ort_flavor(dir);
     let mut providers = vec![EpStatus::usable(Target::Cpu)];
@@ -629,9 +692,11 @@ fn probe_providers(lib: &LoadedLib, hw: &HardwareInfo) -> OrtProbe {
                     Target::Cuda | Target::TensorRt if !hw.has_vendor(GpuVendor::Nvidia) => {
                         Some("no NVIDIA GPU detected".to_string())
                     }
-                    Target::Cuda | Target::TensorRt => {
-                        missing_deps_reason(target.display_name(), &nvidia_deps(target, dir))
-                    }
+                    Target::Cuda | Target::TensorRt => missing_deps_reason_with(
+                        target.display_name(),
+                        &nvidia_deps(target, dir, cuda_libs),
+                        cuda_download_hint(&hw.os, &hw.arch).as_deref(),
+                    ),
                     _ => None,
                 };
                 providers.push(EpStatus {
@@ -1000,6 +1065,7 @@ mod tests {
             label,
             names,
             loadable,
+            cuda_lib: label != "TensorRT 10",
         };
         assert_eq!(
             missing_deps_reason(
@@ -1040,6 +1106,30 @@ mod tests {
             r.contains("the CUDA runtime (a / b) and TensorRT 10 (c)"),
             "{r}"
         );
+
+        // Downloadable CUDA libraries: the reason says how to get them.
+        let hint = cuda_download_hint("linux", "x86_64").unwrap();
+        assert!(hint.contains("fetch --resource nvidia-cuda-libs"), "{hint}");
+        assert!(
+            hint.contains("allow_large_downloads") && hint.contains("GB"),
+            "{hint}"
+        );
+        assert!(cuda_download_hint("macos", "aarch64").is_none());
+        let r = missing_deps_reason_with(
+            "CUDA",
+            &[dep("cuDNN 9", &["libcudnn.so.9"], false)],
+            Some(&hint),
+        )
+        .unwrap();
+        assert!(r.ends_with(&hint), "{r}");
+        // Only TensorRT missing: not fixed by the download.
+        let r = missing_deps_reason_with(
+            "TensorRT",
+            &[dep("TensorRT 10", &["c"], false)],
+            Some(&hint),
+        )
+        .unwrap();
+        assert!(r.contains("install it"), "{r}");
     }
 
     #[test]

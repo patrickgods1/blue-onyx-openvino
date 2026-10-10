@@ -62,6 +62,8 @@ pub struct OrtOptions {
     /// flat layout, per-flavor dirs). None = `<exe_dir>/onnxruntime`; config `download_dir` sets
     /// it to `<download_dir>/onnxruntime`.
     pub default_dir: Option<PathBuf>,
+    /// `onnxruntime/cuda-libs` (`nvidia-cuda-libs`): preloaded before the CUDA provider is used.
+    pub cuda_libs_dir: Option<PathBuf>,
 }
 
 /// What to load. The device comes separately as a [`DeviceSpec`] / [`Candidate`].
@@ -333,7 +335,12 @@ impl Runtimes {
                     Some(lookup.not_found_message()),
                     select::OrtProbe::unavailable(ORT_NOT_INSTALLED),
                 ),
-                Some(path) => match self::ort::OrtRuntime::new(path, opts, &hw) {
+                Some(path) => match self::ort::OrtRuntime::new(
+                    path,
+                    opts,
+                    &hw,
+                    ort_opts.cuda_libs_dir.as_deref(),
+                ) {
                     Ok(rt) => {
                         let probe = rt.probe().clone();
                         (Some(rt), None, probe)

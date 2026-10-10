@@ -61,6 +61,9 @@ pub struct Installed {
     /// Extra downloadable models besides [`catalog::MODELS`] (tests point these at a local
     /// server).
     pub extra_models: Vec<&'static Resource>,
+    /// The system already provides CUDA 12 + cuDNN 9 (a toolkit install on the library path), so
+    /// `nvidia-cuda-libs` is not needed.
+    pub system_cuda: bool,
 }
 
 // Derivable only in builds without the `onnxruntime` feature.
@@ -75,6 +78,7 @@ impl Default for Installed {
             probe: None,
             ort_in_build: cfg!(feature = "onnxruntime"),
             extra_models: Vec::new(),
+            system_cuda: false,
         }
     }
 }
@@ -563,8 +567,9 @@ impl Resolver<'_> {
             .collect()
     }
 
+    /// CUDA 12 + cuDNN 9 are available: `nvidia-cuda-libs` installed, or a system install.
     fn cuda_libs_present(&self) -> bool {
-        self.installed.has(catalog::CUDA_LIBS_ID)
+        self.installed.has(catalog::CUDA_LIBS_ID) || self.installed.system_cuda
     }
 
     /// Real status of `target` from the live probe, when `flavor` is the loaded one.
@@ -998,6 +1003,10 @@ pub fn detect_installed(config: &Config, root: &Path, probe: Option<RuntimeProbe
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
     out.ort_pinned = config.onnxruntime_dir.is_some() || env.is_some();
+    // A CUDA toolkit already on the library path makes the 1.8 GB download unnecessary (only
+    // probed with an NVIDIA GPU: loading the libraries by name has a cost).
+    out.system_cuda = crate::backend::detect::hardware().has_vendor(GpuVendor::Nvidia)
+        && crate::backend::libs::system_cuda_present();
     let lookup = crate::backend::libs::find_onnxruntime_from(
         config.onnxruntime_dir.as_deref(),
         env.as_deref(),

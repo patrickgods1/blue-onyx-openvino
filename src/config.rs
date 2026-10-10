@@ -353,6 +353,11 @@ impl Config {
                 .download_dir
                 .is_some()
                 .then(|| self.data_root().join(crate::backend::libs::ORT_DIR_NAME)),
+            cuda_libs_dir: Some(
+                self.data_root()
+                    .join(crate::backend::libs::ORT_DIR_NAME)
+                    .join(crate::backend::libs::CUDA_LIBS_DIR_NAME),
+            ),
         }
     }
 

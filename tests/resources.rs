@@ -656,13 +656,10 @@ fn fetch_jobs_follow_the_resolver() {
         resources: vec![CUDA_LIBS_ID.into()],
         ..FetchRequest::default()
     };
-    assert!(
-        format!(
-            "{:#}",
-            fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap_err()
-        )
-        .contains("--allow-large")
-    );
+    // Naming the large resource is the opt-in.
+    let (jobs, notes) = fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap();
+    assert_eq!(ids(&jobs), [CUDA_LIBS_ID]);
+    assert!(notes.iter().any(|n| n.contains("NVIDIA")), "{notes:?}");
     let req = FetchRequest {
         resources: vec!["onnxruntime-coreml".into()],
         ..FetchRequest::default()
@@ -716,4 +713,56 @@ fn detect_installed_reads_manifests() {
     assert!(inst.has(CUDA_LIBS_ID));
     assert!(!inst.has("onnxruntime-cpu"));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cuda_libraries_system_install_vs_download() {
+    let hw = win(vec![rtx(0)]);
+    for allow_large in [false, true] {
+        let mut cfg = ipcam();
+        cfg.allow_large_downloads = allow_large;
+        // A CUDA toolkit on the library path: no 1.8 GB download, large downloads or not.
+        let mut inst = files_only(&cfg);
+        inst.system_cuda = true;
+        let r = needed(&cfg, &hw, &inst);
+        assert_eq!(
+            pick(&r, "IPcam-general"),
+            "ort:cuda:0",
+            "allow_large={allow_large}"
+        );
+        assert!(!ids(&r).contains(&CUDA_LIBS_ID), "{:?}", ids(&r));
+        assert_eq!(ids(&r)[0], "onnxruntime-cuda");
+        assert!(r.optional.is_empty());
+
+        // No system CUDA: the libraries are needed (allowed) or the plan moves on (not allowed).
+        let inst = files_only(&cfg);
+        let r = needed(&cfg, &hw, &inst);
+        if allow_large {
+            assert_eq!(pick(&r, "IPcam-general"), "ort:cuda:0");
+            assert!(ids(&r).contains(&CUDA_LIBS_ID));
+        } else {
+            assert_eq!(pick(&r, "IPcam-general"), "openvino:cpu");
+            assert!(!ids(&r).contains(&CUDA_LIBS_ID));
+            assert!(r.optional.iter().any(|n| n.id() == CUDA_LIBS_ID));
+        }
+    }
+    // Installed nvidia-cuda-libs count like a system install.
+    let cfg = ipcam();
+    let inst = files_only(&cfg).with_resources(&[CUDA_LIBS_ID]);
+    let r = needed(&cfg, &hw, &inst);
+    assert_eq!(pick(&r, "IPcam-general"), "ort:cuda:0");
+    assert_eq!(ids(&r), ["onnxruntime-cuda", OPENVINO_RUNTIME_ID]);
+    // Linux too; never on macOS / Linux arm64 (no CUDA flavor there).
+    let linux = HardwareInfo::new("linux", "x86_64", vec![rtx(0)]);
+    let mut inst = files_only(&cfg);
+    inst.system_cuda = true;
+    assert_eq!(
+        pick(&needed(&cfg, &linux, &inst), "IPcam-general"),
+        "ort:cuda:0"
+    );
+    let arm = HardwareInfo::new("linux", "aarch64", vec![rtx(0)]);
+    assert_eq!(
+        pick(&needed(&cfg, &arm, &inst), "IPcam-general"),
+        "openvino:cpu"
+    );
 }

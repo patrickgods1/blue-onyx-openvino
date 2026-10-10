@@ -76,12 +76,14 @@ pub fn fetch_jobs(
                 ids.join(", ")
             );
         };
+        // Naming a large resource explicitly is the opt-in (like --allow-large).
         if res.is_large() && !allow_large {
-            bail!(
-                "{} is {}; pass --allow-large (or set allow_large_downloads) to download it",
+            notes.push(format!(
+                "{} is {} ({})",
                 res.id,
-                catalog::format_size(res.size())
-            );
+                catalog::format_size(res.size()),
+                res.license
+            ));
         }
         push(&mut jobs, job_for(res, root, &models_dir, no_ort_active));
     }
