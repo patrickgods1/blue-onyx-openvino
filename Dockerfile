@@ -19,6 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY --from=builder /src/target/release/blue-onyx-prism /app/blue-onyx-prism
 COPY --from=builder /src/target/release/blue-onyx-prism-benchmark /app/blue-onyx-prism-benchmark
+# ONNX Runtime (CPU flavor, pinned in src/setup_onnxruntime.rs) so `ort:cpu` works; OpenVINO comes
+# from the base image. NVIDIA/CUDA is not supported by this image.
+RUN /app/blue-onyx-prism setup-onnxruntime --flavor cpu --dir /app/onnxruntime
 RUN mkdir -p /app/models /app/cache /app/config && chown -R openvino:openvino /app
 USER openvino
 EXPOSE 32168

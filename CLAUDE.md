@@ -13,8 +13,12 @@ Primary target: Windows 11, Intel i5-8500 + UHD 630 iGPU. Must also build/run on
 ```powershell
 cargo build --release
 cargo run -- setup-openvino                 # downloads OpenVINO runtime libs into ./openvino (next to exe)
+cargo run -- setup-onnxruntime [--flavor auto|cpu|cuda|directml] [--dir <d>]   # ORT libs into ./onnxruntime
+cargo run -- list-devices                    # runnable device options and the `auto` pick
 cargo run -- download-models --name IPcam-general
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --force-cpu
+cargo run -- --model models/IPcam-general.onnx --family yolo5 --device ort:cpu
+cargo build --no-default-features            # OpenVINO-only build (drops the `onnxruntime` feature / `ort`)
 cargo test                                   # unit tests need no OpenVINO
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
@@ -28,6 +32,17 @@ OpenVINO libs are discovered through `openvino-finder`: `OPENVINO_INSTALL_DIR` (
 `backend/libs.rs` to `<exe_dir>/openvino` when present) or the OS library path. Pinned version lives in
 one constant in `src/setup_openvino.rs`.
 
+ONNX Runtime libs: `onnxruntime_dir` in the config, else `ORT_DYLIB_PATH`, else `<exe_dir>/onnxruntime`
+(`setup-onnxruntime` writes the libs plus `flavor.txt`). The pin (`ONNXRUNTIME_VERSION` 1.24.4,
+`DIRECTML_VERSION`) lives in `src/setup_onnxruntime.rs`. The `ort` crate's api-level must stay <= the pinned
+ORT lib (1.24), because the DirectML NuGet stops there. A process loads one ORT flavor only.
+
+Device spec (`device` in config/model entry, `--device`): `auto` (default), `openvino:gpu[.N]`,
+`openvino:cpu`, `openvino:npu`, `ort:cuda[:N]`, `ort:tensorrt[:N]`, `ort:directml[:N]`, `ort:coreml`,
+`ort:cpu`; legacy `GPU`/`GPU.N`/`CPU` mean `openvino:*`. `auto` ranks: NVIDIA+CUDA, Intel GPU (OpenVINO),
+AMD/other on Windows (DirectML), macOS arm64 (CoreML), CPU (`openvino:cpu`, else `ort:cpu`). TensorRT and
+NPU are never auto. RT-DETR is excluded from CoreML (aborts in ORT 1.24.4). ORT needs `.onnx` files.
+
 ## Architecture (see the plan in the repo history / README for detail)
 
 - `src/server.rs` axum HTTP (one tokio current-thread runtime). Blue Iris calls
@@ -36,8 +51,12 @@ one constant in `src/setup_openvino.rs`.
 - `src/registry.rs` loads N models from config sequentially on one `Core`; each model gets its own
   worker thread (`worker.rs`) and bounded crossbeam channel. `startup.rs` tracks Initializing/Ready/Failed
   so HTTP serves immediately while models compile.
-- `src/backend/` wraps OpenVINO (`Core`, `CompiledModel`, `InferRequest`): device selection with
-  GPU->CPU fallback, properties (CACHE_DIR, LATENCY hint, f16 on GPU), tensor IO.
+- `src/backend/` runtimes behind a `Backend` enum (`OpenVino | Ort`): OpenVINO wrapper (`Core`,
+  `CompiledModel`, `InferRequest`, properties CACHE_DIR/LATENCY/f16 on GPU, tensor IO); `spec.rs` parses
+  device specs; `detect.rs` finds GPUs (DXGI / sysfs / Apple); `select.rs` builds the ranked, pure
+  `DeviceOption` list and the `auto` pick; `plan.rs` turns it into per-model load candidates (compile +
+  warm-up, falling down the list, CPU last); `ort.rs` is the ONNX Runtime backend (all `ort` code lives here).
+  Also `GET /v1/devices` and the config-page device dropdown.
 - `src/model/` model families: `yolo26` (end-to-end `[1,300,6]`), `yolo5` (`[1,N,5+C]` + NMS),
   `yolo8` (`[1,4+C,8400]` + NMS), `rtdetr` (`images` + i64 `orig_target_sizes`; `labels/boxes/scores`).
   Preprocess = letterbox (YOLO) or stretch (RT-DETR) to 640x640 RGB f32 0..1, CHW.

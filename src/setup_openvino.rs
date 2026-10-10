@@ -268,7 +268,7 @@ fn strip_top(entry: &str) -> Option<String> {
 /// link's directory (`libfoo.so -> libfoo.so.2026.4.0`); hard-link targets are full archive
 /// paths (`openvino_toolkit_.../runtime/lib/.../libfoo.2026.4.0.dylib`) and go through
 /// [`strip_top`] like regular entries.
-fn same_dir_link_target(rel: &str, target: &str, hard: bool) -> Option<String> {
+pub(crate) fn same_dir_link_target(rel: &str, target: &str, hard: bool) -> Option<String> {
     let (dir, _) = rel.rsplit_once('/')?;
     let t = target.replace('\\', "/");
     let t = t.strip_prefix("./").unwrap_or(&t);
@@ -290,7 +290,7 @@ fn same_dir_link_target(rel: &str, target: &str, hard: bool) -> Option<String> {
     Some(name)
 }
 
-fn write_entry(dest: &Path, rel: &str, reader: &mut dyn Read) -> Result<u64> {
+pub(crate) fn write_entry(dest: &Path, rel: &str, reader: &mut dyn Read) -> Result<u64> {
     let out = dest.join(rel);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)
@@ -548,7 +548,7 @@ pub fn download_to_file(url: &str, dest: &Path) -> Result<u64> {
     run_async(download_async(url.to_string(), dest.to_path_buf()))
 }
 
-fn dir_size(p: &Path) -> u64 {
+pub(crate) fn dir_size(p: &Path) -> u64 {
     let Ok(rd) = std::fs::read_dir(p) else {
         return 0;
     };

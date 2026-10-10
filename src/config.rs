@@ -131,15 +131,20 @@ pub struct Config {
     pub request_timeout_secs: u64,
     /// 0 = auto-size from timeout and measured inference time.
     pub worker_queue_size: usize,
-    /// Global inference device spec (`backend::spec`): "GPU", "GPU.N", "CPU", "auto",
-    /// "openvino:gpu.1", "ort:cuda", ...
+    /// Global inference device spec (`backend::spec`): "auto" (default: best runtime and device
+    /// for the hardware), "openvino:gpu.1", "ort:cuda", "ort:coreml", ... Legacy "GPU", "GPU.N"
+    /// and "CPU" keep meaning OpenVINO.
     pub device: String,
     pub gpu_index: u32,
+    /// Use the best CPU option: OpenVINO CPU, or ONNX Runtime CPU when OpenVINO is missing.
     pub force_cpu: bool,
     /// Compiled-model cache directory (relative to exe dir). Empty disables caching.
     pub cache_dir: String,
     /// Directory holding the OpenVINO runtime (archive layout). None = `<exe_dir>/openvino` or system.
     pub openvino_dir: Option<PathBuf>,
+    /// Directory holding the ONNX Runtime library (or the library file itself). None =
+    /// `ORT_DYLIB_PATH`, then `<exe_dir>/onnxruntime`.
+    pub onnxruntime_dir: Option<PathBuf>,
     pub confidence_threshold: f32,
     pub nms_iou: f32,
     /// Only report these labels (case-insensitive). Empty = all.
@@ -163,11 +168,12 @@ impl Default for Config {
             port: crate::DEFAULT_PORT,
             request_timeout_secs: 15,
             worker_queue_size: 0,
-            device: "GPU".to_string(),
+            device: "auto".to_string(),
             gpu_index: 0,
             force_cpu: false,
             cache_dir: "cache".to_string(),
             openvino_dir: None,
+            onnxruntime_dir: None,
             confidence_threshold: 0.5,
             nms_iou: 0.5,
             object_filter: Vec::new(),
@@ -280,7 +286,9 @@ impl Config {
     }
 
     /// Parsed device for a model: `force_cpu` -> `openvino:cpu`, else the per-model override,
-    /// else the global device with `gpu_index` applied (see [`Self::device_for`]).
+    /// else the global device with `gpu_index` applied (see [`Self::device_for`]). The registry
+    /// turns `force_cpu` into the best CPU option of the machine (`Runtimes::best_cpu`), which is
+    /// `ort:cpu` when OpenVINO is missing.
     pub fn device_spec_for(&self, m: &ModelConfig) -> Result<crate::backend::DeviceSpec> {
         if self.force_cpu {
             return Ok(crate::backend::DeviceSpec::OPENVINO_CPU);
@@ -652,6 +660,22 @@ mod tests {
         assert_eq!(named.default_model_index(), Some(0));
         let empty: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.port, crate::DEFAULT_PORT);
+        // New configs default to `auto`; existing ones that say "GPU" keep OpenVINO GPU.
+        assert_eq!(empty.device, "auto");
+        assert_eq!(empty.onnxruntime_dir, None);
+        let old: Config = serde_json::from_str(r#"{"device":"GPU"}"#).unwrap();
+        assert_eq!(
+            old.device_spec_for(&ModelConfig::default())
+                .unwrap()
+                .to_string(),
+            "openvino:gpu"
+        );
+        let with_dir: Config =
+            serde_json::from_str(r#"{"onnxruntime_dir":"rt/onnxruntime"}"#).unwrap();
+        assert_eq!(
+            with_dir.onnxruntime_dir,
+            Some(PathBuf::from("rt/onnxruntime"))
+        );
     }
 
     #[test]
@@ -755,8 +779,10 @@ mod tests {
     fn device_resolution() {
         let mut c = Config::default();
         let m = ModelConfig::default();
-        assert_eq!(c.device_for(&m), "GPU");
+        assert_eq!(c.device_for(&m), "auto");
         c.gpu_index = 1;
+        assert_eq!(c.device_for(&m), "auto", "auto takes no index");
+        c.device = "GPU".into();
         assert_eq!(c.device_for(&m), "GPU.1");
         c.force_cpu = true;
         assert_eq!(c.device_for(&m), "CPU");
@@ -774,6 +800,8 @@ mod tests {
         let spec = |c: &Config, m: &ModelConfig| c.device_spec_for(m).unwrap().to_string();
         let mut c = Config::default();
         let m = ModelConfig::default();
+        assert_eq!(spec(&c, &m), "auto");
+        c.device = "GPU".into();
         assert_eq!(spec(&c, &m), "openvino:gpu");
         c.gpu_index = 2;
         assert_eq!(c.device_for(&m), "GPU.2");

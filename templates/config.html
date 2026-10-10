@@ -49,7 +49,12 @@
   <label>Worker queue size (0 = auto) <input type="number" name="worker_queue_size" min="0" value="{{ c.worker_queue_size }}" required></label>
 
   <h2>Inference</h2>
-  <label>Device <input type="text" name="device" value="{{ c.device }}" placeholder="GPU, GPU.1 or CPU" required></label>
+  <label>Device
+    <select name="device">
+    {% for d in device_choices %}<option value="{{ d.value }}"{% if d.selected %} selected{% endif %}{% if d.disabled %} disabled class="unavailable"{% endif %}>{{ d.label }}</option>{% endfor %}
+    </select>
+  </label>
+  <p class="muted">Options that cannot run on this machine are greyed out with the reason. Live list: <a href="/v1/devices"><code>/v1/devices</code></a>. Per-model devices are set in the models JSON below (<code>"device"</code>).</p>
   <label>GPU index <input type="number" name="gpu_index" min="0" value="{{ c.gpu_index }}" required></label>
   <label class="check"><input type="checkbox" name="force_cpu"{% if c.force_cpu %} checked{% endif %}> Force CPU</label>
   <label>Cache dir (empty disables) <input type="text" name="cache_dir" value="{{ c.cache_dir }}"></label>

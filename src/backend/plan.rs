@@ -10,8 +10,13 @@
 //!   a regular pick, with a note when a GPU was found but nothing GPU-class can run.
 //! - `openvino:gpu[.N]` -> GPU, then CPU as a fallback. When OpenVINO lists no GPU at all, only
 //!   CPU is tried and it counts as a fallback (unchanged from the old `DeviceSelection`).
-//! - `openvino:cpu` / `openvino:npu` -> just that device.
-//! - `ort:*` -> that device, then OpenVINO CPU as a fallback.
+//! - `openvino:cpu` / `openvino:npu` -> just that device (plus ONNX Runtime CPU as a fallback
+//!   when OpenVINO cannot run it, e.g. the OpenVINO runtime is missing).
+//! - `ort:*` -> that device, then the best other CPU option ([`best_cpu`]: OpenVINO CPU, else
+//!   ONNX Runtime CPU) as a fallback.
+//!
+//! "No GPU" fallbacks also use [`best_cpu`], so a legacy `GPU` config on a machine with only
+//! ONNX Runtime lands on `ort:cpu`.
 
 use super::detect::HardwareInfo;
 use super::select::{RuntimeProbe, Selection, select};
@@ -48,7 +53,7 @@ pub fn plan_for(
 ) -> Vec<Candidate> {
     match spec {
         DeviceSpec::Auto => auto_candidates(sel),
-        DeviceSpec::Device(d) => explicit_candidates(*d, available_ov_devices),
+        DeviceSpec::Device(d) => explicit_candidates(*d, sel, available_ov_devices),
     }
 }
 
@@ -62,6 +67,37 @@ pub fn plan_candidates(spec: &DeviceSpec, available_ov_devices: &[String]) -> Ve
         true,
     );
     plan_for(spec, &sel, available_ov_devices)
+}
+
+fn ort_cpu() -> Device {
+    Device {
+        runtime: Runtime::Ort,
+        target: Target::Cpu,
+        index: None,
+    }
+}
+
+fn runnable(sel: &Selection, d: &Device) -> bool {
+    sel.option(d).is_some_and(|o| o.runnable)
+}
+
+/// The best CPU option (`force_cpu`, "no GPU" fallbacks): OpenVINO CPU when it can run, else
+/// ONNX Runtime CPU when it can, else OpenVINO CPU (so the error names the missing runtime).
+pub fn best_cpu(sel: &Selection) -> Device {
+    [Device::OPENVINO_CPU, ort_cpu()]
+        .into_iter()
+        .find(|d| runnable(sel, d))
+        .unwrap_or(Device::OPENVINO_CPU)
+}
+
+/// CPU fallback for an explicit `device`: the first runnable CPU option other than `device`,
+/// else OpenVINO CPU unless that is `device` itself.
+fn fallback_cpu(sel: &Selection, device: Device) -> Option<Device> {
+    [Device::OPENVINO_CPU, ort_cpu()]
+        .into_iter()
+        .filter(|d| *d != device)
+        .find(|d| runnable(sel, d))
+        .or_else(|| (device != Device::OPENVINO_CPU).then_some(Device::OPENVINO_CPU))
 }
 
 /// The `auto` ranking as candidates. Without anything runnable, OpenVINO CPU is still tried so
@@ -104,24 +140,46 @@ pub fn auto_candidates(sel: &Selection) -> Vec<Candidate> {
 }
 
 /// An explicit device, then its fallback.
-fn explicit_candidates(device: Device, available_ov_devices: &[String]) -> Vec<Candidate> {
-    let cpu_fallback = Candidate::new(Device::OPENVINO_CPU, true);
+fn explicit_candidates(
+    device: Device,
+    sel: &Selection,
+    available_ov_devices: &[String],
+) -> Vec<Candidate> {
+    let fallback = |d: Device| Candidate::new(d, true);
     match (device.runtime, device.target) {
         (Runtime::OpenVino, Target::Gpu) => {
+            let cpu = best_cpu(sel);
             if available_ov_devices.iter().any(|d| d.starts_with("GPU")) {
-                vec![Candidate::new(device, false), cpu_fallback]
+                vec![Candidate::new(device, false), fallback(cpu)]
             } else {
                 let requested = device.openvino_device().unwrap_or_default();
+                let using = if cpu == Device::OPENVINO_CPU {
+                    "CPU".to_string()
+                } else {
+                    cpu.to_string()
+                };
                 vec![Candidate {
                     note: Some(format!(
-                        "requested device {requested} not available (devices: {available_ov_devices:?}); using CPU"
+                        "requested device {requested} not available (devices: {available_ov_devices:?}); using {using}"
                     )),
-                    ..cpu_fallback
+                    ..fallback(cpu)
                 }]
             }
         }
-        (Runtime::OpenVino, _) => vec![Candidate::new(device, false)],
-        (Runtime::Ort, _) => vec![Candidate::new(device, false), cpu_fallback],
+        (Runtime::OpenVino, _) => {
+            let mut out = vec![Candidate::new(device, false)];
+            if !runnable(sel, &device)
+                && let Some(cpu) = fallback_cpu(sel, device).filter(|d| runnable(sel, d))
+            {
+                out.push(fallback(cpu));
+            }
+            out
+        }
+        (Runtime::Ort, _) => {
+            let mut out = vec![Candidate::new(device, false)];
+            out.extend(fallback_cpu(sel, device).map(fallback));
+            out
+        }
     }
 }
 
@@ -334,5 +392,99 @@ mod tests {
         assert_eq!(format!("{err:#}"), "outer: inner");
 
         assert!(try_candidates::<()>("m", &[], |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn ort_aware_cpu_fallbacks() {
+        use crate::backend::detect::{GpuAdapter, GpuVendor};
+        use crate::backend::select::{EpStatus, OpenVinoProbe, OrtProbe};
+        let apple = GpuAdapter {
+            vendor: GpuVendor::Apple,
+            name: "Apple M1 GPU".into(),
+            vram_mb: 0,
+            index: 0,
+            discrete: false,
+        };
+        let hw = HardwareInfo::new("macos", "aarch64", vec![apple]);
+        let ort = OrtProbe::installed(
+            "coreml",
+            vec![
+                EpStatus::usable(Target::Cpu),
+                EpStatus::usable(Target::CoreMl),
+            ],
+        );
+        let names = |sel: &Selection, spec: &str, ov: &[&str]| -> Vec<(String, bool)> {
+            plan_for(&parse(spec).unwrap(), sel, &devs(ov))
+                .into_iter()
+                .map(|c| (c.device.to_string(), c.fell_back))
+                .collect()
+        };
+
+        // OpenVINO and ONNX Runtime both present.
+        let both = select(
+            &hw,
+            &RuntimeProbe {
+                openvino: OpenVinoProbe::with_device_names(&devs(&["CPU"])),
+                ort: ort.clone(),
+            },
+            true,
+        );
+        assert_eq!(best_cpu(&both), Device::OPENVINO_CPU);
+        assert_eq!(
+            names(&both, "auto", &["CPU"]),
+            s(&[("ort:coreml", false), ("openvino:cpu", true)])
+        );
+        assert_eq!(
+            names(&both, "ort:coreml", &["CPU"]),
+            s(&[("ort:coreml", false), ("openvino:cpu", true)])
+        );
+        assert_eq!(
+            names(&both, "ort:cpu", &["CPU"]),
+            s(&[("ort:cpu", false), ("openvino:cpu", true)])
+        );
+        assert_eq!(names(&both, "CPU", &["CPU"]), s(&[("openvino:cpu", false)]));
+
+        // ONNX Runtime only: CPU options and "no GPU" fallbacks land on ort:cpu.
+        let ort_only = select(
+            &hw,
+            &RuntimeProbe {
+                openvino: OpenVinoProbe::unavailable("missing"),
+                ort,
+            },
+            true,
+        );
+        assert_eq!(
+            best_cpu(&ort_only),
+            parse("ort:cpu").unwrap().device().copied().unwrap()
+        );
+        assert_eq!(
+            names(&ort_only, "auto", &[]),
+            s(&[("ort:coreml", false), ("ort:cpu", true)])
+        );
+        let legacy_gpu = plan_for(&parse("GPU").unwrap(), &ort_only, &[]);
+        assert_eq!(legacy_gpu.len(), 1);
+        assert_eq!(legacy_gpu[0].device.to_string(), "ort:cpu");
+        assert!(legacy_gpu[0].fell_back);
+        assert!(
+            legacy_gpu[0]
+                .note
+                .as_deref()
+                .unwrap()
+                .contains("using ort:cpu")
+        );
+        assert_eq!(
+            names(&ort_only, "CPU", &[]),
+            s(&[("openvino:cpu", false), ("ort:cpu", true)])
+        );
+        assert_eq!(
+            names(&ort_only, "ort:cuda", &[]),
+            s(&[("ort:cuda", false), ("ort:cpu", true)])
+        );
+        // ort:cpu itself: OpenVINO CPU is still tried so the error names it.
+        assert_eq!(
+            names(&ort_only, "ort:cpu", &[]),
+            s(&[("ort:cpu", false), ("openvino:cpu", true)])
+        );
+        assert!(ort_only.any_gpu_runnable());
     }
 }

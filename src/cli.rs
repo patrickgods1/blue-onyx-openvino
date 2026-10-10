@@ -27,6 +27,15 @@ pub enum Command {
         #[arg(long)]
         archive: Option<PathBuf>,
     },
+    /// Download the ONNX Runtime libraries next to the executable (for the `ort:*` devices).
+    SetupOnnxruntime {
+        /// Which package to install; auto picks from the detected hardware.
+        #[arg(long, value_enum, default_value = "auto")]
+        flavor: crate::setup_onnxruntime::FlavorChoice,
+        /// Destination directory (default: <exe_dir>/onnxruntime).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Download models from Hugging Face.
     DownloadModels {
         /// Download every model in the catalog.
@@ -82,10 +91,8 @@ pub struct Cli {
     /// Name of the model that serves `/v1/vision/detection`.
     #[arg(long)]
     pub default_model: Option<String>,
-    /// Inference device spec: auto, openvino:gpu[.N], openvino:cpu, openvino:npu,
-    /// ort:cuda[:N], ort:tensorrt[:N], ort:directml[:N], ort:coreml or ort:cpu.
-    /// Legacy GPU, GPU.N, CPU and NPU mean OpenVINO. Case-insensitive.
-    #[arg(long, value_parser = parse_device_arg)]
+    /// Inference device spec. Syntax: see `list-devices` for what can run here.
+    #[arg(long, value_parser = parse_device_arg, long_help = device_help())]
     pub device: Option<String>,
     /// Device index added to a GPU device spec that has none (GPU -> GPU.N, ort:cuda -> ort:cuda:N).
     #[arg(long)]
@@ -116,6 +123,10 @@ pub struct Cli {
     pub cache_dir: Option<String>,
     #[arg(long)]
     pub openvino_dir: Option<PathBuf>,
+    /// Directory with the ONNX Runtime libraries (default: <exe_dir>/onnxruntime, see
+    /// `setup-onnxruntime`).
+    #[arg(long)]
+    pub onnxruntime_dir: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -165,6 +176,7 @@ impl Cli {
         c.log_path = abs(&self.log_path);
         c.save_image_path = abs(&self.save_image_path);
         c.openvino_dir = abs(&self.openvino_dir);
+        c.onnxruntime_dir = abs(&self.onnxruntime_dir);
         c.cache_dir = self.cache_dir.as_ref().map(|d| {
             if d.trim().is_empty() {
                 d.clone()
@@ -184,6 +196,10 @@ impl Cli {
                 version,
                 archive: abs(&archive),
             },
+            Command::SetupOnnxruntime { flavor, dir } => Command::SetupOnnxruntime {
+                flavor,
+                dir: abs(&dir),
+            },
             Command::DownloadModels {
                 all,
                 name,
@@ -202,6 +218,15 @@ impl Cli {
         });
         c
     }
+}
+
+/// `--device` help: the spec syntax from the parser (single source of truth).
+fn device_help() -> String {
+    format!(
+        "Inference device spec, one of: {}. Case-insensitive. `list-devices` shows what can run \
+         on this machine and what `auto` picks.",
+        crate::backend::spec::SPEC_SYNTAX
+    )
 }
 
 /// Validate `--device` with the spec parser but keep the string as typed (it is written back to
@@ -260,6 +285,9 @@ fn merge_cli(config: &mut Config, cli: &Cli) {
     }
     if let Some(v) = &cli.openvino_dir {
         config.openvino_dir = Some(v.clone());
+    }
+    if let Some(v) = &cli.onnxruntime_dir {
+        config.onnxruntime_dir = Some(v.clone());
     }
     if let Some(model) = &cli.model {
         // `--model` always loads that model: enable an existing entry, else replace the list.
@@ -595,6 +623,8 @@ mod tests {
             "imgs",
             "--openvino-dir",
             "ov",
+            "--onnxruntime-dir",
+            "ort",
             "--config",
             "cfg.json",
         ])
@@ -612,6 +642,7 @@ mod tests {
         assert_eq!(cli.log_path, Some(base.join("logs")));
         assert_eq!(cli.save_image_path, Some(base.join("imgs")));
         assert_eq!(cli.openvino_dir, Some(base.join("ov")));
+        assert_eq!(cli.onnxruntime_dir, Some(base.join("ort")));
         assert_eq!(cli.config, Some(base.join("cfg.json")));
 
         // Absolute paths, empty cache dir (= disabled) and absent options are unchanged.

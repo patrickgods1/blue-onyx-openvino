@@ -5,6 +5,7 @@
 /models/
 /cache/
 /openvino/
+/onnxruntime/
 *.log
 *_config*.json
 !blue_onyx_prism_config_example*.json

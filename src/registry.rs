@@ -1,11 +1,11 @@
-//! Loads every enabled model through the shared [`Runtimes`] (one OpenVINO `Core`) and owns
-//! their worker threads.
+//! Loads every enabled model through the shared [`Runtimes`] (one OpenVINO `Core`, one ONNX
+//! Runtime library) and owns their worker threads.
 //! Disabled models (`enabled: false`) stay in the config but get no worker and are not served.
 //!
 //! Workers are spawned in config order; each waits for its predecessor's [`LoadGate`] before
 //! locking the core, so compile order is deterministic and only one model compiles at a time.
 
-use crate::backend::{CoreOptions, DeviceSpec, LoadRequest, Runtimes};
+use crate::backend::{CoreOptions, DeviceSpec, LoadRequest, OrtOptions, Runtimes, Selection};
 use crate::config::{Config, ModelConfig};
 use crate::metrics::{Metrics, ModelGauges, ModelMetrics};
 use crate::worker::{LoadGate, WorkerConfig, WorkerHandle, spawn_worker_after};
@@ -24,6 +24,8 @@ pub struct ModelRegistry {
     by_name: HashMap<String, usize>,
     default_idx: Option<usize>,
     pub runtime_info: RuntimeInfo,
+    /// The runtimes the workers load through (None for registries built from handles).
+    runtimes: Option<Arc<Mutex<Runtimes>>>,
 }
 
 /// Lowercase and strip a trailing `.onnx` / `.xml` (Blue Iris sends file stems, users may not).
@@ -130,15 +132,39 @@ impl ModelRegistry {
             intra_threads: config.intra_threads,
             openvino_dir: config.openvino_dir.as_deref().map(crate::resolve_path),
         };
-        let runtimes = Runtimes::new(&opts);
+        let ort_opts = OrtOptions {
+            onnxruntime_dir: config.onnxruntime_dir.as_deref().map(crate::resolve_path),
+        };
+        let runtimes = Runtimes::new_with(&opts, &ort_opts);
         runtimes.require_any()?;
         let runtime_info = runtimes.info();
+        if runtimes.openvino().is_some() {
+            info!(
+                version = %runtime_info.openvino_version,
+                devices = ?runtime_info.available_devices,
+                cache_dir = ?opts.cache_dir,
+                "OpenVINO core ready"
+            );
+        } else {
+            warn!(
+                "OpenVINO unavailable: {}",
+                runtimes.openvino_error().unwrap_or("not initialized")
+            );
+        }
+        match runtimes.onnxruntime_version() {
+            Some(v) => info!(version = %v, "ONNX Runtime ready"),
+            None => info!(
+                "ONNX Runtime unavailable: {}",
+                runtimes.onnxruntime_error().unwrap_or("not initialized")
+            ),
+        }
+        let selection = runtimes.selection(None);
         info!(
-            version = %runtime_info.openvino_version,
-            devices = ?runtime_info.available_devices,
-            cache_dir = ?opts.cache_dir,
-            "OpenVINO core ready"
+            auto = %crate::backend::select::format_auto(&selection),
+            can_use_gpu = runtime_info.has_gpu,
+            "device options probed"
         );
+        let best_cpu = runtimes.best_cpu();
         let runtimes = Arc::new(Mutex::new(runtimes));
 
         let mut workers = Vec::with_capacity(enabled.len());
@@ -157,7 +183,12 @@ impl ModelRegistry {
             }
 
             let setup = (|| -> Result<(DeviceSpec, Vec<String>)> {
-                let device = config.device_spec_for(m)?;
+                // `force_cpu`: the best CPU option (OpenVINO, else ONNX Runtime).
+                let device = if config.force_cpu {
+                    best_cpu
+                } else {
+                    config.device_spec_for(m)?
+                };
                 if !path.is_file() {
                     bail!(
                         "model file not found: {} (download it with `download-models` or fix `path`)",
@@ -219,6 +250,7 @@ impl ModelRegistry {
             by_name,
             default_idx,
             runtime_info,
+            runtimes: Some(runtimes),
         })
     }
 
@@ -240,7 +272,22 @@ impl ModelRegistry {
             by_name,
             default_idx,
             runtime_info,
+            runtimes: None,
         }
+    }
+
+    /// The shared runtimes (None for registries built with [`Self::from_handles`]). Lock briefly:
+    /// workers hold the lock while compiling.
+    pub fn runtimes(&self) -> Option<&Arc<Mutex<Runtimes>>> {
+        self.runtimes.as_ref()
+    }
+
+    /// Device options and the `auto` ranking for `model` (None: any model), from the shared
+    /// runtimes. None for registries built with [`Self::from_handles`].
+    pub fn selection(&self, model: Option<&Path>) -> Option<Selection> {
+        let rt = self.runtimes.as_ref()?;
+        let rt = rt.lock().unwrap_or_else(|e| e.into_inner());
+        Some(rt.selection(model))
     }
 
     /// Live per-model gauges (state, device, queue) for `/prometheus`, in config order.
@@ -302,7 +349,10 @@ mod tests {
                 .map(|c| c.device.to_string())
                 .collect()
         };
-        let mut c = Config::default();
+        let mut c = Config {
+            device: "GPU".into(),
+            ..Config::default()
+        };
         let m = ModelConfig::default();
         let r = load_request(&c, &m, "m.xml".into());
         assert_eq!(r.requested, "GPU");
