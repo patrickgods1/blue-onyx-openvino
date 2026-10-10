@@ -586,6 +586,29 @@ pub fn apply_models_selection(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn ort_lookup_searches_download_dir() {
+        // The status page and the loader share `ort_options().lookup()`; an install under
+        // `download_dir` (not next to the exe) must be found.
+        if std::env::var_os(crate::backend::libs::ENV_ORT_DYLIB_PATH).is_some() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("bop-ortdl-{}", uuid::Uuid::new_v4()));
+        let flavor = root.join(crate::backend::libs::ORT_DIR_NAME).join("cpu");
+        std::fs::create_dir_all(&flavor).unwrap();
+        let lib = flavor.join(crate::backend::libs::ort_library_file_name());
+        std::fs::write(&lib, b"").unwrap();
+        let c = super::Config {
+            download_dir: Some(root.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            c.ort_options().lookup().library.as_deref(),
+            Some(lib.as_path())
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn legacy_config_is_renamed_once() {
         let dir = std::env::temp_dir().join(format!("bop-legacy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

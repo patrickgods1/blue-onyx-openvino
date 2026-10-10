@@ -361,9 +361,10 @@ fn devices_snapshot(state: &AppState) -> DevicesSnapshot {
         );
     }
     // The install the ONNX Runtime loader picks (explicit dir, ORT_DYLIB_PATH, active flavor,
-    // legacy flat dir, ...).
-    let explicit = state.config_read().onnxruntime_dir.clone();
-    let onnxruntime = crate::backend::libs::find_onnxruntime(explicit.as_deref())
+    // legacy flat dir, ...), searched under `download_dir` like the loader does.
+    let ort_opts = state.config_read().ort_options();
+    let onnxruntime = ort_opts
+        .lookup()
         .library
         .and_then(|lib| lib.parent().map(std::path::Path::to_path_buf))
         .and_then(|dir| crate::setup_onnxruntime::installed(&dir));
