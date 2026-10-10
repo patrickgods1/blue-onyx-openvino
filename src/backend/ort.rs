@@ -15,7 +15,9 @@
 //! - Named dynamic dimensions of the image input and RT-DETR's `orig_target_sizes` are pinned
 //!   to `[1,3,640,640]` / `[1,2]` with free-dimension overrides (the same defaults as the
 //!   OpenVINO reshape), so the ports reported in [`ModelInfo`] are static and `make_family`
-//!   auto-detection is unchanged.
+//!   auto-detection is unchanged. Pinning is also what lets RT-DETR run on CoreML: an RT-DETR
+//!   model that keeps an unpinnable dynamic input dimension is refused there (see
+//!   [`unsupported_on`]).
 //! - [`OrtBackend::infer`] feeds the CHW image without copying, converts extra inputs to the
 //!   port's element type (i64/i32/f32) and copies every output into a [`NamedOutput`].
 
@@ -436,15 +438,15 @@ impl OrtRuntime {
             )
         })?;
         let extra_idx = extra_input_index(&inputs, image_idx, "orig_target_sizes");
-        if let Some(reason) = unsupported_on(target, &inputs) {
+        let image_default = dynamic_image_shape(&path, &meta_outputs);
+        let overrides = dimension_overrides(&inputs, &syms, image_idx, extra_idx, &image_default);
+        if let Some(reason) = unsupported_on(target, &inputs, &syms, &overrides) {
             bail!(
                 "{} cannot run model {}: {reason}",
                 cand.device,
                 path.display()
             );
         }
-        let image_default = dynamic_image_shape(&path, &meta_outputs);
-        let overrides = dimension_overrides(&inputs, &syms, image_idx, extra_idx, &image_default);
         if !overrides.is_empty() {
             tracing::info!(
                 "model {}: pinning dynamic dimensions {overrides:?}",
@@ -656,19 +658,71 @@ impl OrtRuntime {
     }
 }
 
-/// Why a model with these inputs must not be run on `target`, if it must not.
+/// Input dimensions that stay dynamic after the free-dimension `overrides` (from
+/// [`dimension_overrides`]), as "input[axis]". `symbols` is per input, as from [`ports`].
+pub(crate) fn unpinned_dims(
+    inputs: &[PortSpec],
+    symbols: &[Vec<String>],
+    overrides: &[(String, i64)],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, port) in inputs.iter().enumerate() {
+        for (axis, &dim) in port.shape.iter().enumerate() {
+            if dim >= 0 {
+                continue;
+            }
+            let pinned = symbols
+                .get(i)
+                .and_then(|s| s.get(axis))
+                .filter(|s| !s.is_empty())
+                .is_some_and(|s| overrides.iter().any(|(name, _)| name == s));
+            if !pinned {
+                out.push(format!("{}[{axis}]", port.name));
+            }
+        }
+    }
+    out
+}
+
+/// Why a model with these inputs must not be run on `target`, if it must not. `symbols` and
+/// `overrides` are the dimension names of `inputs` and the free-dimension overrides the session
+/// will be created with.
 ///
-/// RT-DETR (`orig_target_sizes` input) on CoreML: with ONNX Runtime 1.24.4 (the pinned version)
-/// Core ML rejects the converted program, and with the GPU compute units (ALL, the default)
-/// MPSGraph *aborts the process* (`MPSGraphExecutable.mm: failed assertion 'original module
-/// failed verification'`) instead of returning an error; 1.28.3 gets further but fails the
-/// first inference. So the session is never attempted; the plan falls back to CPU.
-pub(crate) fn unsupported_on(target: Target, inputs: &[PortSpec]) -> Option<&'static str> {
+/// RT-DETR (`orig_target_sizes` input) on CoreML (ONNX Runtime 1.24.4, the pinned version,
+/// measured on an M1): with a *dynamic batch* the Core ML program has unbounded dimensions
+/// (`_postprocessor_Tile_output_0`, the encoder reshapes), Core ML rejects it and MPSGraph
+/// *aborts the process* while specializing the first partition (`'mps.concat' op invalid input
+/// tensor shapes` -> `MPSGraphExecutable.mm: failed assertion 'original module failed
+/// verification'`) instead of returning an error. With every input dimension pinned (the
+/// xnorpx RT-DETRv2 exports name the batch `N`, which [`dimension_overrides`] pins to 1) the
+/// graph is fully static, 673 of 691 nodes (rt-detrv2-s) go to Core ML in 7 partitions, and the
+/// default options (MLProgram, compute units ALL: fp32 on the GPU) run it correctly (scores
+/// within 2e-6 of the CPU provider) and ~1.6-1.9x faster than `openvino:cpu`. Measured
+/// alternatives on rt-detrv2-s, infer p50: ALL / CPUAndGPU 51 ms; CPUAndNeuralEngine and
+/// CPUOnly 105 ms; NeuralNetwork format 82 ms (scores off by 7e-3); low-precision GPU
+/// accumulation and FastPrediction no change; a dynamic batch with RequireStaticInputShapes
+/// avoids the abort but leaves only 163 of 925 nodes to Core ML (237 ms, slower than
+/// `openvino:cpu`). So only an RT-DETR model whose inputs keep a dynamic dimension that cannot
+/// be pinned (unnamed) is refused; the plan then falls back to the next candidate (CPU).
+pub(crate) fn unsupported_on(
+    target: Target,
+    inputs: &[PortSpec],
+    symbols: &[Vec<String>],
+    overrides: &[(String, i64)],
+) -> Option<String> {
     let rtdetr = inputs.iter().any(|p| p.name == "orig_target_sizes");
-    (target == Target::CoreMl && rtdetr).then_some(
-        "RT-DETR models are not supported by the CoreML execution provider (Core ML rejects \
-         the converted program and MPSGraph aborts the process)",
-    )
+    if target != Target::CoreMl || !rtdetr {
+        return None;
+    }
+    let dynamic = unpinned_dims(inputs, symbols, overrides);
+    (!dynamic.is_empty()).then(|| {
+        format!(
+            "RT-DETR models with dynamic input dimensions ({}) are not supported by the CoreML \
+             execution provider (MPSGraph aborts the process); export the model with a static \
+             or named batch dimension",
+            dynamic.join(", ")
+        )
+    })
 }
 
 /// `executionProvider`-independent device string: "cpu", "cuda:0", "coreml", ...
@@ -1095,6 +1149,43 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn rtdetr_on_coreml_needs_pinned_dims() {
+        let inputs = [
+            port("images", &[-1, 3, 640, 640], PortElem::F32),
+            port("orig_target_sizes", &[-1, 2], PortElem::I64),
+        ];
+        let named = [syms(&["N", "", "", ""]), syms(&["N", ""])];
+        let ov = dimension_overrides(&inputs, &named, 0, Some(1), &DEFAULT_IMAGE_SHAPE);
+        assert_eq!(ov, vec![("N".to_string(), 1)]);
+        assert!(unpinned_dims(&inputs, &named, &ov).is_empty());
+        // Named batch, pinned: runs on CoreML.
+        assert_eq!(unsupported_on(Target::CoreMl, &inputs, &named, &ov), None);
+        // Without the override (or with unnamed dims) the batch stays dynamic: refused.
+        assert_eq!(
+            unpinned_dims(&inputs, &named, &[]),
+            vec!["images[0]", "orig_target_sizes[0]"]
+        );
+        let r = unsupported_on(Target::CoreMl, &inputs, &named, &[]).unwrap();
+        assert!(r.contains("images[0], orig_target_sizes[0]"), "{r}");
+        let unnamed = [syms(&["", "", "", ""]), syms(&["", ""])];
+        let ov = dimension_overrides(&inputs, &unnamed, 0, Some(1), &DEFAULT_IMAGE_SHAPE);
+        assert!(unsupported_on(Target::CoreMl, &inputs, &unnamed, &ov).is_some());
+        // Other targets and non-RT-DETR models are never refused.
+        assert_eq!(unsupported_on(Target::Cpu, &inputs, &unnamed, &[]), None);
+        let yolo = [port("images", &[-1, 3, -1, -1], PortElem::F32)];
+        assert_eq!(
+            unsupported_on(Target::CoreMl, &yolo, &[syms(&["", "", "", ""])], &[]),
+            None
+        );
+        // Fully static RT-DETR: nothing to pin, runs.
+        let st = [
+            port("images", &[1, 3, 640, 640], PortElem::F32),
+            port("orig_target_sizes", &[1, 2], PortElem::I64),
+        ];
+        assert_eq!(unsupported_on(Target::CoreMl, &st, &[], &[]), None);
     }
 
     #[test]

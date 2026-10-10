@@ -31,7 +31,6 @@ use crate::backend::select::{
 };
 use crate::backend::spec::{Device, DeviceSpec, Runtime, Target};
 use crate::config::{Config, ModelConfig};
-use crate::model::ModelFamilyKind;
 use serde::{Serialize, Serializer};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -414,10 +413,6 @@ impl Resolver<'_> {
     fn model(&mut self, m: &ModelConfig) {
         let name = m.effective_name();
         let entry = catalog_model_in(m, &self.installed.extra_models);
-        let family = match (m.family, entry.map(|e| e.provides)) {
-            (ModelFamilyKind::Auto, Some(catalog::Provides::Model { family, .. })) => family,
-            (f, _) => f,
-        };
         let mut plan = ModelPlan {
             model: name.clone(),
             device: None,
@@ -471,7 +466,7 @@ impl Resolver<'_> {
 
         let mut accepted: Option<(Device, Vec<&'static Resource>, Option<Flavor>)> = None;
         for cand in &candidates {
-            match self.check(cand.device, family, &sel) {
+            match self.check(cand.device, &sel) {
                 Check::Ok(res, flavor) => {
                     accepted = Some((cand.device, res, flavor));
                     break;
@@ -510,7 +505,7 @@ impl Resolver<'_> {
             .skip_while(|c| c.device != device)
             .skip(1)
             .find(|c| c.device.is_cpu())
-            .and_then(|c| match self.check(c.device, family, &sel) {
+            .and_then(|c| match self.check(c.device, &sel) {
                 Check::Ok(res, _) => Some((c.device, res)),
                 _ => None,
             });
@@ -715,10 +710,7 @@ impl Resolver<'_> {
     }
 
     /// Whether `device` can be provisioned, and with what.
-    fn check(&self, device: Device, family: ModelFamilyKind, sel: &Selection) -> Check {
-        if device.target == Target::CoreMl && family == ModelFamilyKind::RtDetr {
-            return Check::No("RT-DETR models are not supported by CoreML".to_string());
-        }
+    fn check(&self, device: Device, sel: &Selection) -> Check {
         match find_option(sel, &device) {
             None => return Check::No("not available on this machine".to_string()),
             Some(o) if !o.runnable => {
@@ -884,7 +876,7 @@ pub fn downloadable_options(
     sel.options
         .iter()
         .filter(|o| o.runnable)
-        .filter_map(|o| match r.check(o.spec, ModelFamilyKind::Auto, &sel) {
+        .filter_map(|o| match r.check(o.spec, &sel) {
             Check::Ok(res, _) if !res.is_empty() => Some(Downloadable {
                 device: o.spec,
                 label: o.label.clone(),

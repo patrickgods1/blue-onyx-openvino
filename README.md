@@ -48,7 +48,7 @@ on Windows (DirectML), Apple silicon (CoreML), CPU (`openvino:cpu`, else `ort:cp
 | Linux | Intel | `openvino:gpu` | `setup-openvino` | `intel-opencl-icd`, `render` group. |
 | Linux | NVIDIA | `ort:cuda` | `setup-onnxruntime --flavor cuda` | CUDA 12 + cuDNN 9 user-installed. |
 | Linux | AMD | `openvino:cpu` | `setup-openvino` | No ROCm/MIGraphX in the stock ONNX Runtime packages: CPU. |
-| macOS arm64 | Apple GPU | `ort:coreml` | `setup-onnxruntime` | RT-DETR is never run on CoreML (it aborts in ONNX Runtime 1.24.4); it uses the CPU. |
+| macOS arm64 | Apple GPU | `ort:coreml` | `setup-onnxruntime` | RT-DETRv2 runs on CoreML (~1.6-1.9x `openvino:cpu` on an M1) because its batch dimension is pinned to 1; an RT-DETR export with an unnamed dynamic dimension is refused there (MPSGraph would abort) and uses the CPU. YOLO26 needs the `.onnx` export. |
 | any | none | `openvino:cpu` | `setup-openvino` | `ort:cpu` if OpenVINO is missing. |
 
 TensorRT (`ort:tensorrt`, first engine build takes minutes) and the NPU (`openvino:npu`) can be

@@ -184,6 +184,10 @@ impl DeviceResult {
     }
 }
 
+/// Accuracy scores (0..1) this close to a model's best count as equally accurate when picking
+/// its device.
+pub const ACCURACY_TIE: f64 = 0.015;
+
 /// The recommended device of a model and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recommendation {
@@ -192,8 +196,8 @@ pub struct Recommendation {
 }
 
 /// The best device among those that ran and whose detections agree with the CPU reference:
-/// best overall grade ([`Grades::rank_cmp`]: grade points, then accuracy, then full-request
-/// p50). When the `configured` device is eligible, as accurate (accuracy score within 0.01) and
+/// the fastest full-request p50 among those as accurate as the best (within
+/// [`ACCURACY_TIE`]). When the `configured` device is eligible, as accurate (accuracy score within 0.01) and
 /// within `margin` (fraction, e.g. [`NOISE_MARGIN`]) of the best p50, it is kept: the difference
 /// is noise.
 pub fn recommend(
@@ -212,9 +216,27 @@ pub fn recommend(
             Some((d, g))
         })
         .collect();
+    // Devices of one model whose detections agree differ in accuracy only by numeric noise
+    // (OpenVINO's f16 CPU inference on ARM moves AP by ~1 point), so accuracy within
+    // ACCURACY_TIE of the best counts as equal and the fastest of those wins. Letter grades are
+    // too coarse here: 14 ms and 35 ms are both speed A.
+    let top_acc = eligible
+        .iter()
+        .filter_map(|(_, g)| g.accuracy_score)
+        .max_by(f64::total_cmp);
+    let as_accurate = |g: &Grades| match (top_acc, g.accuracy_score) {
+        (Some(top), Some(a)) => a >= top - ACCURACY_TIE,
+        (Some(_), None) => false,
+        (None, _) => true,
+    };
     let Some((best, bg)) = eligible
         .iter()
-        .min_by(|a, b| Grades::rank_cmp(&a.1, &b.1))
+        .filter(|(_, g)| as_accurate(g))
+        .min_by(|a, b| {
+            a.1.p50_ms
+                .total_cmp(&b.1.p50_ms)
+                .then_with(|| Grades::rank_cmp(&a.1, &b.1))
+        })
         .map(|(d, g)| (*d, *g))
     else {
         let reason = if devices.iter().any(DeviceResult::ok) {
@@ -266,15 +288,22 @@ pub fn recommend(
             ),
         };
     }
+    // Compared with the fastest other eligible device.
     let runner_up = eligible
         .iter()
         .filter(|(d, _)| d.device != best.device)
-        .min_by(|a, b| Grades::rank_cmp(&a.1, &b.1));
+        .min_by(|a, b| a.1.p50_ms.total_cmp(&b.1.p50_ms));
     let vs = match runner_up {
-        Some((d, g)) => format!(
+        Some((d, g)) if g.p50_ms >= bg.p50_ms => format!(
             ", {:.2}x faster than {} ({:.1} ms)",
             g.p50_ms / bg.p50_ms.max(1e-9),
             d.device,
+            g.p50_ms
+        ),
+        Some((d, g)) => format!(
+            "; {} is {:.2}x faster ({:.1} ms) but less accurate",
+            d.device,
+            bg.p50_ms / g.p50_ms.max(1e-9),
             g.p50_ms
         ),
         None => String::new(),
@@ -1131,6 +1160,37 @@ mod tests {
             Some("ort:coreml"),
         );
         assert_eq!(m.recommended.as_deref(), Some("ort:coreml"));
+
+        // Same letter grades and accuracy within noise (yolo26n: OpenVINO f16 on ARM is ~1 AP
+        // off): the clearly faster device wins, and the reason reads as a speedup.
+        let m = model(
+            vec![
+                graded("ort:coreml", 14.4, Some(0.481)),
+                graded("openvino:cpu", 35.0, Some(0.490)),
+                graded("ort:cpu", 33.7, Some(0.481)),
+            ],
+            None,
+        );
+        assert_eq!(m.recommended.as_deref(), Some("ort:coreml"));
+        assert!(
+            m.recommendation.contains("2.34x faster than ort:cpu"),
+            "{}",
+            m.recommendation
+        );
+        // A faster but clearly less accurate device loses, and the reason says so.
+        let m = model(
+            vec![
+                graded("ort:coreml", 40.0, Some(0.55)),
+                graded("openvino:cpu", 60.0, Some(0.75)),
+            ],
+            None,
+        );
+        assert!(
+            m.recommendation
+                .contains("ort:coreml is 1.50x faster (40.0 ms) but less accurate"),
+            "{}",
+            m.recommendation
+        );
 
         let mut a = model(vec![graded("openvino:cpu", 30.0, Some(0.5))], None);
         a.model = "small".into();

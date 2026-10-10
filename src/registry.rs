@@ -89,18 +89,11 @@ fn resolve_default(config: &Config) -> Option<usize> {
 
 /// Label of the first runnable load candidate of `device` for `model` (the option label from
 /// `backend::select`, e.g. "ONNX Runtime CoreML (Apple M1)"); None when nothing can run.
-/// `no_coreml` skips CoreML candidates (a model family the CoreML provider rejects).
-fn planned_label(
-    runtimes: &Runtimes,
-    device: &DeviceSpec,
-    model: &Path,
-    no_coreml: bool,
-) -> Option<String> {
+fn planned_label(runtimes: &Runtimes, device: &DeviceSpec, model: &Path) -> Option<String> {
     let sel = runtimes.selection(Some(model));
     runtimes
         .plan(device, model)
         .into_iter()
-        .filter(|c| !(no_coreml && c.device.target == crate::backend::spec::Target::CoreMl))
         .find_map(|c| sel.option(&c.device).filter(|o| o.runnable))
         .map(|o| o.label.clone())
 }
@@ -214,9 +207,7 @@ impl ModelRegistry {
                 } else {
                     config.device_spec_for(m).ok()?
                 };
-                // RT-DETR never loads on CoreML (the ORT backend refuses it at load time).
-                let no_coreml = m.family == crate::model::ModelFamilyKind::RtDetr;
-                planned_label(&runtimes, &device, &config.data_path(&m.path), no_coreml)
+                planned_label(&runtimes, &device, &config.data_path(&m.path))
             })
             .collect();
         let runtimes = Arc::new(Mutex::new(runtimes));

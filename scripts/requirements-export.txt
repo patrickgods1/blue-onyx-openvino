@@ -4,3 +4,6 @@
 ultralytics>=8.4,<9
 openvino>=2026.0,<2027
 pyyaml>=6
+# ONNX export (on by default; --no-onnx skips it). Ultralytics would otherwise try to install these itself.
+onnx>=1.12,<2
+onnxslim>=0.1.82
