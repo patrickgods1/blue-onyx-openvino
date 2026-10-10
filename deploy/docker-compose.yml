@@ -1,9 +1,9 @@
 services:
-  blue-onyx-openvino:
-    image: blue-onyx-openvino:latest
+  blue-onyx-prism:
+    image: blue-onyx-prism:latest
     build:
       context: ..
-    container_name: blue-onyx-openvino
+    container_name: blue-onyx-prism
     restart: unless-stopped
     ports:
       - "32168:32168"

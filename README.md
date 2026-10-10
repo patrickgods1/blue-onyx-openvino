@@ -1,17 +1,22 @@
-# Blue Onyx OpenVINO
+# Blue Onyx Prism
 
 Blue Iris / CodeProject.AI compatible object detection service, written in Rust on native
 [OpenVINO](https://github.com/openvinotoolkit/openvino). Runs on Intel integrated and discrete GPUs
-(Windows, Linux) and on CPU everywhere (Windows x86_64, Linux x86_64, macOS arm64).
+(Windows, Linux) and on CPU everywhere (Windows x86_64, Linux x86_64, macOS arm64). ONNX Runtime
+(NVIDIA CUDA/TensorRT, DirectML, CoreML) with automatic device selection by detected hardware is
+in progress; see [docs/PLAN.md](docs/PLAN.md), phases 6 and 7.
 
-Modeled on [blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT) without ONNX Runtime, adding
-multi-model serving (`/v1/vision/custom/{model}`), YOLO26 end-to-end models and Intel GPU inference
-on Windows.
+Formerly **Blue Onyx OpenVINO**. Existing `blue_onyx_openvino_config*.json` files are renamed to
+the new names on first start, and `scripts/install_service.ps1` removes the old
+`BlueOnyxOpenVINOService`. Prometheus metrics are now prefixed `blue_onyx_prism_`.
+
+Modeled on [blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT), adding multi-model serving
+(`/v1/vision/custom/{model}`), YOLO26 end-to-end models and Intel GPU inference on Windows.
 
 ## Features
 
 - Drop-in CodeProject.AI / DeepStack compatible API for Blue Iris (`/v1/vision/detection`, `/v1/vision/custom/{model}`, `/v1/vision/custom/list`).
-- Native OpenVINO inference (no ONNX Runtime): Intel integrated/discrete GPU on Windows and Linux, CPU everywhere, automatic GPU -> CPU fallback.
+- Native OpenVINO inference: Intel integrated/discrete GPU on Windows and Linux, CPU everywhere, automatic GPU -> CPU fallback.
 - Several models served at once, each with its own worker and metrics; per-model device, threshold, class filter and lazy loading.
 - Model families: YOLO26 (end-to-end), YOLOv5 (the blue-onyx IPcam models), YOLOv8/11, RT-DETRv2. ONNX or OpenVINO IR.
 - Compiled-model cache (fast restarts), HTTP served while models compile, web UI (stats, test page, config editor), Prometheus metrics.
@@ -27,30 +32,30 @@ on Windows.
 
 ## Quick start
 
-Download the archive for your OS from the [releases page](https://github.com/patrickgods1/blue-onyx-openvino/releases)
-(`blue-onyx-openvino-<version>-<os>-<arch>.zip|tar.gz`, with a `.sha256` file). It already contains the
+Download the archive for your OS from the [releases page](https://github.com/patrickgods1/blue-onyx-prism/releases)
+(`blue-onyx-prism-<version>-<os>-<arch>.zip|tar.gz`, with a `.sha256` file). It already contains the
 OpenVINO runtime in `openvino/`, the binaries and the helper scripts. Or build from source (see
-[Developer setup](#developer-setup)) and run `blue-onyx-openvino setup-openvino`.
+[Developer setup](#developer-setup)) and run `blue-onyx-prism setup-openvino`.
 
 Windows (PowerShell):
 
 ```powershell
-Expand-Archive blue-onyx-openvino-*-windows-x86_64.zip .; cd blue-onyx-openvino-*-windows-x86_64
-.\blue-onyx-openvino.exe download-models --name IPcam-general --add-to-config
-.\blue-onyx-openvino.exe            # GPU by default; add --force-cpu to stay on the CPU
+Expand-Archive blue-onyx-prism-*-windows-x86_64.zip .; cd blue-onyx-prism-*-windows-x86_64
+.\blue-onyx-prism.exe download-models --name IPcam-general --add-to-config
+.\blue-onyx-prism.exe            # GPU by default; add --force-cpu to stay on the CPU
 ```
 
 Linux / macOS:
 
 ```sh
-tar xzf blue-onyx-openvino-*-linux-x86_64.tar.gz && cd blue-onyx-openvino-*-linux-x86_64
-./blue-onyx-openvino download-models --name IPcam-general --add-to-config
-./blue-onyx-openvino                 # macOS: CPU is used automatically
+tar xzf blue-onyx-prism-*-linux-x86_64.tar.gz && cd blue-onyx-prism-*-linux-x86_64
+./blue-onyx-prism download-models --name IPcam-general --add-to-config
+./blue-onyx-prism                 # macOS: CPU is used automatically
 ```
 
-Check it: open `http://127.0.0.1:32168/`, or `./test-blue-onyx-openvino` (see [Test client](#test-client)).
+Check it: open `http://127.0.0.1:32168/`, or `./test-blue-onyx-prism` (see [Test client](#test-client)).
 `--model <path> --family yolo5|yolo26|yolo8|rtdetr|auto` runs a single model without editing the config.
-`blue-onyx-openvino --help` lists every option; `list-models` shows the downloadable catalog.
+`blue-onyx-prism --help` lists every option; `list-models` shows the downloadable catalog.
 
 The first GPU start compiles each model (20-60 s on an iGPU) and stores the result in `cache/`;
 later starts take seconds. The HTTP server is up immediately and answers `Model initializing` until
@@ -58,9 +63,9 @@ the model is ready.
 
 ## Configuration
 
-`blue_onyx_openvino_config.json` next to the executable (`--config <file>` to use another). A CLI
+`blue_onyx_prism_config.json` next to the executable (`--config <file>` to use another). A CLI
 flag overrides the file and the merged result is written back. Relative paths in the file resolve
-against the executable directory. The Windows service reads `blue_onyx_openvino_config_service.json`
+against the executable directory. The Windows service reads `blue_onyx_prism_config_service.json`
 (created with debug logging on first start).
 
 | Field | Default | Meaning |
@@ -119,8 +124,8 @@ no system OpenVINO install is needed to build: the `openvino` crate loads the ru
 ### Build and run
 
 ```sh
-git clone https://github.com/patrickgods1/blue-onyx-openvino.git
-cd blue-onyx-openvino
+git clone https://github.com/patrickgods1/blue-onyx-prism.git
+cd blue-onyx-prism
 cargo build --release
 
 # 1. Fetch the OpenVINO runtime (~100 MB) into ./target/release/openvino (next to the exe).
@@ -205,7 +210,7 @@ List any number of models in `models[]` of the config file:
 - An unknown model name returns HTTP 200 with `success: false` and an error message.
 - Per-model overrides: `device` (`GPU`, `GPU.1`, `CPU`), `confidence_threshold`, `object_filter`,
   `lazy` (compile on first request instead of at startup) and `gpu_precision` (`f16` default, `f32`).
-- `blue-onyx-openvino download-models --name IPcam-general --add-to-config` downloads and appends the
+- `blue-onyx-prism download-models --name IPcam-general --add-to-config` downloads and appends the
   model (family and classes file filled in) to the config, skipping names or paths already present.
   New entries are added disabled when the config already has an enabled model (otherwise the first
   one is enabled), so `download-models --all --add-to-config` does not load every model.
@@ -225,7 +230,7 @@ Open `http://<host>:32168/` in a browser:
 | `/stats` | Per-model state, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; refreshes every 5 s. JSON at `/stats.json` |
 | `/test` | Upload an image, pick a model and `min_confidence`; shows the annotated image and the JSON response (same code path and metrics as the API) |
 | `/config` | Choose which models load and the default model (Models card, with **Save and restart**), edit the main settings and the `models` list (JSON) and save them to the config file; **Restart server** reloads the file, recompiles the enabled models and rebinds the port without restarting the process. The log level applies immediately (`POST /config/loglevel` with `level=debug`, form or query) |
-| `/prometheus` | Prometheus metrics (`blue_onyx_openvino_*{model="..."}`) |
+| `/prometheus` | Prometheus metrics (`blue_onyx_prism_*{model="..."}`) |
 
 `log_path` changes need a full process restart. The UI has no authentication: do not expose the port
 beyond your LAN.
@@ -235,27 +240,27 @@ beyond your LAN.
 **Windows** (elevated PowerShell, from the extracted archive):
 
 ```powershell
-.\scripts\install_service.ps1        # service BlueOnyxOpenVINOService, auto start, auto restart, firewall rule
+.\scripts\install_service.ps1        # service BlueOnyxPrismService, auto start, auto restart, firewall rule
 .\scripts\uninstall_service.ps1
 ```
 
 The script raises `ServicesPipeTimeout` to 600000 ms (applies after a reboot) so the first start can
 compile models. If GPU access fails under LocalSystem, install with `-Account DOMAIN\user`.
-Logs go to the Application event log (source `BlueOnyxOpenVINO`) and, with `log_path`, to files.
+Logs go to the Application event log (source `BlueOnyxPrism`) and, with `log_path`, to files.
 
 **Linux** (systemd):
 
 ```sh
-sudo cp -r blue-onyx-openvino-<version>-linux-x86_64 /opt/blue-onyx-openvino
-sudo /opt/blue-onyx-openvino/scripts/install_systemd.sh      # creates user blueonyx (render, video groups)
-journalctl -u blue-onyx-openvino -f
+sudo cp -r blue-onyx-prism-<version>-linux-x86_64 /opt/blue-onyx-prism
+sudo /opt/blue-onyx-prism/scripts/install_systemd.sh      # creates user blueonyx (render, video groups)
+journalctl -u blue-onyx-prism -f
 ```
 
 **macOS** (launchd, CPU only):
 
 ```sh
-sudo cp -r blue-onyx-openvino-<version>-macos-aarch64 /usr/local/blue-onyx-openvino
-sudo /usr/local/blue-onyx-openvino/scripts/install_launchd.sh   # KeepAlive; log in blue-onyx-openvino.log
+sudo cp -r blue-onyx-prism-<version>-macos-aarch64 /usr/local/blue-onyx-prism
+sudo /usr/local/blue-onyx-prism/scripts/install_launchd.sh   # KeepAlive; log in blue-onyx-prism.log
 ```
 
 **Docker** (Linux, Intel GPU through `/dev/dri`; image based on `openvino/ubuntu24_runtime`):
@@ -265,7 +270,7 @@ cd deploy && mkdir -p models cache config
 RENDER_GID=$(getent group render | cut -d: -f3) docker compose up -d --build
 ```
 
-Put models in `deploy/models` and a `blue_onyx_openvino_config.json` in `deploy/config`.
+Put models in `deploy/models` and a `blue_onyx_prism_config.json` in `deploy/config`.
 
 ## HTTP API
 
@@ -286,8 +291,8 @@ canUseGPU, inferenceMs, processMs, analysisRoundTripMs`.
 ## Benchmark
 
 ```sh
-blue-onyx-openvino-benchmark --model models/IPcam-general.onnx --family yolo5 --repeat 50 --warmup 5
-blue-onyx-openvino-benchmark --model models/yolo26s.xml --family yolo26 --device GPU --compare-cpu --json
+blue-onyx-prism-benchmark --model models/IPcam-general.onnx --family yolo5 --repeat 50 --warmup 5
+blue-onyx-prism-benchmark --model models/yolo26s.xml --family yolo26 --device GPU --compare-cpu --json
 ```
 
 Flags: `--model`, `--family`, `--device`, `--force-cpu`, `--image`, `--repeat`, `--warmup`,
@@ -299,11 +304,11 @@ the FP32 path is active.
 ## Test client
 
 ```sh
-test-blue-onyx-openvino                                   # embedded sample image -> /v1/vision/detection
-test-blue-onyx-openvino --model ipcam-general --image cam.jpg --min-confidence 0.4
-test-blue-onyx-openvino --repeat 50 --parallel 4          # latency summary (client, inferenceMs, processMs)
-test-blue-onyx-openvino --list                            # /v1/vision/custom/list
-test-blue-onyx-openvino --save out.jpg                    # annotated copy of the image
+test-blue-onyx-prism                                   # embedded sample image -> /v1/vision/detection
+test-blue-onyx-prism --model ipcam-general --image cam.jpg --min-confidence 0.4
+test-blue-onyx-prism --repeat 50 --parallel 4          # latency summary (client, inferenceMs, processMs)
+test-blue-onyx-prism --list                            # /v1/vision/custom/list
+test-blue-onyx-prism --save out.jpg                    # annotated copy of the image
 ```
 
 Also `--url` (default `http://127.0.0.1:32168`) and `--interval-ms`. Exits non-zero if any
@@ -318,7 +323,7 @@ response has `success: false` or a non-200 status.
 - **First start is slow:** GPU kernels are compiled once (20-60 s per model) and cached in `cache/`;
   keep that directory. Windows service starts allow up to 10 minutes.
 - **macOS:** only the CPU plugin exists for Apple silicon; the GPU option is ignored.
-- **`Unable to find the openvino_c library`:** run `blue-onyx-openvino setup-openvino` or set
+- **`Unable to find the openvino_c library`:** run `blue-onyx-prism setup-openvino` or set
   `openvino_dir` / `OPENVINO_INSTALL_DIR`. On Windows install the Visual C++ redistributable.
 - **Windows error 1053 / `ServicesPipeTimeout`:** the service did not report in time; reboot once after
   installing (the timeout registry value applies at boot).

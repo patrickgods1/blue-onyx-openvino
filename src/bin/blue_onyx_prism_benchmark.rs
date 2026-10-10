@@ -2,18 +2,18 @@
 //! (decode -> preprocess -> infer -> postprocess, as in `worker.rs`) over N repeats.
 //!
 //! ```text
-//! blue-onyx-openvino-benchmark --model models/IPcam-general.onnx --family yolo5 --device CPU --repeat 20
-//! blue-onyx-openvino-benchmark --model models/yolo26s.xml --compare-cpu      # GPU vs CPU + confidence diff
-//! blue-onyx-openvino-benchmark --json                                         # every enabled model in the config
+//! blue-onyx-prism-benchmark --model models/IPcam-general.onnx --family yolo5 --device CPU --repeat 20
+//! blue-onyx-prism-benchmark --model models/yolo26s.xml --compare-cpu      # GPU vs CPU + confidence diff
+//! blue-onyx-prism-benchmark --json                                         # every enabled model in the config
 //! ```
 
 use anyhow::{Context, Result, bail};
-use blue_onyx_openvino::api::Prediction;
-use blue_onyx_openvino::backend::{CoreOptions, LoadRequest, Runtimes, libs, spec};
-use blue_onyx_openvino::config::{Config, ModelConfig};
-use blue_onyx_openvino::model::preprocess::Preprocessor;
-use blue_onyx_openvino::model::{ModelFamilyKind, PostParams};
-use blue_onyx_openvino::registry::resolve_class_names;
+use blue_onyx_prism::api::Prediction;
+use blue_onyx_prism::backend::{CoreOptions, LoadRequest, Runtimes, libs, spec};
+use blue_onyx_prism::config::{Config, ModelConfig};
+use blue_onyx_prism::model::preprocess::Preprocessor;
+use blue_onyx_prism::model::{ModelFamilyKind, PostParams};
+use blue_onyx_prism::registry::resolve_class_names;
 use clap::Parser;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -29,9 +29,9 @@ const MATCH_IOU: f32 = 0.5;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "blue-onyx-openvino-benchmark",
+    name = "blue-onyx-prism-benchmark",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Benchmark Blue Onyx OpenVINO models with the production pre/post-processing pipeline"
+    about = "Benchmark Blue Onyx Prism models with the production pre/post-processing pipeline"
 )]
 struct Args {
     /// Model file (.xml or .onnx), repeatable. Default: every enabled model in the config file.
@@ -72,7 +72,7 @@ struct Args {
     /// Confidence threshold. Default: the configured confidence_threshold.
     #[arg(long)]
     min_confidence: Option<f32>,
-    /// Config file for defaults (default: <exe_dir>/blue_onyx_openvino_config.json if present).
+    /// Config file for defaults (default: <exe_dir>/blue_onyx_prism_config.json if present).
     #[arg(long)]
     config: Option<PathBuf>,
     /// Print machine-readable JSON instead of tables.
@@ -292,8 +292,8 @@ fn jobs(args: &Args, config: &Config) -> Result<Vec<Job>> {
     config_models(config)?
         .into_iter()
         .map(|m| {
-            let path = blue_onyx_openvino::resolve_path(&m.path);
-            let classes_path = m.classes.as_deref().map(blue_onyx_openvino::resolve_path);
+            let path = blue_onyx_prism::resolve_path(&m.path);
+            let classes_path = m.classes.as_deref().map(blue_onyx_prism::resolve_path);
             let classes = resolve_class_names(&path, classes_path.as_deref())?;
             Ok(Job {
                 name: m.effective_name(),
@@ -314,7 +314,7 @@ fn run(args: Args) -> Result<bool> {
     let openvino_dir = config
         .openvino_dir
         .as_deref()
-        .map(blue_onyx_openvino::resolve_path);
+        .map(blue_onyx_prism::resolve_path);
     libs::prepare_environment(openvino_dir.as_deref());
 
     if args.repeat == 0 {
@@ -343,7 +343,7 @@ fn run(args: Args) -> Result<bool> {
     runtimes.require_any()?;
     let info = runtimes.info();
     let mut report = Report {
-        version: blue_onyx_openvino::VERSION,
+        version: blue_onyx_prism::VERSION,
         openvino_version: info.openvino_version,
         available_devices: info.available_devices,
         models: Vec::new(),
@@ -351,7 +351,7 @@ fn run(args: Args) -> Result<bool> {
     };
     if !args.json {
         println!(
-            "Blue Onyx OpenVINO {} benchmark | OpenVINO {} | devices {:?} | cache {}",
+            "Blue Onyx Prism {} benchmark | OpenVINO {} | devices {:?} | cache {}",
             report.version,
             report.openvino_version,
             report.available_devices,
@@ -495,7 +495,7 @@ impl Bench<'_> {
         let info = backend.info();
         let dev = info.device.clone();
         let (in_w, in_h) = info.input_size;
-        let family = blue_onyx_openvino::model::make_family(
+        let family = blue_onyx_prism::model::make_family(
             job.family,
             &info.inputs,
             &info.outputs,
@@ -507,7 +507,7 @@ impl Bench<'_> {
         // One request exactly as `WorkerCtx::process` runs it, with per-stage timings.
         let mut iteration = || -> Result<Sample> {
             let t = Instant::now();
-            let img = blue_onyx_openvino::image::decode(self.image)?;
+            let img = blue_onyx_prism::image::decode(self.image)?;
             let decode = ms(t.elapsed());
 
             let t = Instant::now();
@@ -521,8 +521,7 @@ impl Bench<'_> {
 
             let t = Instant::now();
             let dets = family.postprocess(&outputs, &ctx, &self.params)?;
-            let preds =
-                blue_onyx_openvino::model::to_predictions(&dets, &ctx, &job.classes, filter);
+            let preds = blue_onyx_prism::model::to_predictions(&dets, &ctx, &job.classes, filter);
             let postprocess = ms(t.elapsed());
             Ok(Sample {
                 stages: [decode, preprocess, infer, postprocess],
@@ -848,7 +847,7 @@ mod tests {
 
     #[test]
     fn embedded_image_decodes() {
-        let img = blue_onyx_openvino::image::decode(DEFAULT_IMAGE).unwrap();
+        let img = blue_onyx_prism::image::decode(DEFAULT_IMAGE).unwrap();
         assert!(img.width > 0 && img.height > 0);
         assert_eq!(img.rgb.len(), (img.width * img.height * 3) as usize);
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Export Ultralytics YOLO26 detection models to OpenVINO IR for Blue Onyx OpenVINO.
+"""Export Ultralytics YOLO26 detection models to OpenVINO IR for Blue Onyx Prism.
 
 Usage (inside the project venv: `.venv/Scripts/python.exe scripts/export_yolo26.py`):
 
@@ -9,7 +9,7 @@ Usage (inside the project venv: `.venv/Scripts/python.exe scripts/export_yolo26.
     python scripts/export_yolo26.py --out C:/BlueOnyx/models
 
 Produces `<name>.xml`, `<name>.bin` and `<name>.yaml` (a `NAMES:` list) per model and prints the
-config snippet to paste into `blue_onyx_openvino_config.json`.
+config snippet to paste into `blue_onyx_prism_config.json`.
 
 YOLO26 weights and the Ultralytics exporter are AGPL-3.0: export locally, do not commit weights.
 """
@@ -117,7 +117,7 @@ def main() -> int:
         snippets.append(
             {"name": name, "path": f"models/{name}.xml", "family": "yolo26", "classes": f"models/{name}.yaml"}
         )
-    print("\nConfig snippet for blue_onyx_openvino_config.json -> \"models\":")
+    print("\nConfig snippet for blue_onyx_prism_config.json -> \"models\":")
     print(json.dumps(snippets, indent=2))
     return 0
 

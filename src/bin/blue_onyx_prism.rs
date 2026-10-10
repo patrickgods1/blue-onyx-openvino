@@ -1,9 +1,9 @@
 //! Main binary: CLI subcommands (setup-openvino, download-models, list-models) or the HTTP service.
 
 use anyhow::Result;
-use blue_onyx_openvino::cli::{self, Cli, Command};
-use blue_onyx_openvino::config::{Config, LogLevel};
-use blue_onyx_openvino::{download, runner, setup_openvino, system_info};
+use blue_onyx_prism::cli::{self, Cli, Command};
+use blue_onyx_prism::config::{Config, LogLevel};
+use blue_onyx_prism::{download, runner, setup_openvino, system_info};
 use clap::Parser;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -43,7 +43,7 @@ fn models_dir(cli: &Cli, dir: Option<PathBuf>) -> PathBuf {
     } else {
         Config::default()
     };
-    blue_onyx_openvino::resolve_path(&cfg.models_dir)
+    blue_onyx_prism::resolve_path(&cfg.models_dir)
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -89,7 +89,7 @@ fn run(cli: Cli) -> Result<()> {
                 } else {
                     Config::default()
                 };
-                let models = download::model_configs(&files, &blue_onyx_openvino::exe_dir());
+                let models = download::model_configs(&files, &blue_onyx_prism::exe_dir());
                 let outcomes = download::add_to_config(&mut cfg, models);
                 for o in &outcomes {
                     println!("{}", o.describe(&path));
@@ -114,12 +114,12 @@ fn run(cli: Cli) -> Result<()> {
     // Initialized once; later level changes go through the reload handle (web UI, restart).
     let log = cli::init_logging(config.log_level, config.log_path.as_deref())?;
     info!(
-        version = blue_onyx_openvino::VERSION,
+        version = blue_onyx_prism::VERSION,
         os = %system_info::os_description(),
         cpu = %system_info::cpu_name(),
         memory_gb = ?system_info::total_memory_gb(),
         config = %config_path.display(),
-        "starting Blue Onyx OpenVINO"
+        "starting Blue Onyx Prism"
     );
     runner::ensure_models(&config, &config_path)?;
 

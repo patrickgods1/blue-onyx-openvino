@@ -394,7 +394,7 @@ pub fn diagnostics() -> String {
         )),
         None => s.push_str(&format!(
             " {} was NOT found there (system dirs such as /opt/intel/openvino may still be probed). \
-             Run `blue-onyx-openvino setup-openvino` to download the runtime into {}.",
+             Run `blue-onyx-prism setup-openvino` to download the runtime into {}.",
             openvino_c_file_name(),
             crate::exe_dir().join(BUNDLED_DIR_NAME).display()
         )),

@@ -1,4 +1,4 @@
-# Blue Onyx OpenVINO
+# Blue Onyx Prism
 
 Cross-platform object-detection HTTP service for Blue Iris (CodeProject.AI-compatible API),
 written in Rust on **native OpenVINO** via the `openvino` crate (runtime-linking), with
@@ -42,7 +42,7 @@ one constant in `src/setup_openvino.rs`.
   `yolo8` (`[1,4+C,8400]` + NMS), `rtdetr` (`images` + i64 `orig_target_sizes`; `labels/boxes/scores`).
   Preprocess = letterbox (YOLO) or stretch (RT-DETR) to 640x640 RGB f32 0..1, CHW.
 - `src/config.rs` JSON config next to the exe; CLI overrides only non-default values and writes back.
-- Windows service in `src/bin/blue_onyx_openvino_service.rs` (cfg windows). systemd/launchd/Docker in `deploy/`.
+- Windows service in `src/bin/blue_onyx_prism_service.rs` (cfg windows). systemd/launchd/Docker in `deploy/`.
 
 ## Conventions
 

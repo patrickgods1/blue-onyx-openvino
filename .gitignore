@@ -7,7 +7,7 @@
 /openvino/
 *.log
 *_config*.json
-!blue_onyx_openvino_config_example*.json
+!blue_onyx_prism_config_example*.json
 
 # Python export environment
 /.venv/

@@ -1,4 +1,4 @@
-# Plan: Blue Onyx OpenVINO — cross-platform Blue Iris object detection service on native OpenVINO (Rust)
+# Plan: Blue Onyx Prism — cross-platform Blue Iris object detection service on native OpenVINO (Rust)
 
 ## Context
 
@@ -10,7 +10,7 @@ You want a Blue Iris AI server like [blue-onyx](https://github.com/xnorpx/blue-o
 - Native OpenVINO reads ONNX and IR directly, has a compiled-model cache, FP16 on the iGPU, and the Rust bindings (`openvino` 0.11.0, Intel-maintained, pregenerated bindings so no libclang) can load the shared libraries at runtime, so the service ships as one exe + a lib folder on every OS.
 - blue-onyx is MIT, so its API shapes, service pattern, HTML pages, model catalog and release workflow can be copied. What we gain over it: multi-model in one instance with real `/v1/vision/custom/{model}` support, YOLO26 end-to-end models, and the Intel GPU on Windows.
 
-**Decisions you made:** new Rust service; detection + custom-model endpoints; ship YOLO26 (n/s/m), RT-DETRv2 and MikeLud's YOLOv5 ipcam models; full feature parity with blue-onyx extras; cross-platform (Windows, Linux, macOS arm64); public GitHub repo "Blue Onyx OpenVINO".
+**Decisions you made:** new Rust service; detection + custom-model endpoints; ship YOLO26 (n/s/m), RT-DETRv2 and MikeLud's YOLOv5 ipcam models; full feature parity with blue-onyx extras; cross-platform (Windows, Linux, macOS arm64); public GitHub repo "Blue Onyx Prism".
 
 **Update (2026-10-09): multi-runtime.** OpenVINO stays the primary runtime, and it remains the best choice for Intel CPUs, Intel GPUs and Intel NPUs. It cannot accelerate NVIDIA or AMD GPUs, and on Apple Silicon it runs on CPU only. So **ONNX Runtime (the `ort` crate) is added as a second runtime**, which gives CUDA/TensorRT, DirectML and CoreML. The default device becomes `auto`: it detects the hardware and the runtimes that can actually run, then picks the best option for each model, with every other runnable option still selectable. The original "no ONNX Runtime" rule is dropped. See [Multi-runtime backend and auto device selection](#multi-runtime-backend-and-auto-device-selection).
 
@@ -18,8 +18,8 @@ You want a Blue Iris AI server like [blue-onyx](https://github.com/xnorpx/blue-o
 
 ## Naming and repository
 
-- GitHub repo slug `blue-onyx-openvino` (display/description "Blue Onyx OpenVINO"), public, MIT with blue-onyx attribution in LICENSE/README. Crate `blue-onyx-openvino`, lib `blue_onyx_openvino`, bins `blue-onyx-openvino`, `blue-onyx-openvino-service` (Windows only), `blue-onyx-openvino-benchmark`, `test-blue-onyx-openvino`. Windows service name `BlueOnyxOpenVINOService`; config `blue_onyx_openvino_config.json` (+ `_service.json`). Nothing collides with upstream, so both can coexist on one machine.
-- Repo creation (phase 0): `git init -b main` in this folder, `.gitignore` (`target/`, `models/`, `cache/`, `openvino/` lib dir, `*.log`, `*_config*.json`, `.venv/`), initial commit of the skeleton, then **you run `gh auth login`** (interactive, browser), then `gh repo create blue-onyx-openvino --public --description "Blue Onyx OpenVINO" --source . --push`. Commits happen at the end of each phase.
+- GitHub repo slug `blue-onyx-prism` (display/description "Blue Onyx Prism"), public, MIT with blue-onyx attribution in LICENSE/README. Crate `blue-onyx-prism`, lib `blue_onyx_prism`, bins `blue-onyx-prism`, `blue-onyx-prism-service` (Windows only), `blue-onyx-prism-benchmark`, `test-blue-onyx-prism`. Windows service name `BlueOnyxPrismService`; config `blue_onyx_prism_config.json` (+ `_service.json`). Nothing collides with upstream, so both can coexist on one machine.
+- Repo creation (phase 0): `git init -b main` in this folder, `.gitignore` (`target/`, `models/`, `cache/`, `openvino/` lib dir, `*.log`, `*_config*.json`, `.venv/`), initial commit of the skeleton, then **you run `gh auth login`** (interactive, browser), then `gh repo create blue-onyx-prism --public --description "Blue Onyx Prism" --source . --push`. Commits happen at the end of each phase.
 
 ## Cross-platform support
 
@@ -31,11 +31,11 @@ You want a Blue Iris AI server like [blue-onyx](https://github.com/xnorpx/blue-o
 | OpenVINO NPU | Intel Core Ultra NPU (selectable, not auto) | Intel NPU driver (selectable, not auto) | no |
 | ONNX Runtime GPU | NVIDIA via CUDA/TensorRT (`-gpu` package); AMD/any DX12 GPU via DirectML package | NVIDIA via CUDA/TensorRT (`-gpu` package); AMD not covered yet (MIGraphX/ROCm) | CoreML (GPU + Neural Engine) |
 | ONNX Runtime libs | `onnxruntime.dll` (+ `DirectML.dll` or CUDA/TensorRT provider dlls) | `libonnxruntime.so` (+ CUDA/TensorRT provider libs) | `libonnxruntime.dylib` from `onnxruntime-osx-arm64` |
-| Run as service | Windows service bin | `deploy/blue-onyx-openvino.service` systemd unit + `Dockerfile` (runtime image with `--device /dev/dri`) | `deploy/com.blueonyx.openvino.plist` launchd |
+| Run as service | Windows service bin | `deploy/blue-onyx-prism.service` systemd unit + `Dockerfile` (runtime image with `--device /dev/dri`) | `deploy/com.blueonyx.prism.plist` launchd |
 | Logging sink | event log (`tracing-layer-win-eventlog`, cfg windows) + file | stdout/journald + file | stdout + file |
 
 - **Library discovery:** `openvino-finder` searches `OPENVINO_BUILD_DIR`, `OPENVINO_INSTALL_DIR`, `INTEL_OPENVINO_DIR`, then the OS library-path variable entries (`PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`), then `/opt/intel/openvino*` defaults. It never checks the exe dir and never pip site-packages. So `backend/dll.rs` becomes `backend/libs.rs`: before `Core::new()`, if `<exe_dir>/openvino/` exists (or config `openvino_dir`), set `OPENVINO_INSTALL_DIR` to it at runtime (`std::env::set_var`, read by the finder at lookup time on all OSes; on macOS `DYLD_LIBRARY_PATH` is read only at process launch, which is why the env var route is used). The shipped folder keeps the archive's `runtime/{bin|lib}/<arch>/Release` layout so the finder's known subdirectories match, and `plugins.xml` sits next to the C library.
-- **Fetching libs is a Rust subcommand, not a script:** `blue-onyx-openvino setup-openvino [--version 2026.4.0] [--dest <exe_dir>/openvino]` downloads the right archive for the OS/arch from `https://storage.openvinotoolkit.org/repositories/openvino/packages/<ver>/{windows,linux,macos}/...` (zip on Windows, tgz elsewhere; verify exact filenames before pinning), extracts into an isolated temp dir, copies only the runtime libs (`openvino`, `openvino_c`, `openvino_intel_cpu_plugin`, `openvino_intel_gpu_plugin` where present, `openvino_ir_frontend`, `openvino_onnx_frontend`, `plugins.xml`, `tbb12`/`libtbb`), and prints what it did. Deps: `reqwest` (stream), `zip`, `tar` + `flate2`. CI uses the same subcommand. Users with a system OpenVINO (apt, brew, pip) can instead point `openvino_dir` at it.
+- **Fetching libs is a Rust subcommand, not a script:** `blue-onyx-prism setup-openvino [--version 2026.4.0] [--dest <exe_dir>/openvino]` downloads the right archive for the OS/arch from `https://storage.openvinotoolkit.org/repositories/openvino/packages/<ver>/{windows,linux,macos}/...` (zip on Windows, tgz elsewhere; verify exact filenames before pinning), extracts into an isolated temp dir, copies only the runtime libs (`openvino`, `openvino_c`, `openvino_intel_cpu_plugin`, `openvino_intel_gpu_plugin` where present, `openvino_ir_frontend`, `openvino_onnx_frontend`, `plugins.xml`, `tbb12`/`libtbb`), and prints what it did. Deps: `reqwest` (stream), `zip`, `tar` + `flate2`. CI uses the same subcommand. Users with a system OpenVINO (apt, brew, pip) can instead point `openvino_dir` at it.
 - **macOS risk:** openvino-rs CI skips macOS over an `@rpath` issue in the dynamic-link path; the `runtime-linking` feature dlopens by absolute path, which sidesteps it, but if plugin dylibs fail to load, mitigation is `install_name_tool -add_rpath` in `setup-openvino` or a documented `DYLD_LIBRARY_PATH` launch wrapper. CPU-only there regardless.
 - **Linux GPU:** `device: "GPU"` works when `/dev/dri/renderD*` is accessible and `intel-opencl-icd` is installed; `Dockerfile` based on `openvino/ubuntu24_runtime:<ver>` (same as blue-onyx) copies the binary in. Systemd unit runs as a user in the `render` group.
 - **Code gating:** `#[cfg(windows)]` only for the service bin, event log layer and the DXGI adapter listing; everything else is portable. `system_info.rs` reports CPU name via `raw-cpuid` on x86 and `sysctl`/`/proc/cpuinfo` fallback on arm64/Linux.
@@ -48,7 +48,7 @@ Single crate, edition 2024, lib + bins.
 ```
 Cargo.toml  rust-toolchain.toml  LICENSE  README.md  .gitignore  Dockerfile
 .github/workflows/{ci,release}.yml
-deploy/blue-onyx-openvino.service   deploy/com.blueonyx.openvino.plist   deploy/docker-compose.yml
+deploy/blue-onyx-prism.service   deploy/com.blueonyx.prism.plist   deploy/docker-compose.yml
 src/lib.rs            module list, VERSION
 src/cli.rs            clap Cli + subcommands (run, setup-openvino, download-models, list-models); merge rules copied from upstream (CLI overrides file only when non-default; written back)
 src/config.rs         Config + ModelConfig (JSON next to exe; service variant *_service.json)
@@ -71,10 +71,10 @@ src/image.rs          JPEG decode (zune-jpeg; `image` fallback), draw boxes, sav
 src/download.rs       hf-hub download of xnorpx/rt-detr2-onnx and xnorpx/blue-onyx-yolo5 catalogs
 src/system_info.rs    CPU name, OpenVINO available devices/versions
 src/update.rs         GitHub release check for /v1/status/updateavailable
-src/bin/blue_onyx_openvino.rs            server + subcommands
-src/bin/blue_onyx_openvino_service.rs    windows-service wrapper (cfg windows; stub main elsewhere)
-src/bin/blue_onyx_openvino_benchmark.rs  compile/warmup/p50/p95 latency, --device GPU|CPU, --compare-cpu
-src/bin/test_blue_onyx_openvino.rs       posts an image N times, prints JSON
+src/bin/blue_onyx_prism.rs            server + subcommands
+src/bin/blue_onyx_prism_service.rs    windows-service wrapper (cfg windows; stub main elsewhere)
+src/bin/blue_onyx_prism_benchmark.rs  compile/warmup/p50/p95 latency, --device GPU|CPU, --compare-cpu
+src/bin/test_blue_onyx_prism.rs       posts an image N times, prints JSON
 templates/{welcome,stats,config,test}.html, prometheus.txt   (askama; structure copied from upstream)
 assets/favicon.ico, assets/style.css, assets/<permissive>.ttf  (include_bytes)
 scripts/export_yolo26.py       Ultralytics -> OpenVINO IR + NAMES yaml
@@ -104,7 +104,7 @@ Config example:
 
 - One `Core` (in the registry, `Mutex`) with properties set once; models compiled **sequentially** on a loader thread, then each `CompiledModel` (it is `Send`) moves into its own worker thread which creates the `InferRequest`, runs one warmup, measures it, sizes its bounded channel (`request_timeout / inference_ms`, clamp 1..64 unless `worker_queue_size > 0`), and flips `Ready`. `lazy` models compile on first request.
 - `WorkItem = (VisionDetectionRequest, oneshot::Sender<VisionDetectionResponse>, Instant)` as upstream.
-- Routing: `/v1/vision/detection` -> `default_model`; `/v1/vision/custom/{model}` -> case-insensitive lookup by name with extension stripped (Blue Iris sends the file stem); unknown -> HTTP 200 `success:false, error:"Unknown model"`. `custom/list` -> all configured names, `moduleId "ObjectDetectionOpenVINO"`, `inferenceDevice` from the default model.
+- Routing: `/v1/vision/detection` -> `default_model`; `/v1/vision/custom/{model}` -> case-insensitive lookup by name with extension stripped (Blue Iris sends the file stem); unknown -> HTTP 200 `success:false, error:"Unknown model"`. `custom/list` -> all configured names, `moduleId "ObjectDetectionPrism"`, `inferenceDevice` from the default model.
 - Memory (iGPU shares RAM): roughly YOLO26n ~100 MB, YOLO26s ~200 MB, RT-DETRv2-s ~300 MB, each YOLOv5 ipcam ~80 MB resident. 3-5 models fine on 16 GB; `lazy` and per-model `device: "CPU"` are the knobs.
 
 ## Inference abstraction
@@ -271,7 +271,7 @@ The device options from phase 6.2 gain a third state, "downloadable", alongside 
 
 ## Model acquisition
 
-- `blue-onyx-openvino download-models [--all|--yolo5|--rtdetr|--name X] [--dir models]`: hf-hub catalogs copied from upstream (`xnorpx/rt-detr2-onnx`: rt-detrv2-{s,ms,m,l,x}.{onnx,yaml}; `xnorpx/blue-onyx-yolo5`: delivery, IPcam-animal, ipcam-bird, IPcam-combined, IPcam-dark, IPcam-general, package .{onnx,yaml}); `--add-to-config` appends entries with family inferred. `list-models` shows catalog + local presence.
+- `blue-onyx-prism download-models [--all|--yolo5|--rtdetr|--name X] [--dir models]`: hf-hub catalogs copied from upstream (`xnorpx/rt-detr2-onnx`: rt-detrv2-{s,ms,m,l,x}.{onnx,yaml}; `xnorpx/blue-onyx-yolo5`: delivery, IPcam-animal, ipcam-bird, IPcam-combined, IPcam-dark, IPcam-general, package .{onnx,yaml}); `--add-to-config` appends entries with family inferred. `list-models` shows catalog + local presence.
 - `scripts/export_yolo26.py` (Python 3.11 venv with `ultralytics openvino`): for n/s/m, `YOLO("yolo26X.pt").export(format="openvino", imgsz=640, nms=False, dynamic=False, quantize=16)` (current docs say `quantize` replaces `half`/`int8`; fall back to `half=True` on older ultralytics; `--int8` -> `quantize=8, data=coco128.yaml`). Copies `.xml/.bin` to `models/`, converts `metadata.yaml` names to a `NAMES:` yaml, asserts the output shape ends in `[300, 6]`, prints the config snippet. YOLO26 is AGPL-3.0: never commit weights; users export locally.
 - `models/`, `cache/` and `openvino/` live next to the exe; all git-ignored.
 
@@ -285,7 +285,7 @@ The device options from phase 6.2 gain a third state, "downloadable", alongside 
 | POST | `/v1/vision/custom/{model}` | named model |
 | GET | `/v1/status/updateavailable` | GitHub release check |
 | GET | `/stats` | per-model rows, auto-refresh |
-| GET | `/prometheus` | `blue_onyx_openvino_*{model=...}` |
+| GET | `/prometheus` | `blue_onyx_prism_*{model=...}` |
 | GET, POST | `/test` | upload form + annotated result + JSON, model selector |
 | GET, POST | `/config` | edit JSON fields, write file |
 | POST | `/config/restart` | trigger restart token |
@@ -296,13 +296,13 @@ Handler flow: multipart (`image`, optional `min_confidence`; 32 MB body limit) -
 
 ## Services and deployment
 
-- **Windows:** `blue_onyx_openvino_service.rs`: `define_windows_service!`, `OWN_PROCESS`, controls Interrogate/Stop/Shutdown + user codes 130 (stop) / 131 (restart), `StartPending` wait hint 600 s, current-thread tokio runtime, outer loop reloads the service config, rebuilds registry, retries after 5 s on failure; `libs::prepare_environment()` before the runtime; event log source + optional rolling file log. `install_service.ps1` (admin): event log source, `ServicesPipeTimeout = 600000`, `sc.exe create BlueOnyxOpenVINOService ... start= auto obj= LocalSystem type= own`, `sc.exe failure` auto-restart, firewall rule, start. `uninstall_service.ps1` reverses it. If the GPU plugin fails only under LocalSystem, `-Account` runs it as the user.
-- **Linux:** the main binary handles SIGTERM; `deploy/blue-onyx-openvino.service` (`Restart=on-failure`, `SupplementaryGroups=render video`, `WorkingDirectory=` install dir); `Dockerfile` + `deploy/docker-compose.yml` with `/dev/dri` passthrough and a volume for `models/`, `cache/`, config.
-- **macOS:** `deploy/com.blueonyx.openvino.plist` (KeepAlive, WorkingDirectory) installed by `scripts/install_launchd.sh`.
+- **Windows:** `blue_onyx_prism_service.rs`: `define_windows_service!`, `OWN_PROCESS`, controls Interrogate/Stop/Shutdown + user codes 130 (stop) / 131 (restart), `StartPending` wait hint 600 s, current-thread tokio runtime, outer loop reloads the service config, rebuilds registry, retries after 5 s on failure; `libs::prepare_environment()` before the runtime; event log source + optional rolling file log. `install_service.ps1` (admin): event log source, `ServicesPipeTimeout = 600000`, `sc.exe create BlueOnyxPrismService ... start= auto obj= LocalSystem type= own`, `sc.exe failure` auto-restart, firewall rule, start. `uninstall_service.ps1` reverses it. If the GPU plugin fails only under LocalSystem, `-Account` runs it as the user.
+- **Linux:** the main binary handles SIGTERM; `deploy/blue-onyx-prism.service` (`Restart=on-failure`, `SupplementaryGroups=render video`, `WorkingDirectory=` install dir); `Dockerfile` + `deploy/docker-compose.yml` with `/dev/dri` passthrough and a volume for `models/`, `cache/`, config.
+- **macOS:** `deploy/com.blueonyx.prism.plist` (KeepAlive, WorkingDirectory) installed by `scripts/install_launchd.sh`.
 
 ## Implementation phases (commit at the end of each)
 
-0. **Prereqs + repo:** install rustup (stable MSVC), VS 2022 Build Tools "Desktop development with C++"; `conda create -n yolo python=3.11` + `pip install ultralytics openvino`; `git init -b main`, `.gitignore`, skeleton `Cargo.toml`/README/LICENSE, first commit; you run `gh auth login`; `gh repo create blue-onyx-openvino --public --description "Blue Onyx OpenVINO" --source . --push`.
+0. **Prereqs + repo:** install rustup (stable MSVC), VS 2022 Build Tools "Desktop development with C++"; `conda create -n yolo python=3.11` + `pip install ultralytics openvino`; `git init -b main`, `.gitignore`, skeleton `Cargo.toml`/README/LICENSE, first commit; you run `gh auth login`; `gh repo create blue-onyx-prism --public --description "Blue Onyx Prism" --source . --push`.
 1. **Single model on CPU + `/v1/vision/detection` + `setup-openvino`** — cli/config/api, backend (CPU path), libs.rs, setup_openvino.rs, model/{preprocess,nms,classes,yolo5}, worker/startup/registry (single entry), server (detection + `/`), download CLI. Milestone: `cargo run -- setup-openvino` then `cargo run -- --model models/IPcam-general.onnx --family yolo5 --force-cpu` returns `person` boxes for a test JPEG. `tests/postprocess.rs` for yolo5. CI workflow added (all three OSes build + unit tests).
 2. **GPU + cache + fallback + remaining families** — device.rs full, yolo26/yolo8/rtdetr, `export_yolo26.py`, reshape of dynamic dims. Milestone: yolo26s on `GPU` logs the UHD 630 name, second start compiles in < 5 s, `--force-cpu` works, RT-DETRv2-s loads (or via `ovc`).
 3. **Multi-model + custom endpoints** — registry with N workers, `models[]` config, `custom/list`, `custom/{model}`, per-model metrics. Milestone: yolo26s (GPU) + ipcam-general (CPU) served concurrently.
@@ -332,7 +332,7 @@ Handler flow: multipart (`image`, optional `min_confidence`; 32 MB body limit) -
 - **Cross-platform:** CI green on windows/ubuntu/macos runners; release artifacts for all three.
 - **Multi-runtime (phase 6):**
   - **Builds and tests**: `cargo test` covers the spec parser and the selection matrix without runtime libs, and `cargo build --no-default-features` builds OpenVINO only.
-  - **macOS arm64**: `list-devices` shows `ort:coreml` (auto), `openvino:cpu` and `ort:cpu`. Compare them with `blue-onyx-openvino-benchmark --all-devices`, then check that `executionProvider` reads `ONNX Runtime CoreML`.
+  - **macOS arm64**: `list-devices` shows `ort:coreml` (auto), `openvino:cpu` and `ort:cpu`. Compare them with `blue-onyx-prism-benchmark --all-devices`, then check that `executionProvider` reads `ONNX Runtime CoreML`.
   - **Windows i5-8500 / UHD 630**: `auto` picks `openvino:gpu`. The dropdown lists `ort:directml`, `openvino:cpu` and `ort:cpu`. The Blue Iris response shape is unchanged.
   - **Fallback**: an option that can't run, such as `ort:cuda` with no NVIDIA GPU, loads on CPU with `, fallback` and a logged reason.
   - **NVIDIA**: without an NVIDIA box, only the selection unit tests cover it, so report it as untested on hardware.

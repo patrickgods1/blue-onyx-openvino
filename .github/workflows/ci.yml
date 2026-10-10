@@ -42,8 +42,8 @@ jobs:
           set -euo pipefail
           EXE=""
           case "$RUNNER_OS" in Windows) EXE=".exe";; esac
-          BIN="target/release/blue-onyx-openvino$EXE"
-          CLIENT="target/release/test-blue-onyx-openvino$EXE"
+          BIN="target/release/blue-onyx-prism$EXE"
+          CLIENT="target/release/test-blue-onyx-prism$EXE"
           LOG="$RUNNER_TEMP/blue-onyx-server.log"
           IMG=tests/data/dog_bike_car.jpg
           URL=http://127.0.0.1:32168
@@ -55,7 +55,7 @@ jobs:
           cleanup() {
             kill "$PID" 2>/dev/null || true
             if [ "$RUNNER_OS" = "Windows" ]; then
-              taskkill //F //IM blue-onyx-openvino.exe >/dev/null 2>&1 || true
+              taskkill //F //IM blue-onyx-prism.exe >/dev/null 2>&1 || true
             fi
             echo "---- server log ----"; tail -n 50 "$LOG" || true
           }

@@ -7,12 +7,12 @@
 //! Skips (passes with a message) when `openvino/` or the two required models are missing under
 //! the repo root. Set `BLUE_ONYX_TEST_ROOT` to point at another checkout that has them.
 
-use blue_onyx_openvino::api::VisionDetectionResponse;
-use blue_onyx_openvino::config::{Config, ModelConfig};
-use blue_onyx_openvino::metrics::Metrics;
-use blue_onyx_openvino::model::ModelFamilyKind;
-use blue_onyx_openvino::registry::ModelRegistry;
-use blue_onyx_openvino::server::{self, AppState};
+use blue_onyx_prism::api::VisionDetectionResponse;
+use blue_onyx_prism::config::{Config, ModelConfig};
+use blue_onyx_prism::metrics::Metrics;
+use blue_onyx_prism::model::ModelFamilyKind;
+use blue_onyx_prism::registry::ModelRegistry;
+use blue_onyx_prism::server::{self, AppState};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,9 +82,9 @@ fn stats_model<'a>(stats: &'a serde_json::Value, name: &str) -> &'a serde_json::
         .unwrap_or_else(|| panic!("no /stats.json row for {name}: {stats}"))
 }
 
-/// Value of the sample `blue_onyx_openvino_<metric>{model="<model>"}`.
+/// Value of the sample `blue_onyx_prism_<metric>{model="<model>"}`.
 fn prom_value(text: &str, metric: &str, model: &str) -> f64 {
-    let prefix = format!("blue_onyx_openvino_{metric}{{model=\"{model}\"}} ");
+    let prefix = format!("blue_onyx_prism_{metric}{{model=\"{model}\"}} ");
     text.lines()
         .find_map(|l| l.strip_prefix(&prefix))
         .unwrap_or_else(|| panic!("no {prefix:?} in:\n{text}"))
@@ -94,7 +94,7 @@ fn prom_value(text: &str, metric: &str, model: &str) -> f64 {
 
 /// The `model_info` line for `model`.
 fn prom_info<'a>(text: &'a str, model: &str) -> &'a str {
-    let prefix = format!("blue_onyx_openvino_model_info{{model=\"{model}\",");
+    let prefix = format!("blue_onyx_prism_model_info{{model=\"{model}\",");
     text.lines()
         .find(|l| l.starts_with(&prefix))
         .unwrap_or_else(|| panic!("no model_info for {model} in:\n{text}"))
@@ -161,7 +161,7 @@ async fn multiple_models_served_concurrently() {
         ..Default::default()
     };
     let token = CancellationToken::new();
-    let metrics = Arc::new(Metrics::new(blue_onyx_openvino::VERSION));
+    let metrics = Arc::new(Metrics::new(blue_onyx_prism::VERSION));
     let t_start = Instant::now();
     let registry =
         Arc::new(ModelRegistry::start(&config, &metrics, token.clone()).expect("registry"));
@@ -215,7 +215,7 @@ async fn multiple_models_served_concurrently() {
         assert!(provider.starts_with("OpenVINO "), "{n}: {row}");
         // Prometheus reflects the device/provider the worker actually got.
         let expect = format!(
-            "blue_onyx_openvino_model_info{{model=\"{n}\",device=\"{device}\",provider=\"{provider}\",state=\"ready\"}} 1"
+            "blue_onyx_prism_model_info{{model=\"{n}\",device=\"{device}\",provider=\"{provider}\",state=\"ready\"}} 1"
         );
         assert_eq!(prom_info(&prom, n), expect);
         assert_eq!(prom_value(&prom, "model_ready", n), 1.0);
@@ -245,7 +245,7 @@ async fn multiple_models_served_concurrently() {
         .await
         .expect("list JSON");
     assert_eq!(list["success"], true, "{list}");
-    assert_eq!(list["moduleId"], "ObjectDetectionOpenVINO");
+    assert_eq!(list["moduleId"], "ObjectDetectionPrism");
     assert_eq!(list["models"], serde_json::json!(names), "{list}");
 
     let mut sent: HashMap<&str, u64> = HashMap::new();

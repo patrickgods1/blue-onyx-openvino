@@ -8,14 +8,14 @@
 //! switch test, `models/rt-detrv2-s.onnx`) and `openvino/` exist under the repo root (or
 //! `BLUE_ONYX_TEST_ROOT`).
 
-use blue_onyx_openvino::api::VisionDetectionResponse;
-use blue_onyx_openvino::cli::{self, LogReloadHandle};
-use blue_onyx_openvino::config::{Config, LogLevel, ModelConfig};
-use blue_onyx_openvino::metrics::Metrics;
-use blue_onyx_openvino::model::ModelFamilyKind;
-use blue_onyx_openvino::registry::ModelRegistry;
-use blue_onyx_openvino::runner;
-use blue_onyx_openvino::server::{self, AppState};
+use blue_onyx_prism::api::VisionDetectionResponse;
+use blue_onyx_prism::cli::{self, LogReloadHandle};
+use blue_onyx_prism::config::{Config, LogLevel, ModelConfig};
+use blue_onyx_prism::metrics::Metrics;
+use blue_onyx_prism::model::ModelFamilyKind;
+use blue_onyx_prism::registry::ModelRegistry;
+use blue_onyx_prism::runner;
+use blue_onyx_prism::server::{self, AppState};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -58,7 +58,7 @@ struct Running {
 impl Running {
     async fn start(config: Config) -> Self {
         let token = CancellationToken::new();
-        let metrics = Arc::new(Metrics::new(blue_onyx_openvino::VERSION));
+        let metrics = Arc::new(Metrics::new(blue_onyx_prism::VERSION));
         let registry =
             Arc::new(ModelRegistry::start(&config, &metrics, token.clone()).expect("registry"));
         let config_path = std::env::temp_dir().join(format!(

@@ -1,11 +1,11 @@
-//! Test client for a running Blue Onyx OpenVINO server (CodeProject.AI compatible API).
+//! Test client for a running Blue Onyx Prism server (CodeProject.AI compatible API).
 //!
 //! Sends an image to `/v1/vision/detection` or `/v1/vision/custom/{model}` (optionally many
 //! times, optionally in parallel), prints the response or a latency summary and exits non-zero
 //! if any request failed.
 
 use anyhow::{Context, Result, bail};
-use blue_onyx_openvino::api::{Prediction, VisionDetectionResponse};
+use blue_onyx_prism::api::{Prediction, VisionDetectionResponse};
 use clap::Parser;
 use futures_util::StreamExt;
 use std::path::PathBuf;
@@ -15,9 +15,9 @@ static DEFAULT_IMAGE: &[u8] = include_bytes!("../../tests/data/dog_bike_car.jpg"
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "test-blue-onyx-openvino",
+    name = "test-blue-onyx-prism",
     version,
-    about = "Send test images to a running Blue Onyx OpenVINO server"
+    about = "Send test images to a running Blue Onyx Prism server"
 )]
 struct Args {
     /// Server base URL.
@@ -216,13 +216,10 @@ async fn run(args: Args) -> Result<bool> {
             .find_map(|o| o.response.as_ref())
             .map(|r| r.predictions.clone())
             .unwrap_or_default();
-        let img = blue_onyx_openvino::image::decode(&image)?;
-        let annotated = blue_onyx_openvino::image::draw_predictions(&img, &preds);
-        std::fs::write(
-            path,
-            blue_onyx_openvino::image::encode_jpeg(&annotated, 95)?,
-        )
-        .with_context(|| format!("writing {}", path.display()))?;
+        let img = blue_onyx_prism::image::decode(&image)?;
+        let annotated = blue_onyx_prism::image::draw_predictions(&img, &preds);
+        std::fs::write(path, blue_onyx_prism::image::encode_jpeg(&annotated, 95)?)
+            .with_context(|| format!("writing {}", path.display()))?;
         println!("saved annotated image to {}", path.display());
     }
     Ok(failures == 0)

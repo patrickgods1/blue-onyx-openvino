@@ -5,7 +5,7 @@ model: opus
 tools: Read, Write, Edit, Glob, Grep, Bash, WebFetch
 ---
 
-You implement a demanding slice of the Blue Onyx OpenVINO crate. Read CLAUDE.md first.
+You implement a demanding slice of the Blue Onyx Prism crate. Read CLAUDE.md first.
 
 Rules:
 - Own only the files named in your task. Shared interface files (`src/lib.rs`, `src/api.rs`,

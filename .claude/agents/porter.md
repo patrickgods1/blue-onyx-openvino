@@ -5,7 +5,7 @@ model: sonnet
 tools: Read, Write, Edit, Glob, Grep, Bash
 ---
 
-You implement a clearly specified slice of the Blue Onyx OpenVINO crate. Read CLAUDE.md first.
+You implement a clearly specified slice of the Blue Onyx Prism crate. Read CLAUDE.md first.
 
 Rules:
 - Own only the files named in your task. Do not edit shared interface files (`src/lib.rs`, `src/api.rs`,

@@ -1,31 +1,31 @@
 [package]
-name = "blue-onyx-openvino"
+name = "blue-onyx-prism"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Blue Iris compatible object detection service on native OpenVINO (Intel CPU/GPU)"
-repository = "https://github.com/patrickgods1/blue-onyx-openvino"
-default-run = "blue-onyx-openvino"
+description = "Blue Iris compatible object detection service on OpenVINO and ONNX Runtime, with hardware-based device selection"
+repository = "https://github.com/patrickgods1/blue-onyx-prism"
+default-run = "blue-onyx-prism"
 
 [lib]
-name = "blue_onyx_openvino"
+name = "blue_onyx_prism"
 path = "src/lib.rs"
 
 [[bin]]
-name = "blue-onyx-openvino"
-path = "src/bin/blue_onyx_openvino.rs"
+name = "blue-onyx-prism"
+path = "src/bin/blue_onyx_prism.rs"
 
 [[bin]]
-name = "blue-onyx-openvino-service"
-path = "src/bin/blue_onyx_openvino_service.rs"
+name = "blue-onyx-prism-service"
+path = "src/bin/blue_onyx_prism_service.rs"
 
 [[bin]]
-name = "blue-onyx-openvino-benchmark"
-path = "src/bin/blue_onyx_openvino_benchmark.rs"
+name = "blue-onyx-prism-benchmark"
+path = "src/bin/blue_onyx_prism_benchmark.rs"
 
 [[bin]]
-name = "test-blue-onyx-openvino"
-path = "src/bin/test_blue_onyx_openvino.rs"
+name = "test-blue-onyx-prism"
+path = "src/bin/test_blue_onyx_prism.rs"
 
 [dependencies]
 openvino = { version = "0.11", features = ["runtime-linking"] }
