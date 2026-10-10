@@ -610,13 +610,15 @@ mod tests {
             &drm.join("card3/device/mem_info_vram_total"),
             "8573157376\n",
         );
+        // Real directories are named after the bus ("0000:01:00.0"), which is not a valid file
+        // name on Windows; these are matched through their `Bus Location` line instead.
         write(
-            &nv.join("0000:01:00.0/information"),
+            &nv.join("gpu-01/information"),
             "Model: \t\t NVIDIA GeForce RTX 3060\nBus Location: \t 0000:01:00.0\n",
         );
         // A second NVIDIA GPU without a DRM card.
         write(
-            &nv.join("0000:02:00.0/information"),
+            &nv.join("gpu-02/information"),
             "Model: \t\t NVIDIA RTX A2000\nBus Location: \t 0000:02:00.0\n",
         );
 
