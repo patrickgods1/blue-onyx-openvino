@@ -12,6 +12,8 @@ You want a Blue Iris AI server like [blue-onyx](https://github.com/xnorpx/blue-o
 
 **Decisions you made:** new Rust service; detection + custom-model endpoints; ship YOLO26 (n/s/m), RT-DETRv2 and MikeLud's YOLOv5 ipcam models; full feature parity with blue-onyx extras; cross-platform (Windows, Linux, macOS arm64); public GitHub repo "Blue Onyx OpenVINO".
 
+**Update (2026-10-09): multi-runtime.** OpenVINO stays the primary runtime, and it remains the best choice for Intel CPUs, Intel GPUs and Intel NPUs. It cannot accelerate NVIDIA or AMD GPUs, and on Apple Silicon it runs on CPU only. So **ONNX Runtime (the `ort` crate) is added as a second runtime**, which gives CUDA/TensorRT, DirectML and CoreML. The default device becomes `auto`: it detects the hardware and the runtimes that can actually run, then picks the best option for each model, with every other runnable option still selectable. The original "no ONNX Runtime" rule is dropped. See [Multi-runtime backend and auto device selection](#multi-runtime-backend-and-auto-device-selection).
+
 **Verified environment facts (this dev box):** i5-8600K (6C/6T), 16 GB, UHD 630 driver 31.0.101.2140 with OpenCL runtime present, plus a GTX 1070 Ti (ignored). No Rust, no VS Build Tools, no cmake; Python is Anaconda 3.8 (too old for ultralytics/openvino wheels). Git 2.45 present with identity set; `gh` 2.52 installed but **not logged in**. The target i5-8500 box is the same GPU generation, so GPU testing here is representative.
 
 ## Naming and repository
@@ -26,6 +28,9 @@ You want a Blue Iris AI server like [blue-onyx](https://github.com/xnorpx/blue-o
 | OpenVINO CPU | yes | yes | yes (Apple silicon CPU plugin; archive is CPU-only) |
 | OpenVINO GPU | Intel iGPU/dGPU (driver provides OpenCL) | Intel GPU via `/dev/dri` + intel-compute-runtime (same as blue-onyx's Docker) | no GPU plugin; CPU only |
 | OpenVINO libs | `openvino_c.dll` + plugins from the Windows `.zip` | `libopenvino_c.so` from the Linux `.tgz` (or apt/pip) | `libopenvino_c.dylib` from the macOS `_arm64.tgz` |
+| OpenVINO NPU | Intel Core Ultra NPU (selectable, not auto) | Intel NPU driver (selectable, not auto) | no |
+| ONNX Runtime GPU | NVIDIA via CUDA/TensorRT (`-gpu` package); AMD/any DX12 GPU via DirectML package | NVIDIA via CUDA/TensorRT (`-gpu` package); AMD not covered yet (MIGraphX/ROCm) | CoreML (GPU + Neural Engine) |
+| ONNX Runtime libs | `onnxruntime.dll` (+ `DirectML.dll` or CUDA/TensorRT provider dlls) | `libonnxruntime.so` (+ CUDA/TensorRT provider libs) | `libonnxruntime.dylib` from `onnxruntime-osx-arm64` |
 | Run as service | Windows service bin | `deploy/blue-onyx-openvino.service` systemd unit + `Dockerfile` (runtime image with `--device /dev/dri`) | `deploy/com.blueonyx.openvino.plist` launchd |
 | Logging sink | event log (`tracing-layer-win-eventlog`, cfg windows) + file | stdout/journald + file | stdout + file |
 
@@ -117,11 +122,152 @@ For rtdetr, copy upstream exactly: pass `orig_target_sizes = [640, 640]` (so [w,
 
 Common post-step: `min_confidence` from the request overrides config when > 0; class filter (case-insensitive); clamp to image; round to `usize` -> `Prediction { x_min, y_min, x_max, y_max, confidence, label }`.
 
+**Multi-runtime (phase 6):**
+- The model families depend only on `PortSpec`, `ExtraInput` and `NamedOutput`, so they stay runtime-neutral.
+- `LoadedModel` is split into a runtime-neutral `ModelInfo` (ports, image input, input size, compile time, `DeviceInfo`) plus the runtime handle.
+- Workers own a `Backend` enum, `OpenVino(OvBackend) | Ort(OrtBackend)`, with `infer()` and `info()`. An enum rather than `dyn` keeps it simple and `Send`.
+- A `Runtimes { ov: Option<OvCore>, ort: Option<OrtRuntime>, hw: HardwareInfo }` replaces `Arc<Mutex<OvCore>>` in the registry and workers.
+- Each runtime is optional. If one fails to initialize, its device options are marked unavailable instead of failing startup.
+
 ## OpenVINO specifics
 
 - Device: `force_cpu` -> CPU; else `GPU` (or `DeviceType::from("GPU.N")`, which maps to `Other` and round-trips) with CPU fallback. Preflight `core.available_devices()`; if GPU absent (always on macOS), log and use CPU without trying. On GPU compile error: `warn!`, retry CPU, report `executionProvider = "OpenVINO CPU (fallback)"`. Otherwise `"OpenVINO GPU (Intel(R) UHD Graphics 630)"` from the `FULL_DEVICE_NAME` property; `canUseGPU` = GPU listed.
 - Properties: `CacheDir = <exe_dir>/cache` on GPU and CPU (cuts the 20-60 s GPU JIT to seconds on restart); `HintPerformanceMode = "LATENCY"`; GPU `HintInferencePrecision = "f16"` (config `gpu_precision: "f32"` escape hatch); CPU `InferenceNumThreads = intra_threads` when > 0 (recommend 4 of 6 cores), `HintNumRequests = "1"`.
 - `Core::new()` loads the library (runtime-linking) and rejects OpenVINO < 2025.1; pin `setup-openvino` to a version openvino-rs CI tests (2026.1.0 or 2026.4.0). The MSVC runtime redistributable must be present on Windows targets.
+
+## Multi-runtime backend and auto device selection
+
+Added 2026-10-09 (phase 6). Goal: the default device `auto` picks the best runtime and device for the detected hardware, for each model, and falls back down a ranked list if compile or warm-up fails. Every other option that can run on the machine stays selectable from the CLI, the config file (globally or per model) and a web-UI dropdown.
+
+### Device spec (one string everywhere)
+
+The format is `runtime:target[:index]`, parsed by the pure, unit-tested `src/backend/spec.rs`.
+
+| Spec | Meaning |
+|---|---|
+| `auto` (new default) | Ranked choice, described below |
+| `openvino:gpu`, `openvino:gpu.1`, `openvino:cpu`, `openvino:npu` | OpenVINO device |
+| `ort:cuda[:N]`, `ort:tensorrt[:N]` | NVIDIA |
+| `ort:directml[:N]` | Windows, any DX12 GPU (AMD, NVIDIA, Intel) |
+| `ort:coreml` | macOS (GPU and Neural Engine) |
+| `ort:cpu` | ONNX Runtime CPU |
+
+Backward compatibility:
+- Bare `GPU`, `GPU.N` and `CPU` map to `openvino:*`.
+- `gpu_index` still adds the index when the spec has none.
+- `force_cpu` means the best CPU option: `openvino:cpu`, or `ort:cpu` if OpenVINO is missing.
+- Existing configs that say `"device": "GPU"` keep meaning OpenVINO GPU; only new configs and the default become `auto`.
+
+### Auto ranking (`src/backend/select.rs`, pure)
+
+The input is `HardwareInfo` (detected GPUs) plus `RuntimeProbe` (OpenVINO `available_devices`, the installed ORT flavor and the EPs it reports). The output is an ordered `Vec<DeviceOption { spec, label, runnable, reason }>`. `auto` is the runnable options in this order:
+
+1. **NVIDIA GPU** with a usable CUDA EP → `ort:cuda:<idx of largest VRAM>`
+2. **Intel GPU** listed by OpenVINO → `openvino:gpu`, choosing the discrete one (Arc) when `DEVICE_TYPE=discrete`
+3. **AMD or other GPU on Windows** with the DirectML EP → `ort:directml:<idx>`
+4. **macOS arm64** with the CoreML EP → `ort:coreml`
+5. **CPU**: `openvino:cpu`, else `ort:cpu`. This is always the final fallback.
+
+Exclusions and per-model filtering:
+- TensorRT and NPU are listed and selectable but never picked by `auto`: TensorRT takes minutes to build its first engine, and NPU support for these models varies.
+- Linux AMD (MIGraphX/ROCm) isn't in the stock ORT packages, so for now it falls to CPU.
+- ORT needs `.onnx`. A model given as `.xml` uses a sibling `<stem>.onnx` if one exists; otherwise its ORT options are marked "needs ONNX export" and `auto` skips them for that model.
+- Options that can't run carry a reason, for example "NVIDIA GPU found but CUDA 12/cuDNN 9 not loadable" or "run `setup-onnxruntime`".
+
+### Hardware detection (`src/backend/detect.rs`, no runtime libs needed)
+
+`HardwareInfo { gpus: Vec<GpuAdapter { vendor, name, vram_mb, index, discrete }>, os, arch }`.
+- **Windows**: DXGI `CreateDXGIFactory1`/`EnumAdapters1`. Read the vendor ID (0x10DE NVIDIA, 0x8086 Intel, 0x1002 AMD) and dedicated VRAM, and skip the software adapter.
+- **Linux**: `/sys/class/drm/card*/device/{vendor,device}`, plus `/proc/driver/nvidia/gpus/*/information` for names.
+- **macOS arm64**: one Apple GPU entry.
+
+The result is shown on the welcome page.
+
+### ONNX Runtime backend (`src/backend/ort.rs`, Cargo feature `onnxruntime`, on by default)
+
+- Use `ort` 2.x with `load-dynamic`, plus the `cuda`, `tensorrt`, `directml` and `coreml` features. Pin the release.
+- Initialize from `<exe_dir>/onnxruntime`, config `onnxruntime_dir` or `ORT_DYLIB_PATH`. No `build.rs`.
+- To probe an EP, call `is_available()` on the loaded library. For CUDA, also check that `cudart`/`cudnn` load, so the reason can name what's missing.
+- Session setup per EP:
+  - **CUDA**: `device_id`.
+  - **TensorRT**: fp16, engine cache in `cache/tensorrt`.
+  - **DirectML**: `device_id`, memory pattern off, sequential execution.
+  - **CoreML**: MLProgram, compute units ALL, cache in `cache/coreml`.
+  - **CPU**: `intra_threads`.
+- Dynamic inputs are fixed to `[1,3,640,640]` and `[1,2]`, the same defaults as `device.rs`. Port metadata comes from the session, so `make_family` auto-detection is unchanged. Outputs are copied to `NamedOutput` (F32/I64/I32), and RT-DETR's i64 `orig_target_sizes` input is supported.
+- `--no-default-features` builds a binary with OpenVINO only.
+
+### Getting ORT libraries (`src/setup_onnxruntime.rs`, `setup-onnxruntime` subcommand)
+
+This mirrors `setup_openvino.rs`: a pinned version constant, whitelisted extraction, and nothing executed. It installs to `<exe_dir>/onnxruntime`. A process can load only one ORT library, so `--flavor auto|cpu|cuda|directml` picks the package from `HardwareInfo`:
+- **Windows**: NVIDIA → `onnxruntime-win-x64-gpu` (CPU, CUDA and TensorRT). Otherwise the `Microsoft.ML.OnnxRuntime.DirectML` nupkg plus `DirectML.dll`.
+- **Linux x64**: NVIDIA → `onnxruntime-linux-x64-gpu`, else `onnxruntime-linux-x64`. **Linux arm64**: CPU.
+- **macOS arm64**: `onnxruntime-osx-arm64`, which includes CoreML.
+- CUDA and cuDNN runtimes are not bundled; the user installs them.
+
+### Wiring
+
+- **`config.rs`**: `device` defaults to `"auto"` and `device_for()` returns a parsed `DeviceSpec`. The per-model `device` takes the same syntax. New `onnxruntime_dir`.
+- **`registry.rs` and `worker.rs`**: a `LoadPlan { candidates }` holds the `auto` ranking, or the explicit spec followed by the CPU fallback. `WorkerCtx::load` tries each candidate through **compile and warm-up**, logging why each one was skipped.
+- **API**: `executionProvider` reads e.g. `OpenVINO GPU (Intel UHD 630)`, `ONNX Runtime CUDA (NVIDIA RTX 3060)` or `ONNX Runtime CoreML`, with the `, fallback` suffix kept. `canUseGPU` is true when any GPU option can run.
+- **CLI**: `--device <spec>`, plus a new `list-devices` subcommand that prints the option table and the `auto` pick.
+- **Web UI**: the config page's Device box becomes a `<select>` with "Auto — currently: ‹resolved›" followed by the runnable options. Options that can't run are shown greyed out with their reason. The welcome page shows detected GPUs and runtime versions. New `GET /v1/devices` returns the options as JSON.
+- **Benchmark**: `--device <spec>`, plus `--all-devices`, which compares every runnable option for each model.
+- **Export**: `scripts/export_yolo26.py` also writes `<stem>.onnx` (`nms=False`) next to the IR. The IPcam and RT-DETR downloads are already `.onnx`.
+
+## On-demand resources (models, runtimes, provider libraries)
+
+Added 2026-10-09 (phase 7). Goal: a fresh install is just the binary. The service works out what the config and the chosen device need (OpenVINO runtime, an ONNX Runtime flavor, model files and NVIDIA provider libraries) and downloads only what is missing, in the background, while HTTP is already serving. The existing `setup-openvino`, `setup-onnxruntime` and `download-models` commands stay for offline and pre-provisioned installs, and use the same code.
+
+### Resource catalog (`src/resources/catalog.rs`, pure)
+
+Each `Resource { id, kind, version, platform, url, sha256, size, dest, provides }`:
+- **`openvino-runtime`**: the per-OS/arch archive that `setup_openvino.rs` already pins, with a SHA-256 added. It provides `openvino:*`.
+- **`onnxruntime-<flavor>`**: `cpu`, `cuda` (includes TensorRT), `directml` or `coreml` (the macOS package). Each provides its `ort:*` options.
+- **`nvidia-cuda-libs`**: the CUDA 12 runtime, cuBLAS and cuDNN 9 shared libraries, taken from NVIDIA's redistributable wheels on PyPI (`nvidia-cuda-runtime-cu12`, `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`). They're extracted with whitelisted names into `<exe_dir>/onnxruntime/cuda-libs`, so a CUDA toolkit install is no longer needed. **Opt-in**, because it's around 1 GB and comes under NVIDIA's license: `allow_large_downloads` or a click in the UI.
+- **Models**: the existing hf-hub catalog in `download.rs` (IPcam and RT-DETR `.onnx` + `.yaml`), with sizes. YOLO26 can't be fetched (AGPL weights, exported locally), so it stays a manual export and the UI explains that.
+
+Pins, URLs and hashes live in one table per resource kind, and a test checks that every `(os, arch)` we ship has an entry.
+
+### Resolver (`src/resources/resolve.rs`, pure)
+
+`fn needed(config, hw, installed) -> Vec<Need { resource, reason, blocking_models }>`:
+- **Models**: any enabled model whose file is missing and whose name or path matches a catalog entry.
+- **Runtimes**: for each enabled model, take the device plan (the `auto` ranking or the explicit spec, from phase 6.2). Stop at the first candidate whose runtime is installed or downloadable, and need its runtime.
+  - `auto` therefore prefers what's best for the hardware. For example, on a fresh Windows NVIDIA box it fetches `onnxruntime-cuda`, plus `nvidia-cuda-libs` if those are allowed.
+  - When large downloads aren't allowed, it uses the next option, for example `openvino:gpu` or `openvino:cpu`.
+- **Flavor**: only one ORT flavor can be active per process. If the needed flavor differs from the installed one, the new flavor is downloaded next to the old one and becomes active at the next restart, which the runner's restart path already handles.
+
+The device options from phase 6.2 gain a third state, "downloadable", alongside runnable and unavailable. It carries a size, for example "ort:cuda — will download ONNX Runtime CUDA (310 MB)". The UI and `auto` can then consider it.
+
+### Download manager (`src/resources/manager.rs`)
+
+- Runs on its own thread with a queue and **one download at a time**. Progress is shared through an `Arc` and shown in `/stats`, `/` and `GET /v1/resources`.
+- Steps for each resource:
+  - Stream over HTTPS (`reqwest`) to `<dest>.partial` and resume with `Range` when possible.
+  - Check the SHA-256 and the size.
+  - Extract with the whitelist-only code from `setup_openvino.rs`, moved into `resources/extract.rs` and shared.
+  - Atomic rename into place, then write a `.installed.json` manifest with `{id, version, sha256, files}`.
+- A lock file under `<exe_dir>/.downloads.lock` stops the service and the CLI from downloading the same thing at once.
+- No retry storm: back off 30 s → 5 min, and keep going on the CPU fallback in the meantime.
+- **Integration with loading**:
+  - A model blocked on a resource stays `Initializing`. Its message reads "downloading OpenVINO runtime 42% (35/83 MB)", and the API returns the existing `success:false, "Model initializing"`.
+  - When the resource is ready, the manager signals the registry, and the worker either retries its plan or starts on a CPU option first.
+  - A new *runtime* (OpenVINO or ORT) means the registry restarts its generation, because runtimes are created once per process.
+  - A new *model* file only needs that worker to load it.
+- **Config** (all optional):
+  - `auto_download: true` (default) lets the service download what's needed. `false` is for air-gapped and Docker use: it only reports what's missing, with the command to run.
+  - `allow_large_downloads: false` (default) gates downloads over 500 MB, which in practice means CUDA libs and TensorRT.
+  - `download_dir`, defaulting to the exe dir layout (`openvino/`, `onnxruntime/<flavor>/`, `models/`).
+- **CLI**:
+  - `fetch [--for-config] [--resource <id>] [--all-for-platform]` pre-downloads everything the config needs, for Docker builds and offline prep.
+  - `setup-openvino`, `setup-onnxruntime` and `download-models` become thin wrappers over the manager.
+  - `list-resources` shows what's installed, what's needed and what can be downloaded.
+- **Web UI**: a new "Resources" card on the config page lists each resource with its state (installed, downloading %, needed, available), a Download or Remove button, and its size. Selecting a "downloadable" device option starts its download and applies the setting when it's done. The model catalog gets per-model Download buttons, and an "add to config" button reuses `--add-to-config`.
+- **Security**:
+  - HTTPS only, with the SHA-256 pinned in the binary. A hash mismatch deletes the file and marks the resource failed.
+  - Extraction is whitelist-only and nothing downloaded is executed.
+  - On Windows the service runs as LocalSystem, so files go under the install dir, never `%TEMP%`.
 
 ## Model acquisition
 
@@ -162,6 +308,18 @@ Handler flow: multipart (`image`, optional `min_confidence`; 32 MB body limit) -
 3. **Multi-model + custom endpoints** — registry with N workers, `models[]` config, `custom/list`, `custom/{model}`, per-model metrics. Milestone: yolo26s (GPU) + ipcam-general (CPU) served concurrently.
 4. **UI parity** — templates, stats, prometheus, test page with drawn boxes, config page + restart, loglevel, update check, annotated-image saving.
 5. **Services, deploy files, benchmark, test client, release workflow, README** — Windows service + scripts, systemd/launchd/Docker files, benchmark, test client, `release.yml`, Blue Iris setup docs; CI smoke test on all OSes.
+6. **Multi-runtime + auto device selection.** Each sub-phase ends with build, test, clippy and fmt, then a commit.
+   1. **Refactor, no behavior change**: `ModelInfo`, the `Backend` enum with only the OpenVINO variant, `Runtimes` with optional OpenVINO, `spec.rs` with legacy parsing, and the worker candidate loop. All existing tests pass.
+   2. **Detection and selection**: `detect.rs` (including DXGI) and `select.rs`. Unit tests in `tests/select.rs` use made-up hardware data: Intel iGPU only, NVIDIA + Intel iGPU, AMD on Windows, Mac, CPU only, and an `.xml`-only model. Also `list-devices`.
+   3. **ONNX Runtime backend**: `ort.rs`, the Cargo feature, and EP probing and setup. Run end to end on macOS with `ort:cpu` and `ort:coreml`.
+   4. **ORT setup and UI** (parallel with 6.3, separate files): `setup-onnxruntime`, the config dropdown, `/v1/devices`, welcome-page info, benchmark `--all-devices`, and ONNX output from the export script.
+   5. **Docs and packaging**: CLAUDE.md (drop the no-ORT rule; document device specs and `setup-onnxruntime`), a README hardware matrix, the release workflow with ORT, and a docker-compose ORT CPU note.
+7. **On-demand resources.** Each sub-phase ends with build, test, clippy and fmt, then a commit.
+   1. **Catalog and resolver**: `resources/{catalog,resolve}.rs` with SHA-256 pins for the OpenVINO and ORT packages and the models. Unit tests cover fresh installs on each platform, a missing model, an ORT flavor switch, large downloads disallowed, and `auto_download: false`.
+   2. **Manager and extraction**: shared `resources/extract.rs` (moved out of `setup_openvino.rs`), downloads with resume and hash checks, manifests, the lock file and backoff. The `setup-*` and `download-models` commands are ported onto it, and `fetch` and `list-resources` are added.
+   3. **Startup integration**: the registry waits on needs, progress shows up in model state, a worker retries once its resource arrives, a generation restarts after a runtime install, and the "downloadable" device state is added.
+   4. **NVIDIA provider libraries**: fetch the PyPI wheels, extract them to `cuda-libs`, and add that directory to the ORT loader search path. Opt-in only.
+   5. **Web UI and docs**: the Resources card, Download buttons, selecting a downloadable option, `GET /v1/resources`, the README "first run" section and Docker `fetch --for-config` in the image build.
 
 ## Verification
 
@@ -172,6 +330,17 @@ Handler flow: multipart (`image`, optional `min_confidence`; 32 MB body limit) -
 - **Benchmark expectations (UHD 630 FP16 / i5-8500 CPU):** yolo26n ~25-45 ms GPU, ~40-60 ms CPU; yolo26s ~60-100 ms GPU; IPcam-general ~30-50 ms GPU; rt-detrv2-s ~90-150 ms GPU. Flag if GPU is slower than CPU (fallback or FP32 path). The dev box's GTX 1070 Ti is irrelevant; only `GPU`/`GPU.0` = Intel is used.
 - **Blue Iris:** Settings -> AI -> CodeProject.AI server `127.0.0.1:32168`; camera -> Alerts -> AI: default detection (hits `/v1/vision/detection`) or custom models `yolo26s,ipcam-general` (hits `/v1/vision/custom/<name>`); Trigger now; alert shows the AI label; `/stats` counters increment per model; `dropped` stays 0 under multi-camera load.
 - **Cross-platform:** CI green on windows/ubuntu/macos runners; release artifacts for all three.
+- **Multi-runtime (phase 6):**
+  - **Builds and tests**: `cargo test` covers the spec parser and the selection matrix without runtime libs, and `cargo build --no-default-features` builds OpenVINO only.
+  - **macOS arm64**: `list-devices` shows `ort:coreml` (auto), `openvino:cpu` and `ort:cpu`. Compare them with `blue-onyx-openvino-benchmark --all-devices`, then check that `executionProvider` reads `ONNX Runtime CoreML`.
+  - **Windows i5-8500 / UHD 630**: `auto` picks `openvino:gpu`. The dropdown lists `ort:directml`, `openvino:cpu` and `ort:cpu`. The Blue Iris response shape is unchanged.
+  - **Fallback**: an option that can't run, such as `ort:cuda` with no NVIDIA GPU, loads on CPU with `, fallback` and a logged reason.
+  - **NVIDIA**: without an NVIDIA box, only the selection unit tests cover it, so report it as untested on hardware.
+- **On-demand resources (phase 7):**
+  - **Fresh-install smoke test** on each OS: an empty dir with only the binary and a config naming `IPcam-general`. On startup the service downloads the OpenVINO runtime, the right ORT flavor and the model, and the model goes Initializing ("downloading …%") → Ready without a restart, unless a runtime was installed. Detection then works.
+  - **Integrity**: corrupting a downloaded archive, or editing its pinned hash in a test build, gives a "hash mismatch" error and the file is deleted. Killing the process mid-download leaves a `.partial` file that the next start resumes.
+  - **Offline**: with `auto_download: false` and no network, startup lists the missing resources with the commands to run, and the model is Failed with that message. `fetch --for-config` on a networked machine, then copying the dir, makes it work.
+  - **Hardware choice**: a Windows NVIDIA box with large downloads allowed ends up on `ort:cuda` with no manual installs. Without them it uses `openvino:gpu` or `openvino:cpu`, and the dropdown offers "ort:cuda — will download …".
 
 ## Risks and mitigations
 
@@ -184,4 +353,15 @@ Handler flow: multipart (`image`, optional `min_confidence`; 32 MB body limit) -
 - **FP16 accuracy:** `gpu_precision: "f32"` per model; benchmark `--compare-cpu` diffs confidences.
 - **Export shape drift in Ultralytics:** export script validates `[.,300,6]`; `family: auto` routes a raw `[1,84,8400]` export to yolo8.
 - **Licenses:** YOLO26 AGPL-3.0 (weights exported locally, not committed); RT-DETRv2 Apache-2.0; check MikeLud model license before bundling; code MIT with blue-onyx attribution.
+- **One ORT library per process:** the CUDA and DirectML builds can't be loaded together, so `setup-onnxruntime` installs one flavor chosen from the hardware, and the options list reflects that flavor.
+- **CUDA/cuDNN are user-installed:** they're too large to bundle. The CUDA option shows exactly which library is missing, and `auto` skips it until it loads.
+- **TensorRT first-build time:** building the first engine takes minutes, so it's never picked by `auto` and keeps an engine cache in `cache/tensorrt`.
+- **DirectML EP in maintenance mode:** it's still shipped and works on DX12 GPUs. Revisit if Microsoft drops it, with Windows ML EPs as a possible replacement.
+- **Linux AMD not covered:** MIGraphX/ROCm aren't in the stock ORT packages, so these machines fall back to CPU. Planned as a later flavor.
+- **`ort` 2.x API changes:** pin the exact version and keep all `ort` code in `backend/ort.rs`.
+- **Download sources move or change:** URLs and hashes are pinned in one table, a CI job checks each URL with `HEAD` weekly, and a failed download falls back to whatever is installed, CPU at worst.
+- **Large downloads and metered links:** anything over 500 MB needs `allow_large_downloads`, there's one download at a time, sizes are shown before the user agrees, and resume avoids starting over.
+- **NVIDIA library redistribution terms:** only fetched on demand from NVIDIA's own PyPI wheels, on explicit opt-in; nothing NVIDIA is bundled in releases.
+- **Supply chain:** pinned SHA-256 values, HTTPS only, whitelist-only extraction and nothing downloaded is executed. The pin table changes only in reviewed commits.
+- **Restart on a new runtime:** in-flight requests drain through the existing restart token, and Blue Iris sees a short `Model initializing` window.
 - **gh not logged in:** phase 0 pauses for your interactive `gh auth login`; everything else in phase 0 proceeds before that.

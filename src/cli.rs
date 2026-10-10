@@ -75,9 +75,12 @@ pub struct Cli {
     /// Name of the model that serves `/v1/vision/detection`.
     #[arg(long)]
     pub default_model: Option<String>,
-    /// Inference device: GPU, GPU.N or CPU.
-    #[arg(long)]
+    /// Inference device spec: auto, openvino:gpu[.N], openvino:cpu, openvino:npu,
+    /// ort:cuda[:N], ort:tensorrt[:N], ort:directml[:N], ort:coreml or ort:cpu.
+    /// Legacy GPU, GPU.N, CPU and NPU mean OpenVINO. Case-insensitive.
+    #[arg(long, value_parser = parse_device_arg)]
     pub device: Option<String>,
+    /// Device index added to a GPU device spec that has none (GPU -> GPU.N, ort:cuda -> ort:cuda:N).
     #[arg(long)]
     pub gpu_index: Option<u32>,
     /// Force CPU inference.
@@ -189,6 +192,14 @@ impl Cli {
         });
         c
     }
+}
+
+/// Validate `--device` with the spec parser but keep the string as typed (it is written back to
+/// the config file).
+fn parse_device_arg(s: &str) -> Result<String, String> {
+    crate::backend::spec::parse(s)
+        .map(|_| s.trim().to_string())
+        .map_err(|e| e.to_string())
 }
 
 fn merge_cli(config: &mut Config, cli: &Cli) {
@@ -394,6 +405,27 @@ mod tests {
                 assert!(!all);
             }
             _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn device_flag_is_validated() {
+        for ok in [
+            "GPU",
+            "gpu.1",
+            "auto",
+            "openvino:npu",
+            "ort:cuda:1",
+            " ort:coreml ",
+        ] {
+            let cli = Cli::try_parse_from(["x", "--device", ok]).unwrap();
+            assert_eq!(cli.device.as_deref(), Some(ok.trim()));
+        }
+        for bad in ["G P U", "ort:gpu", "xpu", ""] {
+            assert!(
+                Cli::try_parse_from(["x", "--device", bad]).is_err(),
+                "{bad:?}"
+            );
         }
     }
 

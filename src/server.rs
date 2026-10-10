@@ -238,8 +238,8 @@ async fn welcome(State(state): State<Arc<AppState>>) -> Response {
     render(&WelcomeTemplate {
         nav: "home",
         version: crate::VERSION,
-        openvino_version: reg.core_info.openvino_version.clone(),
-        devices: reg.core_info.available_devices.join(", "),
+        openvino_version: reg.runtime_info.openvino_version.clone(),
+        devices: reg.runtime_info.available_devices.join(", "),
         uptime: format_uptime(state.started.elapsed()),
         port: state.config_read().port,
         default_model: default,
@@ -349,7 +349,7 @@ async fn run_detection(
             .round_trip_ms
             .record(start.elapsed().as_millis() as u64);
     }
-    resp.canUseGPU = state.registry.core_info.has_gpu;
+    resp.canUseGPU = state.registry.runtime_info.has_gpu;
     resp
 }
 
@@ -521,7 +521,7 @@ async fn stats_page(State(state): State<Arc<AppState>>) -> Response {
     render(&StatsTemplate {
         nav: "stats",
         version: crate::VERSION,
-        openvino_version: reg.core_info.openvino_version.clone(),
+        openvino_version: reg.runtime_info.openvino_version.clone(),
         uptime: format_uptime(state.started.elapsed()),
         models,
     })
@@ -562,7 +562,7 @@ async fn stats_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Valu
     Json(serde_json::json!({
         "version": crate::VERSION,
         "uptimeSecs": state.metrics.uptime().as_secs(),
-        "openvino": reg.core_info,
+        "openvino": reg.runtime_info,
         "models": models,
     }))
 }
@@ -1136,7 +1136,7 @@ mod tests {
     use super::*;
     use crate::config::ModelConfig;
     use crate::metrics::ModelMetrics;
-    use crate::registry::CoreInfo;
+    use crate::registry::RuntimeInfo;
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -1156,7 +1156,7 @@ mod tests {
                 WorkerHandle::failed(*n, "model file not found: x.onnx", mm)
             })
             .collect();
-        let info = CoreInfo {
+        let info = RuntimeInfo {
             openvino_version: "2026.0.0-test".into(),
             available_devices: vec!["CPU".into()],
             has_gpu: false,

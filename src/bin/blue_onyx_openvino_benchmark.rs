@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result, bail};
 use blue_onyx_openvino::api::Prediction;
-use blue_onyx_openvino::backend::{CoreOptions, LoadRequest, OvBackend, OvCore, libs};
+use blue_onyx_openvino::backend::{CoreOptions, LoadRequest, Runtimes, libs, spec};
 use blue_onyx_openvino::config::{Config, ModelConfig};
 use blue_onyx_openvino::model::preprocess::Preprocessor;
 use blue_onyx_openvino::model::{ModelFamilyKind, PostParams};
@@ -43,7 +43,8 @@ struct Args {
     /// Class names YAML for --model (default: <model>.yaml beside the model, else COCO-80).
     #[arg(long)]
     classes: Option<PathBuf>,
-    /// Device: GPU, GPU.N or CPU. GPU falls back to CPU like the server does.
+    /// Device spec: GPU, GPU.N, CPU, auto, openvino:gpu[.N], openvino:cpu, openvino:npu, ort:...
+    /// GPU falls back to CPU like the server does (without the warm-up check).
     /// Default: GPU for --model, the configured device for config models.
     #[arg(long)]
     device: Option<String>,
@@ -338,11 +339,13 @@ fn run(args: Args) -> Result<bool> {
         intra_threads: args.threads.unwrap_or(config.intra_threads),
         openvino_dir,
     };
-    let mut core = OvCore::new(&opts).context("initializing OpenVINO")?;
+    let mut runtimes = Runtimes::new(&opts);
+    runtimes.require_any()?;
+    let info = runtimes.info();
     let mut report = Report {
         version: blue_onyx_openvino::VERSION,
-        openvino_version: core.openvino_version(),
-        available_devices: core.available_devices().to_vec(),
+        openvino_version: info.openvino_version,
+        available_devices: info.available_devices,
         models: Vec::new(),
         errors: Vec::new(),
     };
@@ -378,7 +381,7 @@ fn run(args: Args) -> Result<bool> {
     };
 
     for job in &jobs {
-        let primary = match bench.run(&mut core, job, &job.device, true) {
+        let primary = match bench.run(&mut runtimes, job, &job.device) {
             Ok(r) => r,
             Err(e) => {
                 let msg = format!("{}: {e:#}", job.name);
@@ -400,7 +403,7 @@ fn run(args: Args) -> Result<bool> {
                 model_report.note =
                     Some("--compare-cpu skipped: the model already runs on CPU".into());
             } else {
-                match bench.run(&mut core, job, "CPU", false) {
+                match bench.run(&mut runtimes, job, "CPU") {
                     Ok(cpu) => {
                         model_report.comparison = Some(compare(
                             &model_report.primary.detections,
@@ -460,25 +463,19 @@ fn ms(d: Duration) -> f64 {
 }
 
 impl Bench<'_> {
-    /// Compile `job` on `device` and time the per-request pipeline. `allow_fallback` mirrors
-    /// the server: a GPU request may fall back to CPU.
-    fn run(
-        &self,
-        core: &mut OvCore,
-        job: &Job,
-        device: &str,
-        allow_fallback: bool,
-    ) -> Result<RunResult> {
+    /// Compile `job` on the device spec `device` and time the per-request pipeline. The spec's
+    /// candidates mirror the server: a GPU request may fall back to CPU, CPU has no fallback.
+    fn run(&self, runtimes: &mut Runtimes, job: &Job, device: &str) -> Result<RunResult> {
+        let spec = spec::parse(device)?;
         let req = LoadRequest {
             path: job.path.clone(),
-            device: device.to_string(),
+            requested: device.to_string(),
             gpu_precision: job.gpu_precision.clone(),
-            allow_cpu_fallback: allow_fallback && !device.eq_ignore_ascii_case("CPU"),
         };
         let before = self.cache_dir.map(cache_files);
         let t = Instant::now();
-        let loaded = core
-            .load(&req)
+        let mut backend = runtimes
+            .load(&spec, &req)
             .with_context(|| format!("loading {}", job.path.display()))?;
         let compile_ms = ms(t.elapsed());
         let cache = match (self.cache_dir, before) {
@@ -495,16 +492,16 @@ impl Bench<'_> {
             }
         };
 
-        let dev = loaded.device.clone();
-        let (in_w, in_h) = loaded.input_size;
+        let info = backend.info();
+        let dev = info.device.clone();
+        let (in_w, in_h) = info.input_size;
         let family = blue_onyx_openvino::model::make_family(
             job.family,
-            &loaded.inputs,
-            &loaded.outputs,
+            &info.inputs,
+            &info.outputs,
             job.classes.len(),
         )?;
         let mut pre = Preprocessor::new(in_w, in_h, family.resize_mode());
-        let mut backend = OvBackend::new(loaded)?;
         let filter = (!self.object_filter.is_empty()).then_some(self.object_filter);
 
         // One request exactly as `WorkerCtx::process` runs it, with per-stage timings.

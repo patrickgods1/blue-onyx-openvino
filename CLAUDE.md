@@ -1,9 +1,10 @@
 # Blue Onyx OpenVINO
 
 Cross-platform object-detection HTTP service for Blue Iris (CodeProject.AI-compatible API),
-written in Rust on **native OpenVINO** via the `openvino` crate (runtime-linking). Modeled on
-[blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT) but without ONNX Runtime, with
-multi-model support and Intel GPU inference on Windows/Linux (CPU on macOS arm64).
+written in Rust on **native OpenVINO** via the `openvino` crate (runtime-linking), with
+**ONNX Runtime** (`ort` crate, load-dynamic) as a second runtime for NVIDIA (CUDA/TensorRT),
+DirectML and CoreML. Modeled on [blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT), with
+multi-model support and `auto` device selection by detected hardware (see `docs/PLAN.md`, phase 6).
 
 Primary target: Windows 11, Intel i5-8500 + UHD 630 iGPU. Must also build/run on Linux x86_64 and macOS arm64.
 
@@ -47,8 +48,8 @@ one constant in `src/setup_openvino.rs`.
 
 - Edition 2024, `anyhow` for app errors, `tracing` for logs. No `build.rs`. No `unsafe` outside `backend/`.
 - Everything portable unless it must be `#[cfg(windows)]` (service, event log, DXGI).
-- Copy ideas and API shapes from the blue-onyx reference freely (MIT, attributed in LICENSE); do not
-  copy ONNX Runtime code.
+- Copy ideas and API shapes from the blue-onyx reference freely (MIT, attributed in LICENSE),
+  including its ONNX Runtime usage. Keep all `ort` code in `src/backend/ort.rs`.
 - Model weights, `models/`, `cache/`, `openvino/` and `*_config*.json` are git-ignored. Never commit weights
   (YOLO26 is AGPL-3.0).
 - Keep the Blue Iris response shape byte-compatible with CodeProject.AI: `success, message, error,

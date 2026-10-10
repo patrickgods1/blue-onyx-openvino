@@ -4,7 +4,7 @@
 //! Module map (see CLAUDE.md):
 //! - [`api`]       wire structs for the CodeProject.AI compatible JSON API
 //! - [`config`]    JSON config next to the executable, merged with CLI flags
-//! - [`backend`]   OpenVINO Core / CompiledModel / InferRequest wrapper
+//! - [`backend`]   runtimes (OpenVINO today), device specs, load plans, inference backends
 //! - [`model`]     model families (yolo26, yolo5, yolo8, rtdetr): pre/post-processing
 //! - [`registry`]  loads all configured models and owns their worker threads
 //! - [`worker`]    per-model inference thread
