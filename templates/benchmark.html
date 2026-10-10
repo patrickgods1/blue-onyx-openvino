@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+{% block title %}Benchmark{% endblock %}
+{% block content %}
+<h1>Benchmark</h1>
+<p class="muted">Runs each model on each device over the chosen datasets with the production pipeline (decode, preprocess, inference, postprocess), grades <strong>accuracy</strong> (AP@0.5 against ground truth, or against a reference model where a dataset has none) and <strong>speed</strong> (full request p50), and checks that every device detects the same objects as the CPU. The recommended device of a model is its best-graded device whose detections agree with the CPU; within 5% of the best speed the configured device is kept. Results: <code>{{ results_file }}</code> (the <code>benchmark</code> CLI writes the same file). JSON: <a href="/v1/benchmark"><code>/v1/benchmark</code></a>.</p>
+<p class="warn">{{ warning }}</p>
+{% if force_cpu %}<p class="warn">Force CPU is on: it overrides every per-model device until it is unchecked on the <a href="/config#inference">Config page</a>.</p>{% endif %}
+
+<form id="bench-form" class="card primary" onsubmit="return false">
+  <h2>Run</h2>
+  <div class="bench-grid">
+    <fieldset>
+      <legend>Datasets</legend>
+      {% for d in datasets %}
+      <label class="check ds-{{ d.state }}">
+        <input type="checkbox" name="dataset" value="{{ d.value }}"{% if d.checked && d.selectable %} checked{% endif %}{% if !d.selectable %} disabled{% endif %}>
+        <span><strong>{{ d.title }}</strong> <span class="tag ds-state">{{ d.state_text }}</span><br><span class="muted">{{ d.detail }}</span>
+        {% if let Some(id) = d.download_id %}<br><button type="button" class="small" data-download="{{ id }}">Download</button>{% endif %}
+        {% if d.folder %} <button type="button" class="small danger" data-remove-folder="{{ d.value }}">Remove</button>{% endif %}</span>
+      </label>
+      {% endfor %}
+      <label>Add a folder on the server (images, optional COCO JSON / YOLO labels / manifest.json)
+        <input type="text" id="add-folder" placeholder="/path/to/BlueIris/Alerts"></label>
+      <p class="muted">Selected datasets that are not downloaded are fetched when the run starts (pinned, SHA-256 checked). A folder without ground truth is scored against the reference model.</p>
+    </fieldset>
+    <fieldset>
+      <legend>Models</legend>
+      {% for m in models %}
+      <label class="check"><input type="checkbox" name="model" value="{{ m.name }}"{% if m.checked %} checked{% endif %}{% if !m.exists %} disabled{% endif %}> {{ m.name }} <span class="muted">{{ m.family }}{% if !m.enabled %} &middot; disabled{% endif %}{% if !m.exists %} &middot; file missing{% endif %}</span></label>
+      {% endfor %}
+      {% if models.is_empty() %}<p class="muted">No models configured.</p>{% endif %}
+      <label>Reference model (pseudo ground truth for datasets without it)
+        <select name="reference_model">
+          <option value="">Automatic (most accurate installed)</option>
+          {% for r in reference_models %}<option value="{{ r.0 }}"{% if r.1 %} selected{% endif %}>{{ r.0 }}</option>{% endfor %}
+        </select></label>
+    </fieldset>
+    <fieldset>
+      <legend>Devices</legend>
+      {% for d in devices %}
+      <label class="check{% if !d.runnable %} unavailable{% endif %}"><input type="checkbox" name="device" value="{{ d.spec }}"{% if d.checked %} checked{% endif %}{% if !d.runnable %} disabled{% endif %}> <code>{{ d.spec }}</code> <span class="muted">{{ d.label }}{% if let Some(r) = d.reason %} &middot; {{ r }}{% endif %}</span></label>
+      {% endfor %}
+    </fieldset>
+    <fieldset>
+      <legend>Settings</legend>
+      <label>Images per dataset (0 = all) <input type="number" name="max_images" min="0" value="{{ max_images }}"></label>
+      <label>Timed runs per image <input type="number" name="repeat" min="1" max="1000" value="{{ repeat }}"></label>
+      <label>Warm-up runs <input type="number" name="warmup" min="0" max="100" value="{{ warmup }}"></label>
+      <label>Accuracy weight of the overall grade (0..1, speed gets the rest) <input type="number" name="accuracy_weight" min="0" max="1" step="0.05" value="{{ accuracy_weight }}"></label>
+      <p class="muted">Speed: {{ speed_thresholds }}. Accuracy score (AP@0.5, 20% small-object recall when present): {{ accuracy_thresholds }}.</p>
+    </fieldset>
+  </div>
+  <div class="actions">
+    <button type="button" id="start">Start benchmark</button>
+    <button type="button" id="cancel" class="danger" hidden>Cancel</button>
+    <button type="button" id="save-defaults">Save as default</button>
+  </div>
+  <div id="progress" hidden><progress id="bar" max="100"></progress> <span id="ptext" class="muted"></span></div>
+  <p id="msg" class="muted" aria-live="polite"></p>
+  <ul id="warnings" class="warn-list"></ul>
+</form>
+
+<section id="results">
+  <noscript><p class="muted">The results view needs JavaScript; see <a href="/v1/benchmark">/v1/benchmark</a>.</p></noscript>
+  <div id="summary" class="cards"></div>
+  <div id="ranking"></div>
+  <div class="actions" id="apply-all-bar" hidden>
+    <button type="button" id="apply-all">Apply recommended devices to all models</button>
+    <span class="muted">Writes each model's <code>device</code> into the config; a restart loads them.</span>
+  </div>
+  <p id="apply-msg" class="notice" hidden></p>
+  <div id="models"></div>
+</section>
+
+<dialog id="drill"><div class="drill-head"><strong id="drill-title"></strong>
+  <label class="inline-label">Show <select id="drill-filter"><option value="all">all images</option><option value="miss">with misses</option><option value="fp">with false positives</option><option value="err">with misses or false positives</option></select></label>
+  <span class="muted" id="drill-legend">ground truth: <span class="lg-gt">matched</span> <span class="lg-miss">missed</span> &middot; predictions: <span class="lg-tp">true</span> <span class="lg-fp">false</span> <span class="lg-un">not scored</span></span>
+  <button type="button" id="drill-close">Close</button></div>
+  <div id="drill-body" class="thumbs"></div></dialog>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var form = $("bench-form"), msg = $("msg"), bar = $("bar"), ptext = $("ptext");
+  var polling = null, lastState = null;
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; return e; }
+  function pct(v) { return v === null || v === undefined ? "-" : (v * 100).toFixed(1); }
+  function ms(v) { return v === null || v === undefined ? "-" : v.toFixed(1); }
+  function gradeEl(g, rel) { var s = el("span", "grade grade-" + (g || "none"), (g || "-") + (rel ? "*" : "")); if (rel) s.title = "relative to a reference model, not ground truth"; return s; }
+  function post(url, body) {
+    return fetch(url, {method: "POST", body: body, headers: {"Accept": "application/json"}}).then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); });
+  }
+  function formBody(extra) {
+    var b = new URLSearchParams();
+    form.querySelectorAll("input[type=checkbox]:checked").forEach(function (c) { b.append(c.name, c.value); });
+    ["max_images", "repeat", "warmup", "accuracy_weight"].forEach(function (n) { b.append(n, form.elements[n].value); });
+    b.append("reference_model", form.elements.reference_model.value);
+    var f = $("add-folder").value.trim();
+    if (f) b.append("dataset", f.indexOf("dir:") === 0 ? f : "dir:" + f);
+    if (extra) Object.keys(extra).forEach(function (k) { b.append(k, extra[k]); });
+    return b;
+  }
+  $("start").addEventListener("click", function () {
+    msg.textContent = "starting…";
+    post("/v1/benchmark", formBody()).then(function (j) { msg.textContent = j.message; if (j.success) poll(); });
+  });
+  $("cancel").addEventListener("click", function () { post("/v1/benchmark/cancel", "").then(function (j) { msg.textContent = j.message; }); });
+  $("save-defaults").addEventListener("click", function () {
+    var b = formBody(); b.delete("dataset");
+    form.querySelectorAll("input[name=dataset]:checked").forEach(function (c) { b.append("dataset", c.value); });
+    var f = $("add-folder").value.trim(); if (f) b.append("add_folder", f);
+    post("/v1/benchmark/settings", b).then(function (j) { msg.textContent = j.message; if (j.success && f) location.reload(); });
+  });
+  form.querySelectorAll("[data-download]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var body = new URLSearchParams({id: b.dataset.download});
+      post("/v1/resources/download", body).then(function (j) { msg.textContent = j.message; setTimeout(function () { location.reload(); }, 3000); });
+    });
+  });
+  form.querySelectorAll("[data-remove-folder]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var v = b.dataset.removeFolder, body = formBody(); body.delete("dataset");
+      form.querySelectorAll("input[name=dataset]:checked").forEach(function (c) { if (c.value !== v) body.append("dataset", c.value); });
+      post("/v1/benchmark/settings", body).then(function (j) { msg.textContent = j.message; if (j.success) location.reload(); });
+    });
+  });
+
+  // Sortable tables: click a header; numeric when the cell has data-v.
+  function sortable(table) {
+    table.querySelectorAll("th").forEach(function (th, i) {
+      th.classList.add("sortable");
+      th.addEventListener("click", function () {
+        var tb = table.tBodies[0], rows = Array.prototype.slice.call(tb.rows), asc = th.dataset.dir !== "asc";
+        table.querySelectorAll("th").forEach(function (h) { delete h.dataset.dir; });
+        th.dataset.dir = asc ? "asc" : "desc";
+        rows.sort(function (a, b) {
+          var x = a.cells[i], y = b.cells[i]; if (!x || !y) return 0;
+          var vx = x.dataset.v, vy = y.dataset.v;
+          if (vx !== undefined && vy !== undefined) { vx = parseFloat(vx); vy = parseFloat(vy); if (isNaN(vx)) vx = Infinity; if (isNaN(vy)) vy = Infinity; return asc ? vx - vy : vy - vx; }
+          return asc ? x.textContent.localeCompare(y.textContent) : y.textContent.localeCompare(x.textContent);
+        });
+        rows.forEach(function (r) { tb.appendChild(r); });
+      });
+    });
+    return table;
+  }
+  function table(cls, head) {
+    var t = el("table", "bench " + (cls || "")), tr = el("tr"); var th = el("thead");
+    head.forEach(function (h) { tr.appendChild(el("th", null, h)); }); th.appendChild(tr); t.appendChild(th); t.appendChild(el("tbody")); return t;
+  }
+  function cell(tr, text, v, label) { var c = el("td", v !== undefined ? "num" : null, text); if (v !== undefined) c.dataset.v = v === null ? "" : v; if (label) c.dataset.label = label; tr.appendChild(c); return c; }
+  function wrap(t) { var d = el("div", "scroll"); d.appendChild(t); return d; }
+
+  function verdictText(a) {
+    if (!a) return "-";
+    var total = a.matched + Math.max(a.only_device, a.only_reference);
+    return {reference: "reference", agrees: "agrees", minor: "minor (" + a.matched + "/" + total + ")", disagrees: "DISAGREES (" + a.matched + "/" + total + ")"}[a.verdict] || a.verdict;
+  }
+  function useDevice(model, device) {
+    return post("/v1/benchmark/apply", new URLSearchParams({model: model, device: device})).then(showApply);
+  }
+  function showApply(j) {
+    var box = $("apply-msg"); box.hidden = false; box.className = j.success ? "notice" : "error"; box.replaceChildren(el("span", null, j.message + " "));
+    if (j.success && j.changes && j.changes.length && !j.restarting) {
+      var b = el("button", "danger", "Restart now"); b.type = "button";
+      b.addEventListener("click", restart); box.appendChild(b);
+    }
+    if (j.restarting) waitForRestart();
+    refresh();
+  }
+  function restart() { fetch("/config/restart", {method: "POST"}).then(waitForRestart, waitForRestart); }
+  function waitForRestart() {
+    msg.textContent = "restarting…";
+    setTimeout(function again() {
+      fetch("/v1/benchmark", {cache: "no-store"}).then(function () { location.reload(); }, function () { setTimeout(again, 1000); });
+    }, 1500);
+  }
+  $("apply-all").addEventListener("click", function () {
+    if (!confirm("Write the recommended device of every benchmarked model into the config?")) return;
+    post("/v1/benchmark/apply", new URLSearchParams({all: "1"})).then(showApply);
+  });
+
+  // Results: saved results overlaid with the models of the current run.
+  function merged(j) {
+    var list = (j.results && j.results.models ? j.results.models.slice() : []);
+    (j.run.models || []).forEach(function (m) {
+      var i = list.findIndex(function (x) { return x.model.toLowerCase() === m.model.toLowerCase(); });
+      if (i >= 0) list[i] = m; else list.push(m);
+    });
+    return list;
+  }
+  function recRun(m) { var d = m.devices.find(function (d) { return d.device === m.recommended; }); return d && d.run; }
+  function renderSummary(models) {
+    var box = $("summary"); box.replaceChildren();
+    models.forEach(function (m) {
+      var r = recRun(m), c = el("a", "gcard"); c.href = "#m-" + encodeURIComponent(m.model);
+      c.appendChild(el("div", "gname", m.model));
+      if (r && r.grades) {
+        var g = el("div", "gbig"); g.appendChild(gradeEl(r.grades.overall)); c.appendChild(g);
+        var sub = el("div", "gsub"); sub.append("accuracy ", gradeEl(r.grades.accuracy, r.grades.relative), " speed ", gradeEl(r.grades.speed)); c.appendChild(sub);
+        c.appendChild(el("div", "muted", m.recommended + " · " + ms(r.grades.p50_ms) + " ms" + (r.accuracy && r.accuracy.overall.ap50 !== null ? " · AP50 " + pct(r.accuracy.overall.ap50) : "")));
+      } else c.appendChild(el("div", "muted", m.error || m.recommendation || "running…"));
+      box.appendChild(c);
+    });
+  }
+  function renderRanking(rows) {
+    var box = $("ranking"); box.replaceChildren();
+    if (!rows || rows.length < 2) return;
+    box.appendChild(el("h2", null, "Best model for this machine"));
+    var t = sortable(table("", ["#", "Model", "Device", "Overall", "Accuracy", "Speed", "p50 ms", "AP50"]));
+    rows.forEach(function (r) {
+      var tr = el("tr"); cell(tr, r.rank, r.rank); cell(tr, r.model); cell(tr, r.device);
+      var o = cell(tr, ""); o.appendChild(gradeEl(r.overall)); o.dataset.v = 4 - r.overall_points;
+      var a = cell(tr, ""); a.appendChild(gradeEl(r.accuracy, r.relative));
+      var s = cell(tr, ""); s.appendChild(gradeEl(r.speed));
+      cell(tr, ms(r.p50_ms), r.p50_ms); cell(tr, pct(r.ap50), r.ap50 === null ? null : -r.ap50);
+      t.tBodies[0].appendChild(tr);
+    });
+    box.appendChild(wrap(t));
+  }
+  function breakdown(title, rows) {
+    var d = el("div"); if (!rows || !rows.length) return d;
+    d.appendChild(el("h4", null, title));
+    var t = sortable(table("", ["", "Images", "Objects", "AP50", "AP50-95", "P", "R", "F1"]));
+    rows.forEach(function (b) {
+      var tr = el("tr"); cell(tr, b.key + (b.relative ? " (relative)" : "")); cell(tr, b.images, b.images); cell(tr, b.gt, b.gt);
+      [b.ap50, b.ap50_95, b.precision, b.recall, b.f1].forEach(function (v) { cell(tr, pct(v), v); });
+      t.tBodies[0].appendChild(tr);
+    });
+    d.appendChild(wrap(t)); return d;
+  }
+  function details(run) {
+    var box = el("details", "bd"); box.appendChild(el("summary", null, "Breakdown on " + run.requested_device + (run.accuracy ? " (" + run.accuracy.ground_truth + ")" : "")));
+    if (run.accuracy) {
+      var a = run.accuracy;
+      box.appendChild(el("p", "muted", "Scored classes: " + a.classes.join(", ") + ". Precision/recall at confidence " + a.threshold.toFixed(2) + ", IoU 0.5. Small/medium/large recall: " + a.overall.by_size.map(function (s) { return s.bucket + " " + pct(s.recall) + " (" + s.gt + ")"; }).join(", ")));
+      box.appendChild(breakdown("By dataset", a.by_dataset));
+      box.appendChild(breakdown("By tag", a.by_tag));
+      box.appendChild(breakdown("By class", a.overall.per_class.map(function (c) { return {key: c.class, images: a.overall.images, gt: c.gt, ap50: c.ap50, ap50_95: c.ap50_95, precision: c.precision, recall: c.recall, f1: null}; })));
+    } else if (run.accuracy_note) box.appendChild(el("p", "muted", "Accuracy not scored: " + run.accuracy_note + "."));
+    if (run.by_resolution && run.by_resolution.length) {
+      box.appendChild(el("h4", null, "Speed by resolution (ms)"));
+      var t = sortable(table("", ["Resolution", "Images", "Decode+pre p50", "Infer p50", "Post p50", "Total p50", "Total p95"]));
+      ["sd", "hd", "fhd", "4mp+"].forEach(function (k) {
+        var b = run.by_resolution.find(function (x) { return x.bucket === k; }), tr = el("tr"); cell(tr, k);
+        if (!b) { cell(tr, "0", 0); for (var i = 0; i < 5; i++) cell(tr, "n/a", null); tr.className = "muted"; }
+        else { cell(tr, b.images, b.images); [b.pre_p50, b.infer_p50, b.post_p50, b.total_p50, b.total_p95].forEach(function (v) { cell(tr, ms(v), v); }); }
+        t.tBodies[0].appendChild(tr);
+      });
+      box.appendChild(wrap(t));
+    }
+    return box;
+  }
+  function renderModels(models, cfg) {
+    var box = $("models"); box.replaceChildren();
+    var cfgByName = {}; (cfg.models || []).forEach(function (c) { cfgByName[c.name.toLowerCase()] = c; });
+    models.forEach(function (m) {
+      var c = cfgByName[m.model.toLowerCase()] || {}, card = el("section", "card"); card.id = "m-" + encodeURIComponent(m.model);
+      var h = el("h2", null, m.model + " "); h.appendChild(el("span", "muted small", (m.datasets || []).join(", ") + " · " + (m.images || 0) + " images · " + m.timestamp));
+      card.appendChild(h);
+      card.appendChild(el("p", "muted", "Configured: " + (c.device ? c.device : "global (" + cfg.globalLabel + ")") + (c.provider ? " · now: " + c.provider : "") + (m.configured ? " · resolves to " + m.configured : "")));
+      if (m.error) { card.appendChild(el("p", "error", m.error)); box.appendChild(card); return; }
+      card.appendChild(el("p", m.recommended ? "notice" : "warn", m.recommended ? "Recommended: " + m.recommended + " — " + m.recommendation : "No recommendation: " + m.recommendation));
+      var t = sortable(table("devices", ["Device", "Load ms", "Infer p50", "Infer mean", "Total p50", "Total p95", "req/s", "AP50", "AP50-95", "P", "R", "Grade", "Agreement", ""]));
+      var okRuns = m.devices.filter(function (d) { return d.run && !d.run.fell_back; });
+      var fastest = okRuns.reduce(function (a, d) { return !a || d.run.stages_ms.total.p50 < a.run.stages_ms.total.p50 ? d : a; }, null);
+      m.devices.forEach(function (d) {
+        var tr = el("tr"), r = d.run, name = cell(tr, d.device, undefined, "Device");
+        name.title = d.label;
+        if (d === fastest && okRuns.length > 1) { tr.classList.add("fastest"); name.appendChild(el("span", "tag", "fastest")); }
+        if (d.device === m.recommended) name.appendChild(el("span", "tag rec", "recommended"));
+        if (d.device === m.configured) name.appendChild(el("span", "tag cfg", "configured"));
+        if (!r || r.fell_back) {
+          var e = el("td", "error-text", d.error || ("fell back to " + (r && r.device))); e.colSpan = 13; tr.classList.add("failed"); tr.appendChild(e);
+        } else {
+          var acc = r.accuracy ? r.accuracy.overall : null;
+          cell(tr, r.compile_ms.toFixed(0), r.compile_ms, "Load ms"); cell(tr, ms(r.stages_ms.infer.p50), r.stages_ms.infer.p50, "Infer p50"); cell(tr, ms(r.stages_ms.infer.mean), r.stages_ms.infer.mean, "Infer mean");
+          cell(tr, ms(r.stages_ms.total.p50), r.stages_ms.total.p50, "Total p50"); cell(tr, ms(r.stages_ms.total.p95), r.stages_ms.total.p95, "Total p95"); cell(tr, r.throughput_fps.toFixed(1), -r.throughput_fps, "req/s");
+          [["AP50", acc && acc.ap50], ["AP50-95", acc && acc.ap50_95], ["P", acc && acc.precision], ["R", acc && acc.recall]].forEach(function (p) { cell(tr, pct(p[1]), p[1] === null || p[1] === undefined ? null : -p[1], p[0]); });
+          var g = cell(tr, "", r.grades ? 4 - r.grades.overall_points : null, "Grade");
+          if (r.grades) { g.append(gradeEl(r.grades.overall), " ", gradeEl(r.grades.accuracy, r.grades.relative), " ", gradeEl(r.grades.speed)); g.title = "overall / accuracy / speed"; }
+          var ag = cell(tr, verdictText(r.agreement), undefined, "Agreement");
+          if (r.agreement && r.agreement.verdict === "disagrees") { tr.classList.add("bad"); ag.title = "detections differ from " + r.agreement.reference + "; never recommended"; }
+          var act = el("td", "actions-cell");
+          if (!(c.device && c.device === d.device)) { var u = el("button", "small", "Use " + d.device); u.type = "button"; u.addEventListener("click", function () { useDevice(m.model, d.device); }); act.appendChild(u); }
+          if (r.images) { var i = el("button", "small", "Images"); i.type = "button"; i.addEventListener("click", function () { drill(m.model, d.device); }); act.appendChild(i); }
+          tr.appendChild(act);
+        }
+        t.tBodies[0].appendChild(tr);
+      });
+      card.appendChild(wrap(t));
+      if (m.skipped && m.skipped.length) card.appendChild(el("p", "muted", "Not runnable here: " + m.skipped.join("; ")));
+      var rr = recRun(m) || (fastest && fastest.run); if (rr) card.appendChild(details(rr));
+      box.appendChild(card);
+    });
+    if (location.hash && !box.dataset.scrolled) { var t2 = document.getElementById(location.hash.slice(1)); if (t2) { t2.scrollIntoView(); box.dataset.scrolled = "1"; } }
+  }
+
+  // Drill-down: draw ground truth and predictions on each image.
+  var drillData = null;
+  function drill(model, device) {
+    $("drill-title").textContent = model + " on " + device;
+    $("drill-body").replaceChildren(el("p", "muted", "loading…"));
+    $("drill").showModal();
+    fetch("/v1/benchmark/images?model=" + encodeURIComponent(model) + "&device=" + encodeURIComponent(device)).then(function (r) { return r.json(); }).then(function (j) { drillData = j; drawDrill(); });
+  }
+  function drawDrill() {
+    var body = $("drill-body"), f = $("drill-filter").value; body.replaceChildren();
+    if (!drillData || !drillData.success) { body.appendChild(el("p", "error", drillData ? drillData.message : "no data")); return; }
+    if (drillData.groundTruth) body.appendChild(el("p", "muted thumbs-note", "Scored against " + drillData.groundTruth + "."));
+    drillData.images.forEach(function (im) {
+      var c = im.counts || {tp: 0, fp: 0, fn: 0};
+      if (f === "miss" && !c.fn) return; if (f === "fp" && !c.fp) return; if (f === "err" && !c.fn && !c.fp) return;
+      var fig = el("figure", "thumb"), cv = el("canvas"); fig.appendChild(cv);
+      fig.appendChild(el("figcaption", null, im.file + " · " + ms(im.totalMs) + " ms · TP " + c.tp + " FP " + c.fp + " FN " + c["fn"] + (im.tags.length ? " · " + im.tags.join(", ") : "")));
+      body.appendChild(fig);
+      var img = new Image();
+      img.onload = function () {
+        var scale = Math.min(1, 640 / img.width); cv.width = Math.round(img.width * scale); cv.height = Math.round(img.height * scale);
+        var g = cv.getContext("2d"); g.drawImage(img, 0, 0, cv.width, cv.height); g.lineWidth = 2; g.font = "12px system-ui";
+        function box(b, color, dash, text) { g.setLineDash(dash ? [5, 4] : []); g.strokeStyle = color; g.strokeRect(b[0] * scale, b[1] * scale, (b[2] - b[0]) * scale, (b[3] - b[1]) * scale); if (text) { g.fillStyle = color; g.fillText(text, b[0] * scale + 2, Math.max(10, b[1] * scale - 3)); } }
+        (im.objects || []).forEach(function (o, k) { var mt = im.gtMatched ? im.gtMatched[k] : null; if (mt === null || mt === undefined) { if (!o.ignore) box(o.bbox, "#9aa3b2", true, null); return; } box(o.bbox, mt ? "#2e9e4f" : "#e53935", !mt, mt ? null : "missed " + o.label); });
+        im.preds.forEach(function (p) { var col = p.tp === true ? "#1f6fe0" : p.tp === false ? "#f08c00" : "#8a93a5"; box(p.bbox, col, false, p.label + " " + p.confidence.toFixed(2)); });
+      };
+      img.src = "/v1/benchmark/image?set=" + encodeURIComponent(im.set) + "&file=" + encodeURIComponent(im.file);
+    });
+    if (!body.children.length) body.appendChild(el("p", "muted", "No images match."));
+  }
+  $("drill-filter").addEventListener("change", drawDrill);
+  $("drill-close").addEventListener("click", function () { $("drill").close(); });
+
+  function render(j) {
+    var models = merged(j);
+    renderSummary(models);
+    renderRanking(j.ranking);
+    renderModels(models, j.config);
+    $("apply-all-bar").hidden = !models.some(function (m) { return m.recommended; }) || j.running;
+    var p = j.run.progress, running = j.running;
+    $("start").disabled = running; $("cancel").hidden = !running; $("progress").hidden = !running;
+    if (running && p) {
+      if (p.stage === "benchmark") {
+        bar.value = p.percent;
+        ptext.textContent = p.model + " (" + p.modelIndex + "/" + p.modelCount + ") on " + p.device + " · " + p.phase + (p.total ? " " + p.done + "/" + p.total : "") + (p.image ? " · " + p.image : "") + " · " + p.percent.toFixed(0) + "%" + (p.etaSecs ? " · about " + Math.ceil(p.etaSecs) + " s left" : "");
+      } else { bar.removeAttribute("value"); ptext.textContent = p.text || p.stage; }
+    } else if (running) { bar.removeAttribute("value"); ptext.textContent = "starting…"; }
+    if (!running && lastState === "running") msg.textContent = j.run.message || j.run.error || j.state;
+    else if (!running && !msg.textContent && j.run.state !== "idle") msg.textContent = j.run.message || j.run.error || "";
+    var w = $("warnings"); w.replaceChildren(); (j.run.warnings || []).forEach(function (t) { w.appendChild(el("li", null, t)); });
+    lastState = j.state;
+    return running;
+  }
+  function refresh() { return fetch("/v1/benchmark", {cache: "no-store"}).then(function (r) { return r.json(); }).then(render); }
+  function poll() {
+    if (polling) return;
+    polling = setInterval(function () {
+      refresh().then(function (running) { if (!running) { clearInterval(polling); polling = null; } }).catch(function () { msg.textContent = "server not answering"; });
+    }, 1000);
+  }
+  refresh().then(function (running) { if (running) poll(); });
+})();
+</script>
+{% endblock %}

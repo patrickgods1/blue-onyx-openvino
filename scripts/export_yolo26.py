@@ -1,16 +1,21 @@
 #!/usr/bin/env python
-"""Export Ultralytics YOLO26 detection models to OpenVINO IR for Blue Onyx Prism.
+"""Export Ultralytics YOLO26 detection models to OpenVINO IR and ONNX for Blue Onyx Prism.
 
 Usage (inside the project venv: `.venv/Scripts/python.exe scripts/export_yolo26.py`):
 
-    python scripts/export_yolo26.py                 # yolo26n, yolo26s, yolo26m -> models/
+    python scripts/export_yolo26.py                 # yolo26n, yolo26s, yolo26m
     python scripts/export_yolo26.py --sizes n s     # subset
     python scripts/export_yolo26.py --int8 --data coco128.yaml
-    python scripts/export_yolo26.py --out C:/BlueOnyx/models
+    python scripts/export_yolo26.py --out-dir C:/BlueOnyx/models
 
-Produces `<name>.xml`, `<name>.bin`, `<name>.onnx` (for the ONNX Runtime devices, FP32, nms=False,
-opset 17) and `<name>.yaml` (a `NAMES:` list) per model and prints the
-config snippet to paste into `blue_onyx_prism_config.json`.
+Output directory (`--out-dir`, alias `--out`): by default `<repo>/target/release/models` when that
+directory exists (the release exe reads `<exe dir>/models`), else `<repo>/models`. Point it at the
+`models` directory next to the installed exe (the Config page shows the exact path) so the files
+appear under "Local models (not in config)" with an "Add to config" button.
+
+Produces `<name>.xml`, `<name>.bin`, `<name>.onnx` (for the ONNX Runtime devices incl. CoreML, FP32,
+nms=False, opset 17; skip with --no-onnx) and `<name>.yaml` (a `NAMES:` list) per model and prints
+the config snippet to paste into `blue_onyx_prism_config.json`.
 
 YOLO26 weights and the Ultralytics exporter are AGPL-3.0: export locally, do not commit weights.
 """
@@ -26,18 +31,37 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
+REPO = Path(__file__).resolve().parent.parent
+
+
+def default_out_dir() -> Path:
+    """`<repo>/target/release/models` when it exists (next to the release exe), else `<repo>/models`."""
+    release = REPO / "target" / "release" / "models"
+    return release if release.is_dir() else REPO / "models"
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--sizes", nargs="+", default=["n", "s", "m"], choices=list("nsmlx"))
     p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--out", type=Path, default=Path(__file__).resolve().parent.parent / "models")
+    p.add_argument(
+        "--out-dir",
+        "--out",
+        dest="out",
+        type=Path,
+        default=None,
+        help="where to write the model files (default: <repo>/target/release/models if it exists, else <repo>/models)",
+    )
     p.add_argument("--int8", action="store_true", help="INT8 post-training quantization (needs --data)")
     p.add_argument("--data", default="coco128.yaml", help="dataset yaml used for INT8 calibration")
     p.add_argument("--fp32", action="store_true", help="keep FP32 weights instead of FP16")
     p.add_argument("--opset", type=int, default=17, help="ONNX opset for the .onnx export")
     p.add_argument("--no-onnx", action="store_true", help="skip the <name>.onnx export")
-    p.add_argument("--work", type=Path, default=Path(__file__).resolve().parent.parent / ".export_work")
-    return p.parse_args()
+    p.add_argument("--work", type=Path, default=REPO / ".export_work")
+    args = p.parse_args()
+    if args.out is None:
+        args.out = default_out_dir()
+    return args
 
 
 def export_one(size: str, args: argparse.Namespace) -> Path:
@@ -127,6 +151,7 @@ def main() -> int:
         dst_xml = args.out / f"{name}.xml"
         shutil.copy2(xml, dst_xml)
         shutil.copy2(binf, args.out / f"{name}.bin")
+        dst_onnx = None
         if not args.no_onnx:
             onnx = export_onnx(size, args)
             dst_onnx = args.out / f"{name}.onnx"
@@ -136,10 +161,13 @@ def main() -> int:
         yaml_path = args.out / f"{name}.yaml"
         yaml_path.write_text("NAMES:\n" + "".join(f"  - {n}\n" for n in names), encoding="utf-8")
         print(f"{name}: output {shape}, {len(names)} classes -> {dst_xml}")
+        # The .onnx runs on both runtimes (OpenVINO and ONNX Runtime, incl. CoreML); the IR only on OpenVINO.
+        model_file = dst_onnx.name if dst_onnx else dst_xml.name
         snippets.append(
-            {"name": name, "path": f"models/{name}.xml", "family": "yolo26", "classes": f"models/{name}.yaml"}
+            {"name": name, "path": f"models/{model_file}", "family": "yolo26", "classes": f"models/{name}.yaml"}
         )
-    print("\nConfig snippet for blue_onyx_prism_config.json -> \"models\":")
+    print(f"\nWrote to {args.out}. They are listed on the Config page under \"Local models (not in config)\"")
+    print("when this is the server's models directory; or paste this into blue_onyx_prism_config.json -> \"models\":")
     print(json.dumps(snippets, indent=2))
     return 0
 

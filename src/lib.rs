@@ -12,14 +12,18 @@
 //! - [`server`]    axum HTTP server
 //! - [`runner`]    server run loop (generations, restart) shared by the CLI and the service
 //! - [`metrics`]   request/latency counters and Prometheus rendering
+//! - [`logbuf`]    in-memory ring of recent log events for the web UI's Logs page
 //! - [`resources`] downloadable runtimes/models: pinned catalog and the needs resolver
+//! - [`benchmark`] per-model device benchmark (CLI, `/v1/benchmark`), results and recommendations
 
 pub mod api;
 pub mod backend;
+pub mod benchmark;
 pub mod cli;
 pub mod config;
 pub mod download;
 pub mod image;
+pub mod logbuf;
 pub mod metrics;
 pub mod model;
 pub mod registry;

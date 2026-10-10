@@ -108,9 +108,9 @@ pub fn finalize(
             w
         }
         ResourceKind::CudaLibs => wheel_check(target.windows(), dest, got)?,
-        ResourceKind::Model => Vec::new(),
+        ResourceKind::Model | ResourceKind::BenchImages => Vec::new(),
     };
-    if resource.kind != ResourceKind::Model {
+    if !resource.kind.is_plain_files() {
         write_marker(dest, "VERSION", version, got)?;
     }
     Ok(warnings)

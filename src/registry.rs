@@ -87,6 +87,24 @@ fn resolve_default(config: &Config) -> Option<usize> {
     Some(config.models[..idx].iter().filter(|m| m.enabled).count())
 }
 
+/// Label of the first runnable load candidate of `device` for `model` (the option label from
+/// `backend::select`, e.g. "ONNX Runtime CoreML (Apple M1)"); None when nothing can run.
+/// `no_coreml` skips CoreML candidates (a model family the CoreML provider rejects).
+fn planned_label(
+    runtimes: &Runtimes,
+    device: &DeviceSpec,
+    model: &Path,
+    no_coreml: bool,
+) -> Option<String> {
+    let sel = runtimes.selection(Some(model));
+    runtimes
+        .plan(device, model)
+        .into_iter()
+        .filter(|c| !(no_coreml && c.device.target == crate::backend::spec::Target::CoreMl))
+        .find_map(|c| sel.option(&c.device).filter(|o| o.runnable))
+        .map(|o| o.label.clone())
+}
+
 impl ModelRegistry {
     /// Create the `Core` and spawn one worker per enabled model. Returns as soon as the
     /// workers are spawned; models compile in the background (see `WorkerHandle::state`).
@@ -186,11 +204,26 @@ impl ModelRegistry {
             "device options probed"
         );
         let best_cpu = runtimes.best_cpu();
+        // Where each enabled model is headed (label of its first runnable load candidate),
+        // computed before the workers can hold the runtimes lock: shown as "<label> (loading)".
+        let planned_labels: Vec<Option<String>> = enabled
+            .iter()
+            .map(|m| {
+                let device = if config.force_cpu {
+                    best_cpu
+                } else {
+                    config.device_spec_for(m).ok()?
+                };
+                // RT-DETR never loads on CoreML (the ORT backend refuses it at load time).
+                let no_coreml = m.family == crate::model::ModelFamilyKind::RtDetr;
+                planned_label(&runtimes, &device, &config.data_path(&m.path), no_coreml)
+            })
+            .collect();
         let runtimes = Arc::new(Mutex::new(runtimes));
 
         let mut workers = Vec::with_capacity(enabled.len());
         let mut prev: Option<LoadGate> = None;
-        for &m in &enabled {
+        for (mi, &m) in enabled.iter().enumerate() {
             let name = m.effective_name();
             let path = config.data_path(&m.path);
             let load = load_request(config, m, path.clone());
@@ -293,8 +326,9 @@ impl ModelRegistry {
                 model: resolved,
                 wait,
             };
-            let handle =
+            let mut handle =
                 spawn_worker_after(runtimes.clone(), cfg, mm, shutdown.clone(), prev.take());
+            handle.set_planned(device, planned_labels.get(mi).cloned().flatten());
             prev = Some(handle.load_gate());
             workers.push(handle);
         }

@@ -3,26 +3,19 @@
 {% block content %}
 <h1>Configuration</h1>
 <p class="muted">File: <code>{{ config_path }}</code></p>
+<nav class="toc" aria-label="Sections">
+  <a href="#models">Models</a><a href="#benchmark">Benchmark</a><a href="#resources">Resources</a><a href="#server">Server</a><a href="#inference">Inference</a><a href="#logging">Logging</a><a href="#restart">Restart</a>
+</nav>
 {% if let Some(m) = message %}<p class="notice">{{ m }}</p>{% endif %}
 {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
 
-<section class="card">
-  <h2>Log level</h2>
-  <form method="post" action="/config/loglevel" class="inline">
-    <select name="level">
-    {% for l in log_levels %}<option value="{{ l.value }}"{% if l.selected %} selected{% endif %}>{{ l.value }}</option>{% endfor %}
-    </select>
-    <button type="submit">Apply now</button>
-    <span class="muted">Takes effect immediately and is saved to the config file.</span>
-  </form>
-</section>
-
-<form method="post" action="/config/models" class="card">
-  <h2>Models</h2>
-  <p class="muted">Only checked models are compiled and served (after a restart). The default model serves <code>/v1/vision/detection</code>.</p>
+<form method="post" action="/config/models" class="card primary" id="models">
+  <h2>Models <span class="tag restart">needs restart</span></h2>
+  <p class="muted">Checked models are compiled and served. The default model serves <code>/v1/vision/detection</code>. Each model can run on its own device (OpenVINO and ONNX Runtime models run side by side; one ONNX Runtime flavor per process); <a href="/benchmark">Benchmark</a> measures which device suits each model best.</p>
+  {% if c.force_cpu %}<p class="warn">Force CPU is on and overrides every per-model device. <a href="#inference">Change</a></p>{% endif %}
   <div class="scroll">
   <table>
-  <thead><tr><th>Load</th><th>Default</th><th>Name</th><th>Family</th><th>File</th></tr></thead>
+  <thead><tr><th>Load</th><th>Default</th><th>Name</th><th>Family</th><th>Device</th><th>File</th></tr></thead>
   <tbody>
   {% for m in models %}
   <tr>
@@ -30,6 +23,11 @@
     <td><input type="radio" name="default_model" value="{{ m.name }}" aria-label="Default {{ m.name }}"{% if m.is_default %} checked{% endif %}></td>
     <td>{{ m.name }}</td>
     <td>{{ m.family }}</td>
+    <td class="model-device"><select name="device.{{ m.name }}" aria-label="Device of {{ m.name }}">
+      {% for d in m.devices %}<option value="{{ d.value }}"{% if d.selected %} selected{% endif %}{% if d.disabled %} disabled class="unavailable"{% endif %}>{{ d.label }}</option>{% endfor %}
+      </select>
+      {% if let Some(p) = m.provider %}<br><span class="muted">now: {{ p }}</span>{% endif %}
+      {% if let Some(b) = m.bench %}<br><a href="{{ b.href }}" title="{{ b.title }}">{{ b.text }}</a>{% endif %}</td>
     <td><code>{{ m.path }}</code>{% if !m.exists %} <span class="muted">(missing)</span>{% endif %}</td>
   </tr>
   {% endfor %}
@@ -40,21 +38,29 @@
     <button type="submit" name="action" value="save">Save</button>
     <button type="submit" name="action" value="restart" class="danger">Save and restart</button>
   </div>
+  <p class="muted">More models: download them under <a href="#resources">Resources</a>, or add the files found in the models directory under <a href="#local-models">Local models</a>. Per-model settings (device, threshold, classes) are in the Models JSON under <a href="#server">Advanced</a>.</p>
 </form>
+
+<section class="card" id="benchmark">
+  <h2>Benchmark</h2>
+  <p class="muted">{{ bench_summary }} Change the datasets and defaults, run it, and apply the recommended device per model on the <a href="/benchmark">Benchmark page</a> (CLI: <code>blue-onyx-prism benchmark --all-devices</code>).</p>
+</section>
 
 <section class="card" id="resources">
   <h2>Resources</h2>
-  <p class="muted">Runtimes, ONNX Runtime flavors, NVIDIA libraries and models this server can download for this platform (pinned versions, SHA-256 checked). With <em>auto download</em> on, whatever the config needs is fetched at startup; anything else can be downloaded here. A new runtime is used after the server restarts (it does so by itself when a model is waiting for it). Live JSON: <a href="/v1/resources"><code>/v1/resources</code></a>.</p>
+  <p class="muted">Pinned, SHA-256 checked downloads for this platform. With <em>auto download</em> on, whatever the config needs is fetched at startup. A new runtime is used after a restart (automatic when a model waits for it). Live JSON: <a href="/v1/resources"><code>/v1/resources</code></a>.</p>
   {% if !resources_enabled %}<p class="muted">This server has no download manager; use <code>blue-onyx-prism fetch</code>.</p>{% endif %}
+  {% for g in resource_groups %}
+  <h3 id="res-{{ g.key }}">{{ g.title }}</h3>
   <div class="scroll">
-  <table>
+  <table class="resources">
   <thead><tr><th>Resource</th><th>Size</th><th>State</th><th>Action</th></tr></thead>
   <tbody>
-  {% for r in resources %}
-  <tr data-id="{{ r.id }}" data-busy="{{ r.busy }}">
+  {% for r in g.rows %}
+  <tr data-id="{{ r.id }}" data-busy="{{ r.busy }}" data-state="{{ r.state }}">
     <td>{{ r.title }} <code>{{ r.id }}</code><br><span class="muted">{{ r.description }}{% if r.kind == "cuda-libs" %} &middot; {{ r.license }}{% endif %}</span></td>
     <td class="num">{{ r.size_text }}{% if r.large %}<br><span class="muted">large</span>{% endif %}</td>
-    <td class="res-state">{{ r.state_text }}{% if r.active %} <span class="tag">active</span>{% endif %}{% if r.loaded %} <span class="tag">loaded</span>{% endif %}{% if !r.blocking.is_empty() %}<br><span class="muted">needed by {{ r.blocking.join(", ") }}</span>{% endif %}</td>
+    <td class="res-state"><span class="res-text">{{ r.state_text }}</span>{% if r.busy %}<br><progress max="100"{% if let Some(p) = r.progress %} value="{{ p }}"{% endif %}></progress>{% endif %}{% if r.active %} <span class="tag">active</span>{% endif %}{% if r.loaded %} <span class="tag">loaded</span>{% endif %}{% if !r.blocking.is_empty() %}<br><span class="muted">needed by {{ r.blocking.join(", ") }}</span>{% endif %}</td>
     <td>
     {% if r.state == "installed" %}
       {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove {{ r.title }}?">Remove</button></form>
@@ -73,50 +79,47 @@
   </tbody>
   </table>
   </div>
-  <p class="muted">YOLO26 models cannot be downloaded (the weights are AGPL-3.0): export them locally with <code>scripts/export_yolo26.py</code> (see the README) and add the <code>.xml</code>/<code>.onnx</code> to the models below. The large NVIDIA CUDA/cuDNN libraries (needed for <code>ort:cuda</code> unless CUDA 12 and cuDNN 9 are installed) are covered by NVIDIA's license.</p>
-</section>
-<script>
-// Confirmation for large downloads and removals (without JS the button label shows the size).
-document.querySelectorAll("button[data-confirm]").forEach(function (b) {
-  b.addEventListener("click", function (e) { if (!confirm(b.dataset.confirm)) e.preventDefault(); });
-});
-// Live progress: poll /v1/resources while something downloads; reload when it finishes.
-(function () {
-  var busy = function () { return document.querySelector('#resources tr[data-busy="true"]'); };
-  if (!busy()) return;
-  var timer = setInterval(function () {
-    fetch("/v1/resources").then(function (r) { return r.json(); }).then(function (j) {
-      var done = true;
-      j.resources.forEach(function (r) {
-        var row = document.querySelector('#resources tr[data-id="' + r.id + '"]');
-        if (!row) return;
-        var cell = row.querySelector(".res-state");
-        if (row.dataset.busy === "true") {
-          cell.firstChild.nodeValue = r.state_text;
-          if (r.busy) done = false;
-        }
-      });
-      if (done) { clearInterval(timer); location.reload(); }
-    }).catch(function () {});
-  }, 2000);
-})();
-</script>
+  {% endfor %}
 
-<form method="post" action="/config" class="card grid">
-  <h2>Server</h2>
+  <h3 id="local-models">Local models (not in config)</h3>
+  {% if local_models.is_empty() %}
+  <p class="muted">No other <code>.onnx</code> / <code>.xml</code> files in <code>{{ models_dir }}</code>.</p>
+  {% else %}
+  <div class="scroll">
+  <table class="resources">
+  <thead><tr><th>File</th><th>Size</th><th>Family</th><th>Action</th></tr></thead>
+  <tbody>
+  {% for l in local_models %}
+  <tr data-id="{{ l.id }}">
+    <td><code>{{ l.file }}</code>{% if let Some(a) = l.also %} <span class="muted">(also <code>{{ a }}</code>)</span>{% endif %}<br><span class="muted">{{ l.note }}</span></td>
+    <td class="num">{{ l.size_text }}</td>
+    <td>{{ l.family }}</td>
+    <td><form method="post" action="/v1/resources/add-to-config" class="inline"><input type="hidden" name="id" value="{{ l.id }}"><button type="submit">Add to config</button></form></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+  </div>
+  {% endif %}
+  <p class="muted">YOLO26 cannot be downloaded (the weights are AGPL-3.0). Export it locally with <code>scripts/export_yolo26.py --out-dir "{{ models_dir }}"</code> (see the README); the <code>.onnx</code> and <code>.xml</code> files then show up under Local models. The NVIDIA CUDA/cuDNN libraries (for <code>ort:cuda</code> without a CUDA 12 / cuDNN 9 install) are covered by NVIDIA's license.</p>
+</section>
+
+<form method="post" action="/config" class="card grid" id="server">
+  <h2>Server <span class="tag restart">needs restart</span></h2>
   <label>Port <input type="number" name="port" min="1" max="65535" value="{{ c.port }}" required></label>
   <label>Request timeout (s) <input type="number" name="request_timeout_secs" min="1" value="{{ c.request_timeout_secs }}" required></label>
   <label>Worker queue size (0 = auto) <input type="number" name="worker_queue_size" min="0" value="{{ c.worker_queue_size }}" required></label>
 
-  <h2>Inference</h2>
+  <h2 id="inference">Inference <span class="tag restart">needs restart</span></h2>
   <label>Device
-    <select name="device">
+    <select name="device" id="device"{% if c.force_cpu %} disabled{% endif %}>
     {% for d in device_choices %}<option value="{{ d.value }}"{% if d.selected %} selected{% endif %}{% if d.disabled %} disabled class="unavailable"{% endif %}>{{ d.label }}</option>{% endfor %}
     </select>
+    <span class="hint" id="device-hint"{% if !c.force_cpu %} hidden{% endif %}>Overridden by Force CPU{% if let Some(n) = force_cpu_note %}: {{ n }}{% endif %}</span>
   </label>
-  <p class="muted">Options marked "will download" are fetched when you save (the server restarts and switches once installed; large ones need "Allow large downloads"). Options that cannot run on this machine are greyed out with the reason. Live list: <a href="/v1/devices"><code>/v1/devices</code></a>. Per-model devices are set in the models JSON below (<code>"device"</code>).</p>
+  <label class="check"><input type="checkbox" name="force_cpu" id="force-cpu"{% if c.force_cpu %} checked{% endif %}> Force CPU (overrides every device setting)</label>
   <label>GPU index <input type="number" name="gpu_index" min="0" value="{{ c.gpu_index }}" required></label>
-  <label class="check"><input type="checkbox" name="force_cpu"{% if c.force_cpu %} checked{% endif %}> Force CPU</label>
+  <p class="muted">"will download" options are fetched on save (the server restarts and switches once installed). Unavailable options are greyed out with the reason. Per-model devices: <code>"device"</code> in the Models JSON. Live list: <a href="/v1/devices"><code>/v1/devices</code></a>.</p>
   <input type="hidden" name="download_settings" value="1">
   <label class="check"><input type="checkbox" name="auto_download"{% if c.auto_download %} checked{% endif %}> Auto download (missing runtimes and models at startup)</label>
   <label class="check"><input type="checkbox" name="allow_large_downloads"{% if c.allow_large_downloads %} checked{% endif %}> Allow large downloads (over 500 MB, e.g. NVIDIA CUDA libraries)</label>
@@ -126,27 +129,70 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
   <label>NMS IoU <input type="number" name="nms_iou" min="0" max="1" step="0.01" value="{{ c.nms_iou }}" required></label>
   <label>Object filter (comma separated, empty = all) <input type="text" name="object_filter" value="{{ c.object_filter }}"></label>
 
-  <h2>Logging and images</h2>
-  <label>Log level
+  <h2 id="logging">Logging and images</h2>
+  <label>Log level <span class="tag now">applies now</span>
     <select name="log_level">
     {% for l in log_levels %}<option value="{{ l.value }}"{% if l.selected %} selected{% endif %}>{{ l.value }}</option>{% endfor %}
     </select>
   </label>
-  <label>Log directory (empty = stdout; needs a process restart) <input type="text" name="log_path" value="{{ c.log_path }}"></label>
-  <label>Save annotated images to <input type="text" name="save_image_path" value="{{ c.save_image_path }}" placeholder="disabled"></label>
+  <label>Log directory (empty = stdout) <span class="tag restart">needs process restart</span> <input type="text" name="log_path" value="{{ c.log_path }}"></label>
+  <label>Save annotated images to <span class="tag restart">needs restart</span> <input type="text" name="save_image_path" value="{{ c.save_image_path }}" placeholder="disabled"></label>
   <label class="check"><input type="checkbox" name="save_ref_image"{% if c.save_ref_image %} checked{% endif %}> Also save the unannotated image</label>
+  <p class="muted">Recent log lines: <a href="/logs">Logs</a>.</p>
 
-  <h2>Models (JSON)</h2>
-  <textarea name="models_json" rows="14" spellcheck="false">{{ c.models_json }}</textarea>
-  <p class="muted">Each entry: <code>path</code> (required), <code>family</code>, <code>name</code>, <code>classes</code>, <code>device</code>,
-  <code>confidence_threshold</code>, <code>object_filter</code>, <code>lazy</code>, <code>gpu_precision</code>, <code>enabled</code>
-  (load at startup; also set by the Models card above).</p>
+  <details class="advanced">
+    <summary>Advanced: Models (JSON)</summary>
+    <textarea name="models_json" rows="14" spellcheck="false">{{ c.models_json }}</textarea>
+    <p class="muted">Saved with this form; save or discard Models card changes first. Each entry: <code>path</code> (required), <code>family</code>, <code>name</code>, <code>classes</code>, <code>device</code>,
+    <code>confidence_threshold</code>, <code>object_filter</code>, <code>lazy</code>, <code>gpu_precision</code>, <code>enabled</code>.</p>
+  </details>
 
   <div class="actions"><button type="submit">Save</button></div>
 </form>
 
-<form method="post" action="/config/restart" class="card inline">
+<form method="post" action="/config/restart" class="card inline" id="restart">
   <button type="submit" class="danger">Restart server</button>
   <span class="muted">Reloads the config file, recompiles the enabled models and rebinds the port.</span>
 </form>
+<script>
+// Confirmation for large downloads and removals (without JS the button label shows the size).
+document.querySelectorAll("button[data-confirm]").forEach(function (b) {
+  b.addEventListener("click", function (e) { if (!confirm(b.dataset.confirm)) e.preventDefault(); });
+});
+// Force CPU disables the Device select (a disabled select is not submitted: the saved device stays).
+(function () {
+  var cb = document.getElementById("force-cpu"), sel = document.getElementById("device"), hint = document.getElementById("device-hint");
+  function sync() { sel.disabled = cb.checked; hint.hidden = !cb.checked; }
+  cb.addEventListener("change", sync);
+})();
+// The models JSON opens when the server rejected it.
+(function () {
+  var err = document.querySelector("p.error");
+  if (err && /models/.test(err.textContent)) document.querySelector("details.advanced").open = true;
+})();
+// Live progress: poll /v1/resources while something downloads; update in place and reload only
+// when a row changes state (busy -> installed / failed, ...).
+(function () {
+  var key = function (r) { return r.busy ? "busy" : r.state; };
+  var rowsBusy = function () { return document.querySelector('#resources tr[data-busy="true"]'); };
+  if (!rowsBusy()) return;
+  var timer = setInterval(function () {
+    fetch("/v1/resources", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
+      var changed = false;
+      j.resources.forEach(function (r) {
+        var row = document.querySelector('#resources tr[data-id="' + r.id + '"]');
+        if (!row) return;
+        var was = row.dataset.busy === "true" ? "busy" : row.dataset.state;
+        if (was !== key(r)) { changed = true; return; }
+        if (r.busy) {
+          row.querySelector(".res-text").textContent = r.state_text;
+          var bar = row.querySelector("progress");
+          if (bar) { if (r.progress !== null && r.progress !== undefined) bar.value = r.progress; else bar.removeAttribute("value"); }
+        }
+      });
+      if (changed) { clearInterval(timer); location.reload(); }
+    }).catch(function () {});
+  }, 2000);
+})();
+</script>
 {% endblock %}

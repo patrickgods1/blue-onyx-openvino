@@ -88,6 +88,8 @@ pub fn run_server_with(
     let mut previous: Option<Config> = None;
     // ONNX Runtime flavor loaded by an earlier generation (fixed for the process).
     let mut loaded_ort: Option<crate::resources::catalog::Flavor> = None;
+    // One benchmark runner for the process, so its last results survive a restart.
+    let benchmark = crate::benchmark::service::BenchmarkService::new();
     loop {
         // One generation = one registry + one HTTP server. `POST /config/restart` (or an
         // installed runtime) cancels the generation token, which stops the server; the workers
@@ -147,9 +149,15 @@ pub fn run_server_with(
                 }),
                 ort_loaded: loaded_ort,
             }),
+            benchmark: benchmark.clone(),
         });
         let served = rt.block_on(server::serve(state, port, shutdown.clone()));
         // The server has drained its requests; stop this generation's workers and watcher.
+        // A benchmark still running uses this generation's runtimes: stop it too.
+        if benchmark.cancel() {
+            info!("benchmark cancelled by the restart");
+            benchmark.wait_idle(std::time::Duration::from_secs(30));
+        }
         generation.cancel();
         workers.cancel();
         if let Some(w) = watcher

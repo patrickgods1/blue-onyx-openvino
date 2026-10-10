@@ -113,6 +113,13 @@ pub struct WorkerHandle {
     pub join: Option<JoinHandle<()>>,
     /// Model compiles on first request (state stays `Initializing` until then).
     pub lazy: bool,
+    /// The device spec the registry resolved for this model (`force_cpu` and `auto` applied
+    /// as configured; None for handles that never got that far).
+    pub planned: Option<DeviceSpec>,
+    /// Display label of the device the model is headed for (the first runnable load candidate,
+    /// e.g. "ONNX Runtime CoreML"); set by the registry. Shown as "<label> (loading)" until the
+    /// model has loaded.
+    pub planned_label: Option<String>,
     soft_capacity: Arc<AtomicUsize>,
     gate: LoadGate,
     load_started: Arc<AtomicBool>,
@@ -139,6 +146,8 @@ impl WorkerHandle {
             device: Arc::new(RwLock::new(None)),
             join: None,
             lazy: false,
+            planned: None,
+            planned_label: None,
             soft_capacity: Arc::new(AtomicUsize::new(0)),
             gate,
             load_started: Arc::new(AtomicBool::new(true)),
@@ -187,13 +196,31 @@ impl WorkerHandle {
         }
     }
 
-    /// Execution provider string of the loaded model, or a placeholder before load.
+    /// Execution provider string of the loaded model; before that, where it is headed:
+    /// "<planned label> (loading)" ("not loaded" for a model that failed before planning).
     pub fn execution_provider(&self) -> String {
-        self.device
+        if let Some(p) = self
+            .device
             .read()
             .ok()
             .and_then(|d| d.as_ref().map(|d| d.execution_provider()))
-            .unwrap_or_else(|| "OpenVINO (not loaded)".to_string())
+        {
+            return p;
+        }
+        let failed = matches!(self.state.get(), ModelState::Failed(_));
+        match (&self.planned_label, &self.planned) {
+            (Some(l), _) if failed => format!("{l} (not loaded)"),
+            (Some(l), _) => format!("{l} (loading)"),
+            (None, Some(s)) if failed => format!("{} (not loaded)", planned_spec_label(s)),
+            (None, Some(s)) => format!("{} (loading)", planned_spec_label(s)),
+            (None, None) => "not loaded".to_string(),
+        }
+    }
+
+    /// Record where the model is headed (see [`Self::planned_label`]).
+    pub fn set_planned(&mut self, spec: DeviceSpec, label: Option<String>) {
+        self.planned = Some(spec);
+        self.planned_label = label;
     }
 
     /// Wait for the thread to exit (drop the sender first so it can see the disconnect).
@@ -204,6 +231,21 @@ impl WorkerHandle {
             && j.join().is_err()
         {
             error!("worker thread panicked");
+        }
+    }
+}
+
+/// Generic display text for a device spec when no option label is known: "ONNX Runtime CoreML",
+/// "OpenVINO GPU.1", "auto".
+pub fn planned_spec_label(spec: &DeviceSpec) -> String {
+    match spec.device() {
+        None => "auto".to_string(),
+        Some(d) => {
+            let mut s = format!("{} {}", d.runtime.display_name(), d.target.display_name());
+            if let Some(i) = d.index {
+                s.push_str(&format!(".{i}"));
+            }
+            s
         }
     }
 }
@@ -302,6 +344,8 @@ pub fn spawn_worker_after(
         device,
         join,
         lazy: cfg.lazy,
+        planned: Some(cfg.device),
+        planned_label: None,
         soft_capacity,
         gate: handle_gate,
         load_started,
@@ -558,7 +602,7 @@ impl WorkerCtx {
             &info.outputs,
             self.cfg.classes.len(),
         )?;
-        let mut pre = Preprocessor::new(in_w, in_h, family.resize_mode());
+        let mut pre = Preprocessor::for_family(in_w, in_h, family.as_ref());
         let mut backend = compiled.into_backend()?;
 
         // Warm-up on a mid-gray frame the size of the model input.
@@ -747,6 +791,33 @@ mod tests {
         assert!(h.is_full());
         assert!(!h.accepts_while_initializing());
         assert!(h.load_gate().is_open());
+        h.join();
+    }
+
+    #[test]
+    fn provider_text_before_load_names_the_planned_device() {
+        use crate::backend::spec::parse;
+        let m = Arc::new(ModelMetrics::new("x", "auto", ""));
+        let mut h = WorkerHandle::failed("x", "boom", m);
+        assert_eq!(h.execution_provider(), "not loaded");
+        h.state.set(ModelState::Initializing);
+        h.set_planned(parse("ort:coreml").unwrap(), None);
+        assert_eq!(h.execution_provider(), "ONNX Runtime CoreML (loading)");
+        h.set_planned(parse("openvino:gpu.1").unwrap(), None);
+        assert_eq!(h.execution_provider(), "OpenVINO GPU.1 (loading)");
+        h.set_planned(
+            DeviceSpec::Auto,
+            Some("ONNX Runtime CoreML (Apple M1)".into()),
+        );
+        assert_eq!(
+            h.execution_provider(),
+            "ONNX Runtime CoreML (Apple M1) (loading)"
+        );
+        h.state.set(ModelState::Failed("x".into()));
+        assert_eq!(
+            h.execution_provider(),
+            "ONNX Runtime CoreML (Apple M1) (not loaded)"
+        );
         h.join();
     }
 }

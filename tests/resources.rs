@@ -7,7 +7,8 @@ use blue_onyx_prism::backend::spec::Target;
 use blue_onyx_prism::config::{Config, ModelConfig};
 use blue_onyx_prism::model::ModelFamilyKind;
 use blue_onyx_prism::resources::catalog::{
-    self, CUDA_LIBS_ID, Flavor, Layout, OPENVINO_RUNTIME_ID, Platform, SHIPPED_PLATFORMS,
+    self, CUDA_LIBS_ID, Flavor, Layout, OPENVINO_RUNTIME_ID, Platform, ResourceKind,
+    SHIPPED_PLATFORMS,
 };
 use blue_onyx_prism::resources::resolve::{FETCH_FOR_CONFIG, Installed, Resolution, needed};
 use std::collections::BTreeSet;
@@ -89,7 +90,15 @@ fn hashes_urls_and_sizes_are_well_formed() {
             );
             assert!(p.url.starts_with("https://"), "{}", p.url);
             assert!(p.size > 0, "{}", p.url);
-            assert!(p.url.ends_with(p.file_name), "{} vs {}", p.url, p.file_name);
+            // Hugging Face `onnx-community` exports (D-FINE, RF-DETR) are all `onnx/model.onnx`
+            // and get saved under the model's name.
+            let hf_export = r.kind == ResourceKind::Model && p.url.ends_with("/onnx/model.onnx");
+            assert!(
+                p.url.ends_with(p.file_name) || hf_export,
+                "{} vs {}",
+                p.url,
+                p.file_name
+            );
             assert!(!p.file_name.contains('/') && !p.file_name.contains('\\'));
             assert_eq!(p.archive.is_none(), p.layout == Layout::File, "{}", p.url);
         }
@@ -127,7 +136,19 @@ fn download_models_reads_the_catalog() {
         assert_eq!(blue_onyx_prism::download::find(name).unwrap().id, r.id);
         assert!(!r.description.is_empty(), "{name}");
         let files: Vec<&str> = r.parts.iter().map(|p| p.file_name).collect();
-        assert_eq!(files, [format!("{name}.onnx"), format!("{name}.yaml")]);
+        // D-FINE / RF-DETR have no class file (COCO-80 fallback).
+        let detr = matches!(
+            r.provides,
+            catalog::Provides::Model {
+                family: ModelFamilyKind::Detr | ModelFamilyKind::RfDetr,
+                ..
+            }
+        );
+        if detr {
+            assert_eq!(files, [format!("{name}.onnx")]);
+        } else {
+            assert_eq!(files, [format!("{name}.onnx"), format!("{name}.yaml")]);
+        }
     }
 }
 
@@ -379,6 +400,25 @@ fn missing_model_files() {
     let r = needed(&cfg, &HardwareInfo::new("linux", "x86_64", vec![]), &inst);
     assert_eq!(ids(&r), ["model:IPcam-general"]);
     assert!(r.needs[0].reason.contains("IPcam-general.yaml"));
+
+    // D-FINE / RF-DETR ship no class file: the model alone is enough, and a missing model
+    // needs a single `.onnx` part.
+    let detr = config(vec![
+        model("models/dfine-s.onnx"),
+        model("models/rfdetr-base.onnx"),
+    ]);
+    let with_onnx = inst
+        .clone()
+        .with_files(&["models/dfine-s.onnx", "models/rfdetr-base.onnx"]);
+    let r = needed(
+        &detr,
+        &HardwareInfo::new("linux", "x86_64", vec![]),
+        &with_onnx,
+    );
+    assert!(r.is_satisfied(), "{:?}", ids(&r));
+    let r = needed(&detr, &HardwareInfo::new("linux", "x86_64", vec![]), &inst);
+    assert_eq!(ids(&r), ["model:dfine-s", "model:rfdetr-base"]);
+    assert!(r.needs.iter().all(|n| n.resource.parts.len() == 1));
 
     // A file that is not in the catalog cannot be fetched; YOLO26 says how to export it.
     let cfg = config(vec![

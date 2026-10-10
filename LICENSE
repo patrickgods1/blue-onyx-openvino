@@ -21,3 +21,29 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------------
+Third-party benchmark data (assets/bench/*.json)
+
+The benchmark manifests reference images by URL with SHA-256 pins and carry
+ground-truth boxes derived from the datasets below. No images are included in
+this repository; they are downloaded from the original hosts on demand.
+See docs/BENCH_IMAGES.md.
+
+- bmd45-cctv: BMD-45 Bengaluru Mobility Dataset, AI for Integrated Mobility
+  (AIM) group, Indian Institute of Science (IISc), Bengaluru; imagery courtesy
+  of Bengaluru Traffic Police / Bengaluru Police Safe City. CC BY 4.0
+  (https://creativecommons.org/licenses/by/4.0/).
+  https://huggingface.co/datasets/iisc-aim/BMD-45 . Annotations were remapped
+  to COCO classes and subsetted.
+- exdark-night: ExDark (Exclusively Dark Image Dataset), Yuen Peng Loh and
+  Chee Seng Chan, Universiti Malaya, BSD-3-Clause
+  (https://github.com/cs-chan/Exclusively-Dark-Image-Dataset); the authors ask
+  that commercial use be cleared with them. YOLO export by Roboflow Universe
+  (my-workspace-ohnbt/exclusively-dark-image v2, labelled CC BY 4.0),
+  redistributed at https://huggingface.co/datasets/dronefreak/ExDark .
+  Annotations were remapped to COCO classes and subsetted.
+- coco-cctv: Microsoft COCO val2017 (Lin et al., 2014), annotations
+  CC BY 4.0 by the COCO Consortium (https://cocodataset.org); images remain
+  under their individual Flickr licences. Annotations were remapped to the
+  project's COCO-80 spellings and subsetted.

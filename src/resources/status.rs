@@ -9,7 +9,11 @@
 //!   loaded ONNX Runtime flavor, preloaded CUDA libraries: "restart required"), and when an
 //!   enabled model of the config uses the model files.
 //! - **Add to config** appends an installed catalog model to `models` with the same rules as
-//!   `download-models --add-to-config`.
+//!   `download-models --add-to-config`, or a model file found in `models_dir` that no config
+//!   entry references (id `local:<file>`, see [`local_models`]; family `auto`).
+//!
+//! Rows carry a `group` ([`group_of`]) so the UI shows Runtimes, GPU libraries and Models
+//! (by family) as separate tables ([`grouped`]).
 
 use super::catalog::{self, Flavor, Resource, ResourceKind};
 use super::manager::{self, Job, State, Status};
@@ -50,6 +54,9 @@ pub struct ResourceRow {
     pub description: &'static str,
     /// `openvino-runtime`, `onnx-runtime`, `cuda-libs`, `model`.
     pub kind: &'static str,
+    /// UI section: `runtimes`, `gpu-libraries`, `models-yolov5`, `models-rt-detr`,
+    /// `models-d-fine`, `models-rf-detr` (see [`group_of`]).
+    pub group: &'static str,
     pub version: &'static str,
     pub license: &'static str,
     pub size: u64,
@@ -128,7 +135,212 @@ fn kind_str(k: ResourceKind) -> &'static str {
         ResourceKind::OnnxRuntime(_) => "onnx-runtime",
         ResourceKind::CudaLibs => "cuda-libs",
         ResourceKind::Model => "model",
+        ResourceKind::BenchImages => "bench-images",
     }
+}
+
+/// Group keys in display order with their titles.
+pub const GROUPS: &[(&str, &str)] = &[
+    ("runtimes", "Runtimes"),
+    ("gpu-libraries", "GPU libraries"),
+    ("models-yolov5", "Models \u{b7} YOLOv5 (IPcam and custom)"),
+    ("models-rt-detr", "Models \u{b7} RT-DETRv2"),
+    ("models-d-fine", "Models \u{b7} D-FINE"),
+    ("models-rf-detr", "Models \u{b7} RF-DETR"),
+    ("bench-images", "Benchmark images"),
+];
+
+/// Group key of the local (unconfigured) model files.
+pub const LOCAL_GROUP: &str = "local-models";
+
+/// UI section of a resource: runtimes (OpenVINO, ONNX Runtime flavors incl. DirectML), GPU
+/// libraries (NVIDIA CUDA/cuDNN), and models by family, keyed on the id prefix.
+pub fn group_of(r: &Resource) -> &'static str {
+    match r.kind {
+        ResourceKind::OpenVinoRuntime | ResourceKind::OnnxRuntime(_) => "runtimes",
+        ResourceKind::CudaLibs => "gpu-libraries",
+        ResourceKind::Model => model_group(r.id),
+        ResourceKind::BenchImages => "bench-images",
+    }
+}
+
+fn model_group(id: &str) -> &'static str {
+    let id = id.to_ascii_lowercase();
+    let name = id.strip_prefix(catalog::MODEL_ID_PREFIX).unwrap_or(&id);
+    if name.starts_with("rt-detr") {
+        "models-rt-detr"
+    } else if name.starts_with("dfine") {
+        "models-d-fine"
+    } else if name.starts_with("rfdetr") {
+        "models-rf-detr"
+    } else {
+        "models-yolov5"
+    }
+}
+
+/// Rows of one UI section.
+#[derive(Debug, Clone)]
+pub struct ResourceGroup {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub rows: Vec<ResourceRow>,
+}
+
+/// Split `rows` into the non-empty [`GROUPS`], in display order.
+pub fn grouped(rows: Vec<ResourceRow>) -> Vec<ResourceGroup> {
+    let mut out: Vec<ResourceGroup> = GROUPS
+        .iter()
+        .map(|&(key, title)| ResourceGroup {
+            key,
+            title,
+            rows: Vec::new(),
+        })
+        .collect();
+    for r in rows {
+        if let Some(g) = out.iter_mut().find(|g| g.key == r.group) {
+            g.rows.push(r);
+        }
+    }
+    out.retain(|g| !g.rows.is_empty());
+    out
+}
+
+/// Id prefix of local model files (`local:yolo26s.onnx`).
+pub const LOCAL_ID_PREFIX: &str = "local:";
+
+/// A model file in `models_dir` that no config entry references and that is not a catalog
+/// download (those have their own rows).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalModel {
+    /// `local:<file name>`.
+    pub id: String,
+    /// File name, e.g. `yolo26s.onnx` (the `.onnx` when both formats exist).
+    pub file: String,
+    /// Model name it gets when added (the file stem).
+    pub name: String,
+    /// `onnx` or `openvino-ir`.
+    pub format: &'static str,
+    /// The other format of the same stem when both exist (`yolo26s.xml`).
+    pub also: Option<String>,
+    pub size: u64,
+    pub size_text: String,
+    /// Always `auto` (picked from the model's outputs at load).
+    pub family: &'static str,
+    /// Full path.
+    pub path: String,
+    /// What it can run on.
+    pub note: &'static str,
+    pub group: &'static str,
+}
+
+fn model_ext(p: &Path) -> Option<&'static str> {
+    match p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("onnx") => Some("onnx"),
+        Some("xml") => Some("xml"),
+        _ => None,
+    }
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Model files (`.onnx`, `.xml`) in `models_dir` not referenced by any config entry (by stem:
+/// a configured `x.xml` hides `x.onnx` too) and not part of a catalog resource. When both
+/// `x.xml` and `x.onnx` exist, the `.onnx` is offered (it runs on both runtimes and CoreML).
+pub fn local_models(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<LocalModel> {
+    let dir = config.data_path(&config.models_dir);
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let catalog_files: Vec<String> = platform_resources(ctx)
+        .into_iter()
+        .chain(catalog::MODELS.iter())
+        .filter(|r| r.kind == ResourceKind::Model)
+        .flat_map(|r| r.parts.iter().map(|p| p.file_name.to_ascii_lowercase()))
+        .collect();
+    let configured: Vec<PathBuf> = config
+        .models
+        .iter()
+        .map(|m| config.data_path(&m.path))
+        .collect();
+    // stem -> (onnx, xml)
+    let mut stems: std::collections::BTreeMap<String, (Option<PathBuf>, Option<PathBuf>)> =
+        Default::default();
+    for e in rd.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        let Some(ext) = model_ext(&p) else { continue };
+        let Some(stem) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let slot = stems.entry(stem).or_default();
+        if ext == "onnx" {
+            slot.0 = Some(p);
+        } else {
+            slot.1 = Some(p);
+        }
+    }
+    let mut out = Vec::new();
+    for (stem, (onnx, xml)) in stems {
+        let files: Vec<&PathBuf> = onnx.iter().chain(xml.iter()).collect();
+        let is_catalog = files.iter().any(|f| {
+            f.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| catalog_files.contains(&n.to_ascii_lowercase()))
+        });
+        let is_configured = files
+            .iter()
+            .any(|f| configured.iter().any(|c| same_file(c, f)));
+        if is_catalog || is_configured {
+            continue;
+        }
+        let (main, other) = match (&onnx, &xml) {
+            (Some(o), x) => (o, x.as_ref()),
+            (None, Some(x)) => (x, None),
+            (None, None) => continue,
+        };
+        let file = main
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let is_onnx = model_ext(main) == Some("onnx");
+        let mut size = std::fs::metadata(main).map_or(0, |m| m.len());
+        if !is_onnx {
+            size += std::fs::metadata(main.with_extension("bin")).map_or(0, |m| m.len());
+        }
+        out.push(LocalModel {
+            id: format!("{LOCAL_ID_PREFIX}{file}"),
+            name: stem,
+            format: if is_onnx { "onnx" } else { "openvino-ir" },
+            also: other.and_then(|o| o.file_name().map(|n| n.to_string_lossy().to_string())),
+            size,
+            size_text: catalog::format_size(size),
+            family: "auto",
+            path: main.display().to_string(),
+            note: if is_onnx {
+                "ONNX: runs on OpenVINO and ONNX Runtime (CoreML, CUDA, DirectML, CPU)"
+            } else {
+                "OpenVINO IR: OpenVINO devices only (export the .onnx for ONNX Runtime / CoreML)"
+            },
+            group: LOCAL_GROUP,
+            file,
+        });
+    }
+    out
 }
 
 /// Every resource of this platform, plus the provisioner's extra (test) models.
@@ -176,6 +388,7 @@ fn model_installed(res: &Resource, dir: &Path) -> bool {
 fn is_installed(res: &Resource, installed: &Installed, config: &Config) -> bool {
     match res.kind {
         ResourceKind::Model => model_installed(res, &target_dir(config, res)),
+        ResourceKind::BenchImages => manager::is_installed(res, &target_dir(config, res)),
         _ => installed.has(res.id),
     }
 }
@@ -319,7 +532,7 @@ pub fn rows(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<ResourceRow> {
                 ResourceKind::OpenVinoRuntime => on_disk && ctx.is_some_and(|c| c.openvino_loaded),
                 ResourceKind::OnnxRuntime(f) => ctx.is_some_and(|c| c.ort_loaded == Some(f)),
                 ResourceKind::CudaLibs => crate::backend::libs::cuda_libs_preloaded().is_some(),
-                ResourceKind::Model => false,
+                ResourceKind::Model | ResourceKind::BenchImages => false,
             };
             let blocked = if on_disk {
                 remove_blocked(ctx, r, config, status)
@@ -337,6 +550,7 @@ pub fn rows(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<ResourceRow> {
                 title: r.title,
                 description: r.description,
                 kind: kind_str(r.kind),
+                group: group_of(r),
                 version: r.version,
                 license: r.license,
                 size: r.size(),
@@ -468,6 +682,9 @@ pub fn add_to_config(
     config: &mut Config,
     id: &str,
 ) -> Result<String, ActionError> {
+    if let Some(file) = strip_prefix_ci(id.trim(), LOCAL_ID_PREFIX) {
+        return add_local_to_config(config, file);
+    }
     let res =
         find(ctx, id).ok_or_else(|| ActionError::NotFound(format!("unknown resource '{id}'")))?;
     if res.kind != ResourceKind::Model {
@@ -503,8 +720,58 @@ pub fn add_to_config(
         });
     }
     let out = crate::download::add_to_config(config, models);
-    Ok(out
-        .iter()
+    Ok(describe_outcomes(&out))
+}
+
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    (s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix))
+        .then(|| &s[prefix.len()..])
+}
+
+/// Append model file `file` (a plain file name in `models_dir`) with family `auto`.
+fn add_local_to_config(config: &mut Config, file: &str) -> Result<String, ActionError> {
+    let file = file.trim();
+    let plain = !file.is_empty()
+        && !file.contains(['/', '\\'])
+        && file != "."
+        && file != ".."
+        && Path::new(file).file_name().and_then(|n| n.to_str()) == Some(file);
+    if !plain || model_ext(Path::new(file)).is_none() {
+        return Err(ActionError::NotFound(format!(
+            "'{file}' is not a model file name (.onnx or .xml in the models directory)"
+        )));
+    }
+    let models_dir = config.data_path(&config.models_dir);
+    let full = models_dir.join(file);
+    if !full.is_file() {
+        return Err(ActionError::NotFound(format!(
+            "{} does not exist",
+            full.display()
+        )));
+    }
+    // Relative to the data root like downloads (`models/x.onnx`), absolute otherwise.
+    let path = full
+        .strip_prefix(config.data_root())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| full.clone());
+    let name = Path::new(file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| file.to_string());
+    let out = crate::download::add_to_config(
+        config,
+        vec![crate::config::ModelConfig {
+            name: Some(name),
+            path,
+            family: crate::model::ModelFamilyKind::Auto,
+            ..Default::default()
+        }],
+    );
+    Ok(describe_outcomes(&out))
+}
+
+fn describe_outcomes(out: &[crate::download::AddOutcome]) -> String {
+    out.iter()
         .map(|o| match o {
             crate::download::AddOutcome::Added {
                 name,
@@ -520,7 +787,7 @@ pub fn add_to_config(
             }
         })
         .collect::<Vec<_>>()
-        .join("; "))
+        .join("; ")
 }
 
 /// Download what `config` needs (respecting `allow_large_downloads`): used after the config

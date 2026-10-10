@@ -191,11 +191,21 @@ mod tests {
 
     #[test]
     fn catalog_shape() {
-        assert_eq!(catalog().len(), 12);
+        assert_eq!(catalog().len(), 21);
         for e in catalog() {
-            assert_eq!(e.parts.len(), 2);
+            // YOLOv5 / RT-DETRv2 ship a class file; D-FINE / RF-DETR use COCO-80.
+            let detr = matches!(
+                e.provides,
+                Provides::Model {
+                    family: ModelFamilyKind::Detr | ModelFamilyKind::RfDetr,
+                    ..
+                }
+            );
+            assert_eq!(e.parts.len(), if detr { 1 } else { 2 }, "{}", e.id);
             assert!(e.parts[0].file_name.ends_with(".onnx"));
-            assert!(e.parts[1].file_name.ends_with(".yaml"));
+            if !detr {
+                assert!(e.parts[1].file_name.ends_with(".yaml"));
+            }
             assert!(!e.description.is_empty());
             assert!(
                 e.parts

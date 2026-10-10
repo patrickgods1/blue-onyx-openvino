@@ -66,6 +66,17 @@ pub struct OrtOptions {
     pub cuda_libs_dir: Option<PathBuf>,
 }
 
+impl OrtOptions {
+    /// Locate the ONNX Runtime library these options select (the same lookup the runtime
+    /// loads from, so status pages report the library actually in use).
+    pub fn lookup(&self) -> libs::OrtLookup {
+        match &self.default_dir {
+            Some(d) => libs::find_onnxruntime_with(self.onnxruntime_dir.as_deref(), d),
+            None => libs::find_onnxruntime(self.onnxruntime_dir.as_deref()),
+        }
+    }
+}
+
 /// What to load. The device comes separately as a [`DeviceSpec`] / [`Candidate`].
 #[derive(Debug, Clone)]
 pub struct LoadRequest {
@@ -325,10 +336,7 @@ impl Runtimes {
 
         #[cfg(feature = "onnxruntime")]
         let (ort, ort_error, ort_probe) = {
-            let lookup = match &ort_opts.default_dir {
-                Some(d) => libs::find_onnxruntime_with(ort_opts.onnxruntime_dir.as_deref(), d),
-                None => libs::find_onnxruntime(ort_opts.onnxruntime_dir.as_deref()),
-            };
+            let lookup = ort_opts.lookup();
             match &lookup.library {
                 None => (
                     None,

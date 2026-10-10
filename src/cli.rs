@@ -82,6 +82,11 @@ pub enum Command {
         #[arg(long)]
         check_urls: bool,
     },
+    /// Benchmark models with the production pipeline (same flags as `blue-onyx-prism-benchmark`).
+    /// `--all-devices` times every runnable device per model, checks detections against the CPU,
+    /// recommends the fastest agreeing device and saves `benchmark.json` (web UI Benchmark page);
+    /// `--apply` also writes the recommended per-model `device` into the config file.
+    Benchmark(Box<crate::benchmark::cli::BenchArgs>),
     /// Show detected GPUs, every device option (runnable or why not) and what `auto` picks.
     ListDevices {
         /// Also show the load plan for this model file (repeatable; default: the enabled models
@@ -171,6 +176,8 @@ pub fn resolve_config(cli: &Cli) -> Result<(Config, PathBuf)> {
     };
     let base = std::env::current_dir().context("reading current directory")?;
     merge_cli(&mut config, &cli.absolutized(&base));
+    // Same names in memory as in the written file (a `--model` entry gets its file stem).
+    config.fill_model_names();
     if let Err(e) = config.save(&path) {
         tracing::warn!("could not save merged config: {e:#}");
     }
@@ -238,7 +245,7 @@ impl Cli {
                 add_to_config,
             },
             Command::ListModels { dir } => Command::ListModels { dir: abs(&dir) },
-            Command::Fetch { .. } | Command::ListResources { .. } => cmd,
+            Command::Fetch { .. } | Command::ListResources { .. } | Command::Benchmark(_) => cmd,
             Command::ListDevices { model } => Command::ListDevices {
                 model: model.iter().map(|p| absolutize(p, base)).collect(),
             },
@@ -360,7 +367,11 @@ type FilterHandle = reload::Handle<EnvFilter, Registry>;
 #[derive(Clone)]
 pub struct LogReloadHandle {
     handle: FilterHandle,
+    /// The in-memory ring behind the web UI's Logs page.
+    buffer: crate::logbuf::LogBuffer,
     _guard: Option<Arc<tracing_appender::non_blocking::WorkerGuard>>,
+    /// Keeps the filter layer of a [`Self::detached`] handle alive (reloads need it).
+    _detached: Option<Arc<reload::Layer<EnvFilter, Registry>>>,
 }
 
 impl std::fmt::Debug for LogReloadHandle {
@@ -375,6 +386,23 @@ impl LogReloadHandle {
         self.handle
             .reload(filter_for(level))
             .map_err(|e| anyhow::anyhow!("reloading log filter: {e}"))
+    }
+
+    /// The recent log events (the Logs page).
+    pub fn buffer(&self) -> &crate::logbuf::LogBuffer {
+        &self.buffer
+    }
+
+    /// A handle that is not installed as the global subscriber: its level filter and buffer
+    /// work but see no events unless `buffer` is fed directly (tests of the HTTP layer).
+    pub fn detached(level: LogLevel) -> Self {
+        let (layer, handle) = reload::Layer::<EnvFilter, Registry>::new(filter_for(level));
+        Self {
+            handle,
+            buffer: crate::logbuf::LogBuffer::default(),
+            _guard: None,
+            _detached: Some(Arc::new(layer)),
+        }
     }
 }
 
@@ -396,15 +424,20 @@ pub fn init_logging(level: LogLevel, log_path: Option<&Path>) -> Result<LogReloa
 }
 
 /// [`init_logging`] plus an optional extra layer. The level filter (and thus
-/// [`LogReloadHandle::set_level`]) applies to every sink, including `extra`; `extra` may add its
-/// own per-layer filter on top.
+/// [`LogReloadHandle::set_level`]) applies to every sink, including `extra` and the in-memory
+/// [`crate::logbuf::LogBuffer`] (always installed; see [`LogReloadHandle::buffer`]); `extra` may
+/// add its own per-layer filter on top.
 pub fn init_logging_with(
     level: LogLevel,
     log_path: Option<&Path>,
     extra: Option<ExtraLogLayer>,
 ) -> Result<LogReloadHandle> {
     let (filter, handle) = reload::Layer::new(filter_for(level));
-    let registry = tracing_subscriber::registry().with(filter).with(extra);
+    let buffer = crate::logbuf::LogBuffer::default();
+    let registry = tracing_subscriber::registry()
+        .with(filter)
+        .with(extra)
+        .with(buffer.clone());
     let guard = match log_path {
         Some(dir) => {
             std::fs::create_dir_all(dir)
@@ -431,7 +464,9 @@ pub fn init_logging_with(
     };
     Ok(LogReloadHandle {
         handle,
+        buffer,
         _guard: guard.map(Arc::new),
+        _detached: None,
     })
 }
 
@@ -462,6 +497,26 @@ mod tests {
         assert_eq!(cli.family, Some(ModelFamilyKind::Yolo5));
         assert!(cli.force_cpu);
         assert_eq!(cli.object_filter.unwrap(), vec!["person", "car"]);
+        let cli = Cli::try_parse_from([
+            "x",
+            "--config",
+            "c.json",
+            "benchmark",
+            "--all-devices",
+            "--apply",
+            "--repeat",
+            "3",
+        ])
+        .unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("c.json")));
+        match cli.command {
+            Some(Command::Benchmark(a)) => {
+                assert!(a.all_devices && a.apply);
+                assert_eq!(a.repeat, Some(3));
+                assert_eq!(a.config, None);
+            }
+            _ => panic!("wrong command"),
+        }
         let cli =
             Cli::try_parse_from(["x", "download-models", "--name", "a", "--name", "b"]).unwrap();
         match cli.command {

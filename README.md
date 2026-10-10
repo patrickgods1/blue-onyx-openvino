@@ -119,8 +119,11 @@ blue-onyx-prism fetch --all-for-platform  # everything for this OS/arch (large o
 - **Offline / air-gapped:** set `"auto_download": false`, run `fetch --for-config` on a machine with
   network (same OS/arch and config), then copy the whole directory. `list-resources` on the target
   shows anything still missing.
-- **Web UI:** the Config page has a *Resources* card (state, size, Download / Remove, live
-  progress, *Add to config* for downloaded models) and `GET /v1/resources` returns the same as JSON.
+- **Web UI:** the Config page has a *Resources* card, grouped into Runtimes, GPU libraries, Models
+  by family (YOLOv5, RT-DETRv2, D-FINE, RF-DETR) and *Local models (not in config)* (`.onnx` / `.xml`
+  files in `models_dir` that no config entry uses, e.g. YOLO26 exports), with state, size,
+  Download / Remove, a live progress bar and *Add to config*. `GET /v1/resources` returns the same as
+  JSON (each row has a `group`; local files are in `localModels`).
   Device options that need a download show "will download ... (size)" in the Device dropdown;
   choosing one and saving starts the download and switches when it is installed.
 - **NVIDIA CUDA libraries (opt-in):** `ort:cuda` needs CUDA 12 and cuDNN 9. If they are not
@@ -274,8 +277,11 @@ uv pip install -r scripts/requirements-export.txt         # or .venv/bin/pip ins
 .venv/bin/python scripts/export_yolo26.py                  # Linux / macOS
 ```
 
-This writes `models/yolo26{n,s,m}.{xml,bin,yaml}` and prints the `"models"` snippet for the config
-file. YOLO26 weights are AGPL-3.0 and are never committed; `models/`, `cache/` and `openvino/` are
+This writes `yolo26{n,s,m}.{xml,bin,onnx,yaml}` and prints the `"models"` snippet for the config
+file. The output directory is `--out-dir` (default `target/release/models` when it exists, i.e. next
+to the release exe, else `models/`); point it at the `models` directory next to the exe you run (the
+Config page names it). The files then appear under *Local models (not in config)* with an
+*Add to config* button (the `.onnx` is preferred: it also runs on ONNX Runtime, incl. CoreML). YOLO26 weights are AGPL-3.0 and are never committed; `models/`, `cache/` and `openvino/` are
 git-ignored.
 
 ### Converting ONNX models to OpenVINO IR
@@ -322,7 +328,7 @@ List any number of models in `models[]` of the config file:
   enabled entry (also used when `default_model` names a disabled model).
 - `GET`/`POST /v1/vision/custom/list` returns the loaded (enabled) model names.
 - An unknown model name returns HTTP 200 with `success: false` and an error message.
-- Per-model overrides: `device` (`GPU`, `GPU.1`, `CPU`), `confidence_threshold`, `object_filter`,
+- Per-model overrides: `device` (any device spec, see below), `confidence_threshold`, `object_filter`,
   `lazy` (compile on first request instead of at startup) and `gpu_precision` (`f16` default, `f32`).
 - `blue-onyx-prism download-models --name IPcam-general --add-to-config` downloads and appends the
   model (family and classes file filled in) to the config, skipping names or paths already present.
@@ -334,17 +340,78 @@ Each model gets its own worker thread and compiled copy in memory. Expect a few 
 on the iGPU (shared system RAM); use `lazy` for rarely used models and `device: "CPU"` to keep the GPU
 free for the primary model.
 
+### Per-model devices and benchmarking
+
+Every model can run on its own device: `"device"` in a model entry (any spec of `list-devices`:
+`openvino:cpu`, `openvino:gpu.1`, `ort:coreml`, `ort:cuda`, ...) overrides the global `device`, so
+OpenVINO and ONNX Runtime models are served side by side (one ONNX Runtime flavor per process).
+*Force CPU* overrides every per-model device. On the Config page the Models card has a **Device**
+select per model ("Global (...)" = follow the global device), shows the execution provider in use
+and links the latest benchmark recommendation.
+
+Which device suits a model differs per model and machine (on an M1, IPcam-general runs fastest on
+`openvino:cpu`, D-FINE on `ort:coreml`). The benchmark measures it: each model on each runnable device
+over a set of images, graded for accuracy and speed, with a detection check against the CPU:
+
+```sh
+blue-onyx-prism benchmark --all-devices                     # config models x runnable devices x configured datasets
+blue-onyx-prism benchmark --all-devices --apply             # ...and write each model's recommended device
+blue-onyx-prism benchmark --all-devices --report report.html  # standalone HTML (or .md) report
+blue-onyx-prism benchmark --list-datasets
+```
+
+Or open **Benchmark** in the web UI: choose datasets, models, devices and settings, **Start**
+(runs in the background, one run at a time, cancelable, live progress and ETA), then **Use <device>**
+per row or **Apply recommended devices to all models** (offers a restart). Benchmarking while serving
+competes for the CPU/GPU with live requests. Results go to `benchmark.json` next to the config file;
+the CLI and the UI read and write the same file.
+
+- **Datasets** (`benchmark.datasets`, CLI `--dataset`): the built-in, pinned and SHA-256-checked sets
+  `coco-cctv` (COCO val2017 CCTV-relevant subset, 180 images), `bmd45-cctv` (real 1080p CCTV,
+  vehicles, 44 images) and `exdark-night` (low light, 160 images), downloaded on demand to
+  `<data root>/bench/<id>/` (resource `bench:<id>`, also on the Config page's Resources card);
+  `sample` (the embedded test image, offline); and folders (`dir:<path>` or
+  `{"dir": "...", "gt": "...", "name": "..."}`, CLI `--images <dir> [--gt <file|dir>]`) with optional
+  ground truth as COCO instances JSON or YOLO txt labels and tags in `manifest.json`. Without ground
+  truth a dataset is scored against a reference model (the most accurate installed one, or
+  `benchmark.reference_model`); such scores are marked *relative*.
+- **Accuracy**: AP@0.5, AP@[.5:.95] (COCO 101-point), precision/recall/F1 at the model's confidence
+  threshold, recall by object size, by dataset and by tag (day/night, complexity, resolution, crowd,
+  small objects). Scored classes: person, bicycle, car, motorcycle, bus, truck, dog, cat, bird, horse
+  as far as the model has them (IPcam `vehicle` = car/truck/bus); AP over all of a COCO model's classes
+  is reported too.
+- **Grades**: speed from the full-request p50 (A < 50 ms, B < 100, C < 200, D < 400, else F); accuracy
+  from AP@0.5 blended 20% with small-object recall (A >= 0.70, B >= 0.60, C >= 0.50, D >= 0.40);
+  overall = weighted grade points (`benchmark.weights`, default 60% accuracy / 40% speed).
+- **Recommendation**: the best-graded device whose detections agree with the CPU reference device
+  (devices that disagree, e.g. a broken FP16 path, are never recommended); within 5% of the best p50
+  the configured device is kept. The page and the report also rank the models ("best model for this
+  machine").
+
+The `benchmark` config section holds the defaults (**Save as default** on the page writes it):
+
+```json
+"benchmark": {
+  "datasets": ["coco-cctv", "bmd45-cctv", "exdark-night"],
+  "max_images_per_dataset": 0, "devices": [], "models": [],
+  "warmup": 3, "repeat_per_image": 1, "reference_model": null,
+  "weights": {"accuracy": 0.6, "speed": 0.4}, "auto_download_datasets": true
+}
+```
+
 ## Web UI
 
 Open `http://<host>:32168/` in a browser:
 
 | Page | What it does |
 |---|---|
-| `/` | Models (state, device, requests, queue), OpenVINO version and devices, uptime, API usage; shows a hint when a newer release exists |
-| `/stats` | Per-model state, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; refreshes every 5 s. JSON at `/stats.json` |
-| `/test` | Upload an image, pick a model and `min_confidence`; shows the annotated image and the JSON response (same code path and metrics as the API) |
-| `/config` | Choose which models load and the default model (Models card, with **Save and restart**), edit the main settings and the `models` list (JSON) and save them to the config file; **Restart server** reloads the file, recompiles the enabled models and rebinds the port without restarting the process. The log level applies immediately (`POST /config/loglevel` with `level=debug`, form or query) |
-| `/prometheus` | Prometheus metrics (`blue_onyx_prism_*{model="..."}`) |
+| `/` | Models (state badge with download progress or failure reason, device, requests, queue), the execution providers *in use*, the `auto` pick, runtimes and GPUs, uptime, API usage; warns when *Force CPU* overrides the device; shows a hint when a newer release exists |
+| `/stats` | Per-model state, runtime, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; updates in place every 5 s from `/stats.json` |
+| `/test` | Pick, drop or paste an image, choose a model and `min_confidence`; the page posts to `/v1/vision/custom/{model}` and draws the boxes client-side, with a detections table and the raw JSON (same code path and metrics as the API; without JavaScript the form posts to `/test` and the server draws the image) |
+| `/config` | Models card (which models load, the default model, **Save and restart**), Resources, server/inference/logging settings with "applies now" / "needs restart" tags and the `models` list as JSON under *Advanced*; **Restart server** reloads the file, recompiles the enabled models and rebinds the port without restarting the process (the page waits for the server and reloads) |
+| `/benchmark` | Benchmark models x devices x datasets in the background (progress, ETA, cancel); grade cards, model ranking, sortable per-device tables (fastest, recommended and configured marked), breakdowns by dataset/tag/class/size/resolution, per-image drill-down with ground truth and predictions drawn; **Use <device>** / **Apply recommended to all** write per-model devices |
+| `/logs` | The last 2,000 log events of this process, live (polls `/logs.json`), with level filter, search, pause/follow, Copy and Download .txt, and the server log level (applies immediately; `POST /config/loglevel` with `level=debug`, form or query) |
+| `/prometheus` | Prometheus metrics (`blue_onyx_prism_*{model="..."}`), linked in the footer with the JSON endpoints |
 
 `log_path` changes need a full process restart. The UI has no authentication: do not expose the port
 beyond your LAN.
@@ -395,13 +462,19 @@ Put models in `deploy/models` and a `blue_onyx_prism_config.json` in `deploy/con
 | POST, GET | `/v1/vision/custom/list` | configured model names |
 | GET | `/v1/status/updateavailable` | GitHub release check |
 | GET | `/`, `/stats`, `/stats.json`, `/prometheus` | UI and metrics |
+| GET | `/logs`, `/logs.json?after=<seq>&level=<min>` | log page; recent log events newer than `after` at `level` (`trace`..`error`) or more severe, with `last` as the next cursor |
 | GET, POST | `/test`, `/config` | test page, config editor |
 | POST | `/config/restart`, `/config/loglevel` | reload config, change log level |
 | GET | `/v1/devices` | device options (runnable, downloadable with size, unavailable with reason) and the `auto` pick |
 | GET | `/v1/resources` | downloadable resources for this platform: state (installed, downloading with %, queued, needed, optional, available, failed with error and retry), size, what they provide, which models wait for them |
 | POST | `/v1/resources/download` | form `id` (e.g. `model:ipcam-bird`); large resources also need `confirm_large=1` unless `allow_large_downloads` |
 | POST | `/v1/resources/remove` | form `id`; refused (409) while downloading, while the runtime is loaded ("restart required") or while an enabled model uses the files |
-| POST | `/v1/resources/add-to-config` | form `id` of a downloaded model: append it to `models` |
+| GET | `/v1/benchmark` | benchmark state, progress (ETA), partial results of a running benchmark, the saved results (`benchmark.json` without per-image details), model ranking, per-model devices |
+| POST | `/v1/benchmark` | start (202; 409 while one runs); form fields, all optional with the `benchmark` config as default: `model`, `device`, `dataset` (repeated), `max_images`, `repeat`, `warmup`, `reference_model`, `accuracy_weight` |
+| POST | `/v1/benchmark/cancel`, `/v1/benchmark/settings` | cancel; save the form fields as the `benchmark` config defaults |
+| POST | `/v1/benchmark/apply` | `model` + `device` (`""`/`global` clears it), or `all=1` for every saved recommendation; `restart=1` restarts |
+| GET | `/v1/benchmark/images?model=&device=`, `/v1/benchmark/image?set=&file=` | per-image drill-down data; an image of the saved results |
+| POST | `/v1/resources/add-to-config` | form `id` of a downloaded model, or `local:<file>` for a model file in `models_dir` (family `auto`): append it to `models` |
 
 The detection response is byte-compatible with CodeProject.AI: `success, message, error, predictions
 [{x_min, y_min, x_max, y_max, confidence, label}], count, command, moduleId, executionProvider,
@@ -415,10 +488,15 @@ blue-onyx-prism-benchmark --model models/yolo26s.xml --family yolo26 --device GP
 blue-onyx-prism-benchmark --model models/IPcam-general.onnx --family yolo5 --all-devices
 ```
 
-`--device` takes any device spec and `--all-devices` benchmarks every runnable option for each model.
-Flags: `--model`, `--family`, `--device`, `--all-devices`, `--force-cpu`, `--image`, `--repeat`, `--warmup`,
-`--compare-cpu` (also runs on CPU and diffs detections), `--cache-dir` (`""` disables), `--threads`,
-`--classes`, `--min-confidence`, `--config` (enabled models from the config when no `--model`), `--json`, `-v`.
+`blue-onyx-prism-benchmark` takes the same flags as `blue-onyx-prism benchmark` (see
+[Per-model devices and benchmarking](#per-model-devices-and-benchmarking)). `--device` takes any device
+spec and `--all-devices` benchmarks every runnable option for each model (grades, agreement,
+recommendation, `benchmark.json`). Flags: `--model`, `--family`, `--device`, `--all-devices`, `--apply`,
+`--report <file.html|.md>`, `--no-save`, `--force-cpu`, `--image` (one file), `--dataset` (repeatable),
+`--images <dir>`, `--gt`, `--max-images`, `--list-datasets`, `--reference-model`, `--accuracy-weight`,
+`--repeat` (timed runs per image; 100 for a single image), `--warmup`, `--compare-cpu` (also runs on CPU
+and diffs detections), `--cache-dir` (`""` disables), `--threads`, `--classes`, `--min-confidence`,
+`--config` (enabled models from the config when no `--model`), `--json`, `-v`.
 If GPU latency is not clearly below CPU latency, the GPU was probably not used (check the log) or
 the FP32 path is active.
 

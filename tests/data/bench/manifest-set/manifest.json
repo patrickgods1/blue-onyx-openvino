@@ -1,0 +1,16 @@
+{
+  "id": "test-set",
+  "title": "Test set",
+  "description": "Fixture for the benchmark image-set loader",
+  "license": "public domain",
+  "attribution": "",
+  "source": "",
+  "revision": "1",
+  "images": [
+    { "file": "a.jpg", "width": 64, "height": 48, "tags": ["night", "cctv", "complexity:easy"],
+      "objects": [ { "label": "dog", "bbox": [10, 10, 40, 40], "ignore": false },
+                   { "label": "person", "bbox": [0, 0, 5, 5], "ignore": true } ] },
+    { "file": "b.png", "tags": ["day"], "objects": [] },
+    { "file": "missing.jpg", "tags": ["day"], "objects": [] }
+  ]
+}

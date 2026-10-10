@@ -4,6 +4,7 @@
 //! Everything here is pure CPU code with no OpenVINO dependency so it is unit-testable.
 
 pub mod classes;
+pub mod detr;
 pub mod nms;
 pub mod preprocess;
 pub mod rtdetr;
@@ -29,6 +30,13 @@ pub enum ModelFamilyKind {
     Yolo8,
     /// RT-DETRv2 ONNX: inputs `images` + `orig_target_sizes`, outputs `labels/boxes/scores`.
     RtDetr,
+    /// Hugging Face DETR-style export (D-FINE, RF-DETR): input `pixel_values`, outputs
+    /// `logits [1,Q,C]` + `pred_boxes [1,Q,4]` (normalized cx,cy,w,h). Stretch, x/255; ImageNet
+    /// mean/std normalization only for 91-class (COCO category id) heads, i.e. RF-DETR.
+    Detr,
+    /// RF-DETR (same ports as [`ModelFamilyKind::Detr`]) with ImageNet mean/std normalization
+    /// regardless of the class count, for fine-tuned RF-DETR models.
+    RfDetr,
 }
 
 impl std::fmt::Display for ModelFamilyKind {
@@ -39,6 +47,8 @@ impl std::fmt::Display for ModelFamilyKind {
             ModelFamilyKind::Yolo5 => "yolo5",
             ModelFamilyKind::Yolo8 => "yolo8",
             ModelFamilyKind::RtDetr => "rtdetr",
+            ModelFamilyKind::Detr => "detr",
+            ModelFamilyKind::RfDetr => "rfdetr",
         };
         f.write_str(s)
     }
@@ -51,6 +61,21 @@ pub enum ResizeMode {
     Letterbox,
     /// Stretch to the input size. Used by RT-DETR.
     Stretch,
+}
+
+/// Per-channel normalization applied after scaling to `0..1`: `(v - mean) / std` (RGB order).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Normalization {
+    pub mean: [f32; 3],
+    pub std: [f32; 3],
+}
+
+impl Normalization {
+    /// ImageNet statistics (DINOv2 backbones such as RF-DETR).
+    pub const IMAGENET: Normalization = Normalization {
+        mean: [0.485, 0.456, 0.406],
+        std: [0.229, 0.224, 0.225],
+    };
 }
 
 /// Geometry recorded during preprocessing so boxes can be mapped back to the original image.
@@ -178,6 +203,11 @@ pub struct PostParams {
 pub trait Family: Send + Sync {
     fn kind(&self) -> ModelFamilyKind;
     fn resize_mode(&self) -> ResizeMode;
+    /// Mean/std normalization of the `0..1` input, if the model expects it (see
+    /// [`preprocess::Preprocessor::for_family`]).
+    fn normalization(&self) -> Option<Normalization> {
+        None
+    }
     /// Extra inputs besides the image tensor (RT-DETR's `orig_target_sizes`).
     fn extra_inputs(&self, _ctx: &PreprocessCtx) -> Vec<ExtraInput> {
         Vec::new()
@@ -208,11 +238,14 @@ pub fn make_family(
         ModelFamilyKind::Yolo5 => Box::new(yolo5::Yolo5::new(num_classes)),
         ModelFamilyKind::Yolo8 => Box::new(yolo8::Yolo8::new(num_classes)),
         ModelFamilyKind::RtDetr => Box::new(rtdetr::RtDetr::new(num_classes)),
+        ModelFamilyKind::Detr => Box::new(detr::Detr::from_ports(outputs, num_classes, false)),
+        ModelFamilyKind::RfDetr => Box::new(detr::Detr::from_ports(outputs, num_classes, true)),
         ModelFamilyKind::Auto => unreachable!(),
     })
 }
 
 /// Heuristic family detection from port shapes:
+/// - outputs `logits` + `pred_boxes` (input `pixel_values`) -> Detr (D-FINE, RF-DETR)
 /// - an input named `orig_target_sizes`, or 3 outputs including `boxes` -> RtDetr
 /// - single output `[.., N, 6]` -> Yolo26 (end-to-end)
 /// - single output `[.., 4+C, A]` with A > 4+C -> Yolo8
@@ -222,6 +255,9 @@ pub fn detect_family(
     outputs: &[PortSpec],
     num_classes: usize,
 ) -> Result<ModelFamilyKind> {
+    if detr::is_detr(inputs, outputs) {
+        return Ok(ModelFamilyKind::Detr);
+    }
     if inputs.iter().any(|p| p.name == "orig_target_sizes")
         || (outputs.len() == 3 && outputs.iter().any(|p| p.name == "boxes"))
     {
@@ -257,6 +293,61 @@ pub fn detect_family(
             .map(|o| (&o.name, &o.shape))
             .collect::<Vec<_>>()
     )
+}
+
+/// Input size `(w, h)` to use when the model's image input has dynamic height/width:
+/// 1. the catalog's size for a downloaded model (matched by file name, e.g. `rfdetr-base.onnx`),
+/// 2. `size` from a Hugging Face `preprocessor_config.json` when the model sits in a repo's `onnx/`
+///    directory (`<repo>/onnx/model.onnx` + `<repo>/preprocessor_config.json`),
+/// 3. 560 for RF-DETR-style outputs (`logits` with 91 COCO category ids), the RF-DETR base size,
+/// 4. 640.
+pub fn dynamic_input_size(path: &std::path::Path, outputs: &[PortSpec]) -> (u32, u32) {
+    if let Some(s) = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .and_then(crate::resources::catalog::model_input_size)
+    {
+        return (s, s);
+    }
+    if let Some(dir) = path.parent()
+        && dir.file_name().is_some_and(|d| d == "onnx")
+        && let Some(repo) = dir.parent()
+        && let Some(size) = hf_preprocessor_size(&repo.join("preprocessor_config.json"))
+    {
+        return size;
+    }
+    if detr::logits_classes(outputs) == Some(detr::COCO91_CLASSES) {
+        return (detr::RFDETR_DEFAULT_SIZE, detr::RFDETR_DEFAULT_SIZE);
+    }
+    (DEFAULT_INPUT_SIZE, DEFAULT_INPUT_SIZE)
+}
+
+/// Default side of a square model input.
+pub const DEFAULT_INPUT_SIZE: u32 = 640;
+
+/// `size` of a Hugging Face `preprocessor_config.json`: `{"height", "width"}`, or
+/// `{"shortest_edge"}` / `{"longest_edge"}` as a square.
+pub fn hf_preprocessor_size(path: &std::path::Path) -> Option<(u32, u32)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_hf_preprocessor_size(&text)
+}
+
+/// See [`hf_preprocessor_size`].
+pub fn parse_hf_preprocessor_size(text: &str) -> Option<(u32, u32)> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let size = v.get("size")?;
+    let dim = |k: &str| {
+        size.get(k)
+            .and_then(|x| x.as_u64())
+            .and_then(|x| u32::try_from(x).ok())
+            .filter(|&x| (32..=4096).contains(&x))
+    };
+    match (dim("width"), dim("height")) {
+        (Some(w), Some(h)) => Some((w, h)),
+        _ => dim("shortest_edge")
+            .or_else(|| dim("longest_edge"))
+            .map(|s| (s, s)),
+    }
 }
 
 /// Common post-step: class filter (case-insensitive), clamp to the image, round to pixels.
@@ -357,6 +448,108 @@ mod tests {
             .unwrap(),
             ModelFamilyKind::RtDetr
         );
+    }
+
+    #[test]
+    fn detr_family_detection() {
+        let dfine_out = [
+            port("logits", &[-1, 300, 80]),
+            port("pred_boxes", &[-1, 300, 4]),
+        ];
+        let rf_out = [
+            port("pred_boxes", &[-1, 300, 4]),
+            port("logits", &[-1, 300, 91]),
+        ];
+        let pix = [port("pixel_values", &[-1, 3, -1, -1])];
+        for out in [&dfine_out[..], &rf_out[..]] {
+            assert_eq!(detect_family(&pix, out, 80).unwrap(), ModelFamilyKind::Detr);
+        }
+        // Normalization: on for the 91-class (RF-DETR) head or when forced.
+        let fam = |k, out: &[PortSpec]| make_family(k, &pix, out, 80).unwrap();
+        assert_eq!(fam(ModelFamilyKind::Auto, &dfine_out).normalization(), None);
+        assert_eq!(
+            fam(ModelFamilyKind::Auto, &dfine_out).kind(),
+            ModelFamilyKind::Detr
+        );
+        let rf = fam(ModelFamilyKind::Auto, &rf_out);
+        assert_eq!(rf.normalization(), Some(Normalization::IMAGENET));
+        assert_eq!(rf.kind(), ModelFamilyKind::RfDetr);
+        assert_eq!(rf.resize_mode(), ResizeMode::Stretch);
+        assert_eq!(
+            fam(ModelFamilyKind::RfDetr, &dfine_out).normalization(),
+            Some(Normalization::IMAGENET)
+        );
+        // Not DETR: missing `pred_boxes`, or several inputs without `pixel_values`.
+        assert!(!detr::is_detr(&pix, &dfine_out[..1]));
+        let two = [port("a", &[1, 3, 640, 640]), port("b", &[1, 2])];
+        assert!(!detr::is_detr(&two, &dfine_out));
+        let k: ModelFamilyKind = serde_json::from_str(r#""rfdetr""#).unwrap();
+        assert_eq!(k, ModelFamilyKind::RfDetr);
+        let k: ModelFamilyKind = serde_json::from_str(r#""detr""#).unwrap();
+        assert_eq!(
+            (k, k.to_string()),
+            (ModelFamilyKind::Detr, "detr".to_string())
+        );
+        assert_eq!(ModelFamilyKind::RfDetr.to_string(), "rfdetr");
+    }
+
+    #[test]
+    fn dynamic_input_sizes() {
+        use std::path::Path;
+        let none: [PortSpec; 0] = [];
+        let rf_out = [
+            port("pred_boxes", &[-1, 300, 4]),
+            port("logits", &[-1, 300, 91]),
+        ];
+        // Catalog models, by file name.
+        assert_eq!(
+            dynamic_input_size(Path::new("models/rfdetr-nano.onnx"), &none),
+            (384, 384)
+        );
+        assert_eq!(
+            dynamic_input_size(Path::new("x/RFDETR-MEDIUM.onnx"), &rf_out),
+            (576, 576)
+        );
+        assert_eq!(
+            dynamic_input_size(Path::new("models/dfine-s.onnx"), &none),
+            (640, 640)
+        );
+        // Unknown RF-DETR-like model: base size; anything else: 640.
+        assert_eq!(
+            dynamic_input_size(Path::new("m/custom.onnx"), &rf_out),
+            (560, 560)
+        );
+        assert_eq!(
+            dynamic_input_size(Path::new("m/custom.onnx"), &none),
+            (640, 640)
+        );
+        // Hugging Face repo layout.
+        let repo = std::env::temp_dir().join(format!("bo-hf-repo-{}", std::process::id()));
+        std::fs::create_dir_all(repo.join("onnx")).unwrap();
+        std::fs::write(
+            repo.join("preprocessor_config.json"),
+            r#"{"do_normalize":false,"size":{"height":512,"width":448}}"#,
+        )
+        .unwrap();
+        let model = repo.join("onnx").join("model.onnx");
+        assert_eq!(dynamic_input_size(&model, &rf_out), (448, 512));
+        // Only next to an `onnx/` directory.
+        assert_eq!(
+            dynamic_input_size(&repo.join("model.onnx"), &none),
+            (640, 640)
+        );
+        std::fs::remove_dir_all(&repo).ok();
+
+        assert_eq!(
+            parse_hf_preprocessor_size(r#"{"size":{"shortest_edge":800}}"#),
+            Some((800, 800))
+        );
+        assert_eq!(
+            parse_hf_preprocessor_size(r#"{"size":{"height":0,"width":5}}"#),
+            None
+        );
+        assert_eq!(parse_hf_preprocessor_size("{}"), None);
+        assert_eq!(parse_hf_preprocessor_size("not json"), None);
     }
 
     #[test]

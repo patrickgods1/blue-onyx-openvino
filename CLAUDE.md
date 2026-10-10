@@ -20,6 +20,8 @@ cargo run -- fetch [--for-config] [--resource <id>] [--all-for-platform] [--allo
 cargo run -- list-resources [--check-urls]   # installed / needed / available; --check-urls checks every pinned URL (weekly CI)
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --force-cpu
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --device ort:cpu
+cargo run -- benchmark --all-devices [--apply] [--report r.html] [--dataset coco-cctv|bmd45-cctv|exdark-night|dir:<p>] [--max-images 20]   # grade models x devices; benchmark.json next to the config
+cargo run -- benchmark --list-datasets       # built-in image sets (assets/bench/*.json, resource bench:<id>)
 cargo build --no-default-features            # OpenVINO-only build (drops the `onnxruntime` feature / `ort`)
 cargo test                                   # unit tests need no OpenVINO
 cargo clippy --all-targets -- -D warnings
@@ -65,7 +67,7 @@ NPU are never auto. RT-DETR is excluded from CoreML (aborts in ORT 1.24.4). ORT 
   warm-up, falling down the list, CPU last); `ort.rs` is the ONNX Runtime backend (all `ort` code lives here).
   Also `GET /v1/devices` and the config-page device dropdown.
 - `src/model/` model families: `yolo26` (end-to-end `[1,300,6]`), `yolo5` (`[1,N,5+C]` + NMS),
-  `yolo8` (`[1,4+C,8400]` + NMS), `rtdetr` (`images` + i64 `orig_target_sizes`; `labels/boxes/scores`).
+  `yolo8` (`[1,4+C,8400]` + NMS), `detr` (D-FINE: `pixel_values` -> `logits/pred_boxes`), `rfdetr` (same, ImageNet-normalized, COCO-91 head), `rtdetr` (`images` + i64 `orig_target_sizes`; `labels/boxes/scores`).
   Preprocess = letterbox (YOLO) or stretch (RT-DETR) to 640x640 RGB f32 0..1, CHW.
 - `src/resources/` on-demand resources: `catalog` (pins), `resolve` (pure needs from config + hardware +
   installed), `manager` (one download thread, Range resume, SHA-256, staging + atomic rename, `.installed.json`,

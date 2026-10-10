@@ -89,7 +89,10 @@ pub fn fetch_jobs(
     }
     if req.all_for_platform {
         let auto = crate::setup_onnxruntime::auto_flavor(hw);
-        for res in catalog::for_platform(&hw.os, &hw.arch) {
+        // Benchmark image sets are not part of a deployment; name them (`bench:<id>`) to fetch.
+        for res in
+            catalog::for_platform(&hw.os, &hw.arch).filter(|r| r.kind != ResourceKind::BenchImages)
+        {
             if res.is_large() && !allow_large {
                 notes.push(format!(
                     "skipped {} ({}): pass --allow-large to download it",
@@ -168,7 +171,7 @@ pub fn list_resources(config: &Config, hw: &HardwareInfo, installed: &Installed)
     let _ = writeln!(out, "Resources for {}/{}:", hw.os, hw.arch);
     let _ = writeln!(out, "  {:<24} {:>8}  {:<28} TITLE", "ID", "SIZE", "STATE");
     for res in catalog::for_platform(&hw.os, &hw.arch) {
-        let state = state_of(res, &r, installed, &models_dir);
+        let state = state_of(res, &r, installed, &models_dir, &config.data_root());
         let _ = writeln!(
             out,
             "  {:<24} {:>8}  {:<28} {}",
@@ -208,7 +211,13 @@ pub fn list_resources(config: &Config, hw: &HardwareInfo, installed: &Installed)
     out
 }
 
-fn state_of(res: &Resource, r: &Resolution, installed: &Installed, models_dir: &Path) -> String {
+fn state_of(
+    res: &Resource,
+    r: &Resolution,
+    installed: &Installed,
+    models_dir: &Path,
+    root: &Path,
+) -> String {
     let installed_now = match res.kind {
         ResourceKind::Model => {
             manager::is_installed(res, models_dir)
@@ -217,6 +226,7 @@ fn state_of(res: &Resource, r: &Resolution, installed: &Installed, models_dir: &
                     .iter()
                     .all(|p| models_dir.join(p.file_name).is_file())
         }
+        ResourceKind::BenchImages => manager::is_installed(res, &root.join(res.dest)),
         _ => installed.has(res.id),
     };
     if installed_now {

@@ -1,11 +1,11 @@
 //! Image preprocessing: fit an RGB8 image into the model input (letterbox or stretch) and
-//! convert it to a CHW `f32` tensor in `0..1`.
+//! convert it to a CHW `f32` tensor in `0..1`, optionally mean/std normalized per channel.
 
 use anyhow::{Context, Result};
 use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 
-use super::{PreprocessCtx, ResizeMode};
+use super::{Family, Normalization, PreprocessCtx, ResizeMode};
 
 /// Gray value used for letterbox padding (Ultralytics convention).
 pub const PAD_VALUE: u8 = 114;
@@ -22,16 +22,27 @@ pub struct Preprocessor {
     resized: Vec<u8>,
     /// CHW f32 output tensor, `3 * input_w * input_h`.
     tensor: Vec<f32>,
-    /// `lut[v] == v as f32 / 255.0`.
-    lut: [f32; 256],
+    /// Per channel (R, G, B): `lut[c][v] == v as f32 / 255.0`, or with normalization
+    /// `(v / 255 - mean[c]) / std[c]` (computed in f64, rounded once).
+    lut: [[f32; 256]; 3],
+    normalization: Option<Normalization>,
+}
+
+fn build_lut(norm: Option<Normalization>) -> [[f32; 256]; 3] {
+    let mut lut = [[0f32; 256]; 3];
+    for (c, table) in lut.iter_mut().enumerate() {
+        for (i, v) in table.iter_mut().enumerate() {
+            *v = match norm {
+                None => i as f32 / 255.0,
+                Some(n) => ((i as f64 / 255.0 - n.mean[c] as f64) / n.std[c] as f64) as f32,
+            };
+        }
+    }
+    lut
 }
 
 impl Preprocessor {
     pub fn new(input_w: u32, input_h: u32, mode: ResizeMode) -> Self {
-        let mut lut = [0f32; 256];
-        for (i, v) in lut.iter_mut().enumerate() {
-            *v = i as f32 / 255.0;
-        }
         Self {
             input_w,
             input_h,
@@ -40,8 +51,25 @@ impl Preprocessor {
             options: ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
             resized: Vec::new(),
             tensor: vec![0.0; 3 * input_w as usize * input_h as usize],
-            lut,
+            lut: build_lut(None),
+            normalization: None,
         }
+    }
+
+    /// Preprocessor for `family`: its resize mode and normalization.
+    pub fn for_family(input_w: u32, input_h: u32, family: &dyn Family) -> Self {
+        Self::new(input_w, input_h, family.resize_mode()).with_normalization(family.normalization())
+    }
+
+    /// Normalize each channel as `(v / 255 - mean) / std` (None = plain `0..1`).
+    pub fn with_normalization(mut self, normalization: Option<Normalization>) -> Self {
+        self.lut = build_lut(normalization);
+        self.normalization = normalization;
+        self
+    }
+
+    pub fn normalization(&self) -> Option<Normalization> {
+        self.normalization
     }
 
     /// Model input size `(w, h)`.
@@ -53,7 +81,7 @@ impl Preprocessor {
         self.mode
     }
 
-    /// `rgb` is tightly packed RGB8, `w*h*3` bytes. Returns CHW f32 in 0..1
+    /// `rgb` is tightly packed RGB8, `w*h*3` bytes. Returns CHW f32 in 0..1 (or normalized)
     /// (length `3*input_w*input_h`) and the geometry needed to map boxes back.
     pub fn run(&mut self, rgb: &[u8], w: u32, h: u32) -> Result<(&[f32], PreprocessCtx)> {
         if w == 0 || h == 0 {
@@ -102,14 +130,16 @@ impl Preprocessor {
         let plane = iw as usize * ih as usize;
         self.tensor.resize(3 * plane, 0.0);
         if new_w != iw || new_h != ih {
-            self.tensor.fill(self.lut[PAD_VALUE as usize]);
+            for (c, p) in self.tensor.chunks_exact_mut(plane).enumerate() {
+                p.fill(self.lut[c][PAD_VALUE as usize]);
+            }
         }
 
         // HWC u8 -> CHW f32 in one pass over the content rows.
         let (r_plane, rest) = self.tensor.split_at_mut(plane);
         let (g_plane, b_plane) = rest.split_at_mut(plane);
         let row_bytes = new_w as usize * 3;
-        let lut = &self.lut;
+        let [lr, lg, lb] = &self.lut;
         for (y, src_row) in content.chunks_exact(row_bytes).enumerate() {
             let start = (y + pad_y as usize) * iw as usize + pad_x as usize;
             let end = start + new_w as usize;
@@ -117,9 +147,9 @@ impl Preprocessor {
             let g = &mut g_plane[start..end];
             let b = &mut b_plane[start..end];
             for (i, px) in src_row.as_chunks::<3>().0.iter().enumerate() {
-                r[i] = lut[px[0] as usize];
-                g[i] = lut[px[1] as usize];
-                b[i] = lut[px[2] as usize];
+                r[i] = lr[px[0] as usize];
+                g[i] = lg[px[1] as usize];
+                b[i] = lb[px[2] as usize];
             }
         }
 
@@ -210,6 +240,33 @@ mod tests {
                 assert_eq!(v, want);
             }
         }
+    }
+
+    #[test]
+    fn imagenet_normalization_per_channel() {
+        let n = Normalization::IMAGENET;
+        let color = [255u8, 0, 128];
+        let img = solid(8, 4, color);
+        let mut p = Preprocessor::new(16, 16, ResizeMode::Letterbox).with_normalization(Some(n));
+        assert_eq!(p.normalization(), Some(n));
+        let (t, ctx) = p.run(&img, 8, 4).unwrap();
+        assert_eq!((ctx.pad_x, ctx.pad_y), (0.0, 4.0));
+        let plane = 16 * 16;
+        let want =
+            |c: usize, v: u8| ((v as f64 / 255.0 - n.mean[c] as f64) / n.std[c] as f64) as f32;
+        for c in 0..3 {
+            // Padding row 0 is normalized gray, content row 4 the normalized color.
+            assert_eq!(t[c * plane], want(c, PAD_VALUE));
+            assert_eq!(t[c * plane + 4 * 16 + 3], want(c, color[c]));
+        }
+        assert!((t[0] - (1.0 / 255.0 * 114.0 - 0.485) / 0.229).abs() < 1e-6);
+        assert!((t[4 * 16] - (1.0 - 0.485) / 0.229).abs() < 1e-6);
+        assert!((t[plane + 4 * 16] - (0.0 - 0.456) / 0.224).abs() < 1e-6);
+        // Back to plain 0..1.
+        let mut p = p.with_normalization(None);
+        let (t, _) = p.run(&img, 8, 4).unwrap();
+        assert_eq!(t[4 * 16], 1.0);
+        assert_eq!(t[2 * plane + 4 * 16], 128.0 / 255.0);
     }
 
     #[test]

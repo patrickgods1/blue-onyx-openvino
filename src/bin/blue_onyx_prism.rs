@@ -1,5 +1,5 @@
 //! Main binary: CLI subcommands (setup-openvino, setup-onnxruntime, download-models, list-models,
-//! fetch, list-resources, list-devices) or the HTTP service.
+//! fetch, list-resources, list-devices, benchmark) or the HTTP service.
 
 use anyhow::Result;
 use blue_onyx_prism::backend::{CoreOptions, OrtOptions, Runtimes, select};
@@ -267,6 +267,14 @@ fn run(cli: Cli) -> Result<()> {
                     &installed
                 )
             );
+            return Ok(());
+        }
+        Some(Command::Benchmark(args)) => {
+            // Sets up its own stderr logging (warn, or info with --verbose).
+            let code = blue_onyx_prism::benchmark::cli::main(*args, cli.config.clone());
+            if code != ExitCode::SUCCESS {
+                std::process::exit(1);
+            }
             return Ok(());
         }
         Some(Command::ListDevices { model }) => {

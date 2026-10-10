@@ -169,6 +169,94 @@ pub struct Config {
     /// Name of the model that serves `/v1/vision/detection`. None = first enabled entry.
     pub default_model: Option<String>,
     pub models: Vec<ModelConfig>,
+    /// Defaults of the benchmark (web UI Benchmark page and `benchmark` CLI).
+    pub benchmark: BenchmarkConfig,
+}
+
+/// A benchmark dataset: a built-in set id (`coco-cctv`), `sample` (the embedded image),
+/// `dir:<path>`, or a directory object with optional ground truth and display name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DatasetRef {
+    Id(String),
+    Dir {
+        dir: PathBuf,
+        /// COCO JSON file or YOLO labels directory (default: found in `dir`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gt: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+}
+
+impl DatasetRef {
+    /// The directory of a `dir:<path>` id or a directory object.
+    pub fn dir(&self) -> Option<(PathBuf, Option<PathBuf>, Option<String>)> {
+        match self {
+            DatasetRef::Id(s) => s
+                .trim()
+                .strip_prefix(crate::benchmark::images::DIR_PREFIX)
+                .map(|d| (PathBuf::from(d.trim()), None, None)),
+            DatasetRef::Dir { dir, gt, name } => Some((dir.clone(), gt.clone(), name.clone())),
+        }
+    }
+
+    /// Display / CLI form: the id, or `dir:<path>`.
+    pub fn label(&self) -> String {
+        match self {
+            DatasetRef::Id(s) => s.trim().to_string(),
+            DatasetRef::Dir { dir, name, .. } => match name {
+                Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                _ => format!("{}{}", crate::benchmark::images::DIR_PREFIX, dir.display()),
+            },
+        }
+    }
+}
+
+/// Benchmark defaults (`benchmark` in the config file). Old config files without it get these
+/// defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BenchmarkConfig {
+    /// Datasets to run on (see [`DatasetRef`]). Default: the three built-in sets.
+    pub datasets: Vec<DatasetRef>,
+    /// Images per dataset, evenly spread (0 = all).
+    pub max_images_per_dataset: usize,
+    /// Device specs; empty = every runnable option.
+    pub devices: Vec<String>,
+    /// Model names; empty = the enabled models whose files are present.
+    pub models: Vec<String>,
+    /// Untimed warm-up iterations per model and device.
+    pub warmup: usize,
+    /// Timed runs per image.
+    pub repeat_per_image: usize,
+    /// Model whose detections are the pseudo ground truth of datasets without ground truth;
+    /// None = the most accurate installed model.
+    pub reference_model: Option<String>,
+    /// Accuracy vs speed weights of the overall grade.
+    pub weights: crate::benchmark::grade::Weights,
+    /// Download the selected built-in datasets when a run starts (large ones still need
+    /// `allow_large_downloads`).
+    pub auto_download_datasets: bool,
+}
+
+impl Default for BenchmarkConfig {
+    fn default() -> Self {
+        Self {
+            datasets: crate::benchmark::images::KNOWN_SET_IDS
+                .iter()
+                .map(|s| DatasetRef::Id(s.to_string()))
+                .collect(),
+            max_images_per_dataset: 0,
+            devices: Vec::new(),
+            models: Vec::new(),
+            warmup: 3,
+            repeat_per_image: 1,
+            reference_model: None,
+            weights: Default::default(),
+            auto_download_datasets: true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -197,6 +285,7 @@ impl Default for Config {
             download_dir: None,
             default_model: None,
             models: Vec::new(),
+            benchmark: BenchmarkConfig::default(),
         }
     }
 }
@@ -205,11 +294,18 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("parsing config {}", path.display()))
+        let mut config: Config = serde_json::from_str(&text)
+            .with_context(|| format!("parsing config {}", path.display()))?;
+        config.fill_model_names();
+        Ok(config)
     }
 
+    /// Write the config as pretty JSON. Unnamed model entries are written with their
+    /// [`ModelConfig::effective_name`], so every model is named in the file.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let text = serde_json::to_string_pretty(self)?;
+        let mut named = self.clone();
+        named.fill_model_names();
+        let text = serde_json::to_string_pretty(&named)?;
         std::fs::write(path, text).with_context(|| format!("writing config {}", path.display()))
     }
 
@@ -224,6 +320,17 @@ impl Config {
             SERVICE_CONFIG_FILE,
             LEGACY_SERVICE_CONFIG_FILE,
         )
+    }
+
+    /// Give every model entry without a `name` its [`ModelConfig::effective_name`] (the file
+    /// stem), so the JSON and every model list show it. Names that are set are kept.
+    pub fn fill_model_names(&mut self) {
+        for m in &mut self.models {
+            if m.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
+                m.name = None;
+                m.name = Some(m.effective_name());
+            }
+        }
     }
 
     /// The model that serves `/v1/vision/detection`.
@@ -565,8 +672,181 @@ pub fn apply_models_selection(
     Ok(())
 }
 
+/// A per-model `device` change made by [`apply_model_devices`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceChange {
+    pub model: String,
+    /// Previous per-model device (None = global).
+    pub from: Option<String>,
+    /// New per-model device (None = global).
+    pub to: Option<String>,
+}
+
+impl DeviceChange {
+    /// "IPcam-general: global -> openvino:cpu".
+    pub fn describe(&self) -> String {
+        let show = |d: &Option<String>| d.clone().unwrap_or_else(|| "global".to_string());
+        format!("{}: {} -> {}", self.model, show(&self.from), show(&self.to))
+    }
+}
+
+/// Set the per-model `device` of the named models (matched like `/v1/vision/custom/{model}`);
+/// `None` or an empty/"global" value clears it (the model follows the global device). Every
+/// name and device is validated first; on error `config` is unchanged. Returns the entries that
+/// actually changed.
+pub fn apply_model_devices(
+    config: &mut Config,
+    devices: &[(String, Option<String>)],
+) -> Result<Vec<DeviceChange>> {
+    use crate::registry::normalize_name;
+    let mut c = config.clone();
+    let mut changes = Vec::new();
+    for (name, device) in devices {
+        let key = normalize_name(name);
+        let Some(m) = c
+            .models
+            .iter_mut()
+            .find(|m| normalize_name(&m.effective_name()) == key)
+        else {
+            anyhow::bail!("'{name}' is not one of the configured models");
+        };
+        let device = device
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty() && !d.eq_ignore_ascii_case("global"));
+        let new = match device {
+            Some(d) => {
+                crate::backend::spec::parse(d)
+                    .map_err(|e| anyhow::anyhow!("model '{name}' device: {e}"))?;
+                Some(d.to_string())
+            }
+            None => None,
+        };
+        if m.device != new {
+            changes.push(DeviceChange {
+                model: m.effective_name(),
+                from: m.device.clone(),
+                to: new.clone(),
+            });
+            m.device = new;
+        }
+    }
+    *config = c;
+    Ok(changes)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn benchmark_section_defaults_and_round_trip() {
+        // Old files without the key get the defaults.
+        let c: super::Config = serde_json::from_str(r#"{"port":1234}"#).unwrap();
+        assert_eq!(c.benchmark, super::BenchmarkConfig::default());
+        let ids: Vec<String> = c.benchmark.datasets.iter().map(|d| d.label()).collect();
+        assert_eq!(ids, ["coco-cctv", "bmd45-cctv", "exdark-night"]);
+        assert_eq!((c.benchmark.warmup, c.benchmark.repeat_per_image), (3, 1));
+        assert!(c.benchmark.auto_download_datasets);
+        assert!((c.benchmark.weights.accuracy - 0.6).abs() < 1e-12);
+        // Partial sections keep the other defaults; all dataset spellings parse.
+        let c: super::Config = serde_json::from_str(
+            r#"{"benchmark":{"datasets":["coco-cctv","dir:/srv/alerts",
+                {"dir":"/srv/x","gt":"/srv/x/gt.json","name":"porch"}],
+                "max_images_per_dataset":25,"weights":{"accuracy":1,"speed":1}}}"#,
+        )
+        .unwrap();
+        let b = &c.benchmark;
+        assert_eq!(b.max_images_per_dataset, 25);
+        assert_eq!(b.warmup, 3);
+        assert_eq!(b.datasets[1].dir().unwrap().0, PathBuf::from("/srv/alerts"));
+        assert_eq!(b.datasets[2].label(), "porch");
+        assert_eq!(
+            b.datasets[2].dir().unwrap().1,
+            Some(PathBuf::from("/srv/x/gt.json"))
+        );
+        assert!(b.datasets[0].dir().is_none());
+        let text = serde_json::to_string(&c).unwrap();
+        let back: super::Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn model_devices_are_applied_atomically() {
+        let mut c = super::Config {
+            models: ["IPcam-general", "dfine-s"]
+                .iter()
+                .map(|n| super::ModelConfig {
+                    path: format!("models/{n}.onnx").into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let set = |pairs: &[(&str, Option<&str>)]| -> Vec<(String, Option<String>)> {
+            pairs
+                .iter()
+                .map(|(n, d)| (n.to_string(), d.map(str::to_string)))
+                .collect()
+        };
+        let ch = super::apply_model_devices(
+            &mut c,
+            &set(&[
+                ("ipcam-general.onnx", Some("openvino:cpu")),
+                ("DFINE-S", Some(" ort:coreml ")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(ch.len(), 2);
+        assert_eq!(ch[0].describe(), "IPcam-general: global -> openvino:cpu");
+        assert_eq!(c.models[1].device.as_deref(), Some("ort:coreml"));
+        // Unchanged values are not reported; "" and "global" clear the override.
+        let ch = super::apply_model_devices(
+            &mut c,
+            &set(&[
+                ("IPcam-general", Some("openvino:cpu")),
+                ("dfine-s", Some("global")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(ch.len(), 1);
+        assert_eq!(ch[0].to, None);
+        assert_eq!(c.models[1].device, None);
+        // Bad device or unknown model: error, nothing changed.
+        let before = c.clone();
+        for bad in [
+            set(&[
+                ("dfine-s", Some("ort:coreml")),
+                ("IPcam-general", Some("vulkan")),
+            ]),
+            set(&[("dfine-s", Some("ort:coreml")), ("zzz", Some("ort:cpu"))]),
+        ] {
+            assert!(super::apply_model_devices(&mut c, &bad).is_err());
+            assert_eq!(c, before);
+        }
+    }
+
+    #[test]
+    fn ort_lookup_searches_download_dir() {
+        // The status page and the loader share `ort_options().lookup()`; an install under
+        // `download_dir` (not next to the exe) must be found.
+        if std::env::var_os(crate::backend::libs::ENV_ORT_DYLIB_PATH).is_some() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("bop-ortdl-{}", uuid::Uuid::new_v4()));
+        let flavor = root.join(crate::backend::libs::ORT_DIR_NAME).join("cpu");
+        std::fs::create_dir_all(&flavor).unwrap();
+        let lib = flavor.join(crate::backend::libs::ort_library_file_name());
+        std::fs::write(&lib, b"").unwrap();
+        let c = super::Config {
+            download_dir: Some(root.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            c.ort_options().lookup().library.as_deref(),
+            Some(lib.as_path())
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn legacy_config_is_renamed_once() {
         let dir = std::env::temp_dir().join(format!("bop-legacy-{}", uuid::Uuid::new_v4()));
@@ -744,6 +1024,40 @@ mod tests {
             with_dir.onnxruntime_dir,
             Some(PathBuf::from("rt/onnxruntime"))
         );
+    }
+
+    #[test]
+    fn unnamed_models_are_named_on_load_and_save() {
+        let dir = std::env::temp_dir().join(format!("bo-cfg-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.json");
+        std::fs::write(
+            &path,
+            r#"{"models":[{"name":null,"path":"models/IPcam-general.onnx"},
+                {"name":"custom","path":"models/x.onnx"},{"name":" ","path":"m/y.xml"}]}"#,
+        )
+        .unwrap();
+        let c = Config::load(&path).unwrap();
+        let names: Vec<_> = c.models.iter().map(|m| m.name.as_deref()).collect();
+        assert_eq!(names, [Some("IPcam-general"), Some("custom"), Some("y")]);
+
+        // Write-back names entries that were added without a name.
+        let mut c = c;
+        c.models.push(ModelConfig {
+            path: "models/dfine-s.onnx".into(),
+            ..Default::default()
+        });
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""name": "dfine-s""#), "{text}");
+        assert!(!text.contains(r#""name": null"#), "{text}");
+        // The in-memory config is left as it was.
+        assert_eq!(c.models[3].name, None);
+        assert_eq!(
+            Config::load(&path).unwrap().models[3].effective_name(),
+            "dfine-s"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

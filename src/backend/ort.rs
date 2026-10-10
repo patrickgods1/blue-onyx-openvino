@@ -20,8 +20,10 @@
 //!   port's element type (i64/i32/f32) and copies every output into a [`NamedOutput`].
 
 use super::detect::{GpuVendor, HardwareInfo};
+#[cfg(test)]
+use super::device::DEFAULT_IMAGE_SHAPE;
 use super::device::{
-    DEFAULT_IMAGE_SHAPE, DEFAULT_TARGET_SIZES_SHAPE, extra_input_index, find_image_input,
+    DEFAULT_TARGET_SIZES_SHAPE, dynamic_image_shape, extra_input_index, find_image_input,
 };
 use super::select::{EpStatus, NEEDS_ONNX, OrtProbe, onnx_path_for};
 use super::spec::{Runtime, Target};
@@ -412,9 +414,16 @@ impl OrtRuntime {
         } else {
             None
         };
-        let (mut inputs, syms) = match &session {
-            Some(s) => ports(s.inputs()),
-            None => ports(self.metadata_session(&path)?.inputs()),
+        let ((mut inputs, syms), meta_outputs) = {
+            let meta;
+            let s = match &session {
+                Some(s) => s,
+                None => {
+                    meta = self.metadata_session(&path)?;
+                    &meta
+                }
+            };
+            (ports(s.inputs()), ports(s.outputs()).0)
         };
         let image_idx = find_image_input(&inputs).with_context(|| {
             format!(
@@ -434,7 +443,8 @@ impl OrtRuntime {
                 path.display()
             );
         }
-        let overrides = dimension_overrides(&inputs, &syms, image_idx, extra_idx);
+        let image_default = dynamic_image_shape(&path, &meta_outputs);
+        let overrides = dimension_overrides(&inputs, &syms, image_idx, extra_idx, &image_default);
         if !overrides.is_empty() {
             tracing::info!(
                 "model {}: pinning dynamic dimensions {overrides:?}",
@@ -460,7 +470,7 @@ impl OrtRuntime {
                 img.shape
             );
         }
-        img.shape = fixed_shape(&img.shape, &DEFAULT_IMAGE_SHAPE);
+        img.shape = fixed_shape(&img.shape, &image_default);
         if img.elem != PortElem::F32 {
             bail!(
                 "model {}: image input '{}' has element type {:?}; only f32 is supported",
@@ -771,17 +781,18 @@ pub(crate) fn fixed_shape(shape: &[i64], defaults: &[i64]) -> Vec<i64> {
 }
 
 /// Free-dimension overrides that pin the named dynamic dims of the image input (to
-/// `[1,3,640,640]`) and of `orig_target_sizes` (to `[1,2]`). A symbol that would need two
-/// different values is left dynamic.
+/// `image_default`, usually `[1,3,640,640]`) and of `orig_target_sizes` (to `[1,2]`). A symbol
+/// that would need two different values is left dynamic.
 pub(crate) fn dimension_overrides(
     inputs: &[PortSpec],
     symbols: &[Vec<String>],
     image_idx: usize,
     extra_idx: Option<usize>,
+    image_default: &[i64; 4],
 ) -> Vec<(String, i64)> {
     let mut out: Vec<(String, i64)> = Vec::new();
     let mut conflicts: Vec<String> = Vec::new();
-    let targets = std::iter::once((image_idx, &DEFAULT_IMAGE_SHAPE[..]))
+    let targets = std::iter::once((image_idx, &image_default[..]))
         .chain(extra_idx.map(|i| (i, &DEFAULT_TARGET_SIZES_SHAPE[..])));
     for (idx, defaults) in targets {
         let (Some(port), Some(syms)) = (inputs.get(idx), symbols.get(idx)) else {
@@ -1041,7 +1052,7 @@ mod tests {
         ];
         let s = [syms(&["N", "", "H", "W"]), syms(&["N", ""])];
         assert_eq!(
-            dimension_overrides(&inputs, &s, 0, Some(1)),
+            dimension_overrides(&inputs, &s, 0, Some(1), &DEFAULT_IMAGE_SHAPE),
             vec![
                 ("N".to_string(), 1),
                 ("H".to_string(), 640),
@@ -1050,13 +1061,40 @@ mod tests {
         );
         // Static model: nothing to do.
         let st = [port("images", &[1, 3, 640, 640], PortElem::F32)];
-        assert!(dimension_overrides(&st, &[syms(&["", "", "", ""])], 0, None).is_empty());
+        assert!(
+            dimension_overrides(
+                &st,
+                &[syms(&["", "", "", ""])],
+                0,
+                None,
+                &DEFAULT_IMAGE_SHAPE
+            )
+            .is_empty()
+        );
         // Unnamed dynamic dims cannot be overridden.
         let un = [port("images", &[-1, 3, -1, -1], PortElem::F32)];
-        assert!(dimension_overrides(&un, &[syms(&["", "", "", ""])], 0, None).is_empty());
+        assert!(
+            dimension_overrides(
+                &un,
+                &[syms(&["", "", "", ""])],
+                0,
+                None,
+                &DEFAULT_IMAGE_SHAPE
+            )
+            .is_empty()
+        );
         // One symbol for H and the channel count would need 3 and 640: left dynamic.
         let bad = [port("images", &[1, -1, -1, 640], PortElem::F32)];
-        assert!(dimension_overrides(&bad, &[syms(&["", "d", "d", ""])], 0, None).is_empty());
+        assert!(
+            dimension_overrides(
+                &bad,
+                &[syms(&["", "d", "d", ""])],
+                0,
+                None,
+                &DEFAULT_IMAGE_SHAPE
+            )
+            .is_empty()
+        );
     }
 
     #[test]
