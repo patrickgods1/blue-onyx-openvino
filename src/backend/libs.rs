@@ -404,8 +404,11 @@ pub fn diagnostics() -> String {
 
 // ---------------------------------------------------------------------------------------------
 // ONNX Runtime library lookup (pure apart from directory listings; shared with
-// `setup-onnxruntime`). Layout: the shared library (plus provider libraries / DirectML.dll) flat
-// in `<exe_dir>/onnxruntime/`, with `flavor.txt` naming the installed flavor.
+// `setup-onnxruntime` and the download manager). Layout under `<exe_dir>/onnxruntime/`:
+// - one directory per installed flavor (`cpu/`, `cuda/`, `directml/`, `coreml/`), each holding
+//   the shared library (plus provider libraries / DirectML.dll) flat and a `flavor.txt`;
+// - `active.txt` naming the flavor this process loads (a process can load only one);
+// - legacy (before phase 7.2): the libraries flat in `onnxruntime/` itself, with `flavor.txt`.
 // ---------------------------------------------------------------------------------------------
 
 /// Folder next to the executable that `setup-onnxruntime` installs into.
@@ -490,9 +493,39 @@ impl OrtLookup {
     }
 }
 
-/// Locate the ONNX Runtime library. Order: config `onnxruntime_dir` (`explicit`, a directory or
-/// the library file itself), `ORT_DYLIB_PATH` (file or directory), then
-/// `<exe_dir>/onnxruntime`. The first hit wins.
+/// File in the ONNX Runtime folder naming the active flavor's subdirectory.
+pub const ORT_ACTIVE_FILE: &str = "active.txt";
+/// Per-flavor subdirectories, in the order they are tried when `active.txt` is absent.
+pub const ORT_FLAVOR_DIRS: &[&str] = &["cuda", "directml", "coreml", "cpu"];
+
+/// The flavor named by `<ort_root>/active.txt` (trimmed, lowercase), when it is a known flavor.
+pub fn read_active_flavor(ort_root: &Path) -> Option<String> {
+    let f = std::fs::read_to_string(ort_root.join(ORT_ACTIVE_FILE)).ok()?;
+    let f = f.trim().to_ascii_lowercase();
+    ORT_FLAVOR_DIRS.contains(&f.as_str()).then_some(f)
+}
+
+/// Make `flavor` the active one (`<ort_root>/active.txt`, replaced atomically). It is used from
+/// the next process start (a process keeps the ONNX Runtime library it loaded).
+pub fn write_active_flavor(ort_root: &Path, flavor: &str) -> std::io::Result<()> {
+    if !ORT_FLAVOR_DIRS.contains(&flavor) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unknown ONNX Runtime flavor '{flavor}'"),
+        ));
+    }
+    std::fs::create_dir_all(ort_root)?;
+    let tmp = ort_root.join(format!("{ORT_ACTIVE_FILE}.tmp"));
+    std::fs::write(&tmp, format!("{flavor}\n"))?;
+    std::fs::rename(&tmp, ort_root.join(ORT_ACTIVE_FILE))
+}
+
+/// Locate the ONNX Runtime library. Order (first hit wins):
+/// 1. config `onnxruntime_dir` (`explicit`, a directory or the library file itself);
+/// 2. `ORT_DYLIB_PATH` (file or directory);
+/// 3. `<exe_dir>/onnxruntime/<flavor>/` for the flavor in `onnxruntime/active.txt`;
+/// 4. `<exe_dir>/onnxruntime/` itself (the legacy flat layout);
+/// 5. the first installed `<exe_dir>/onnxruntime/<flavor>/` in [`ORT_FLAVOR_DIRS`] order.
 pub fn find_onnxruntime(explicit: Option<&Path>) -> OrtLookup {
     let env = std::env::var_os(ENV_ORT_DYLIB_PATH)
         .filter(|v| !v.is_empty())
@@ -525,11 +558,27 @@ pub fn find_onnxruntime_from(
         hit
     };
     let explicit = explicit.map(crate::resolve_path);
+    let active = read_active_flavor(default_dir);
     let found = explicit
         .as_deref()
         .and_then(|p| try_path("onnxruntime_dir", p))
         .or_else(|| env_path.and_then(|p| try_path(ENV_ORT_DYLIB_PATH, p)))
-        .or_else(|| try_path("bundled", default_dir));
+        .or_else(|| {
+            let f = active.as_deref()?;
+            try_path(
+                &format!("active flavor ({ORT_ACTIVE_FILE})"),
+                &default_dir.join(f),
+            )
+        })
+        .or_else(|| try_path("bundled", default_dir))
+        .or_else(|| {
+            ORT_FLAVOR_DIRS
+                .iter()
+                .filter(|f| Some(**f) != active.as_deref())
+                .map(|f| default_dir.join(f))
+                .filter(|d| d.is_dir())
+                .find_map(|d| try_path("bundled flavor", &d))
+        });
     out.library = found;
     out
 }
@@ -724,6 +773,44 @@ mod tests {
         assert_eq!(read_ort_flavor(&c).as_deref(), Some("coreml"));
         assert_eq!(read_ort_flavor(&a), None);
         assert!(default_onnxruntime_dir().ends_with(ORT_DIR_NAME));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn per_flavor_dirs_and_active_file() {
+        let root = std::env::temp_dir().join(format!("bop_ortflv_{}", uuid::Uuid::new_v4()));
+        let lib = ort_library_file_name();
+        for f in ["cpu", "cuda"] {
+            std::fs::create_dir_all(root.join(f)).unwrap();
+            std::fs::write(root.join(f).join(lib), b"").unwrap();
+        }
+        // No active.txt, no flat library: the first per-flavor dir in order (cuda).
+        assert_eq!(
+            find_onnxruntime_from(None, None, &root).library,
+            Some(root.join("cuda").join(lib))
+        );
+        // A legacy flat install wins over unmarked per-flavor dirs...
+        std::fs::write(root.join(lib), b"").unwrap();
+        assert_eq!(
+            find_onnxruntime_from(None, None, &root).library,
+            Some(root.join(lib))
+        );
+        // ...but active.txt wins over the flat install.
+        write_active_flavor(&root, "cpu").unwrap();
+        assert_eq!(read_active_flavor(&root).as_deref(), Some("cpu"));
+        assert_eq!(
+            find_onnxruntime_from(None, None, &root).library,
+            Some(root.join("cpu").join(lib))
+        );
+        // An active flavor that is not installed falls through.
+        write_active_flavor(&root, "directml").unwrap();
+        assert_eq!(
+            find_onnxruntime_from(None, None, &root).library,
+            Some(root.join(lib))
+        );
+        assert!(write_active_flavor(&root, "../evil").is_err());
+        std::fs::write(root.join(ORT_ACTIVE_FILE), "nonsense").unwrap();
+        assert_eq!(read_active_flavor(&root), None);
         std::fs::remove_dir_all(&root).ok();
     }
 }

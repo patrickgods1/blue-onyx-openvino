@@ -211,6 +211,8 @@ pub struct Resolution {
     pub ort_flavor: Option<Flavor>,
     /// Flavor active now (from [`Installed`]).
     pub active_ort: Option<Flavor>,
+    /// The ONNX Runtime library is user-managed (`onnxruntime_dir` / `ORT_DYLIB_PATH`).
+    pub ort_pinned: bool,
     /// Config `auto_download`.
     pub auto_download: bool,
 }
@@ -229,6 +231,13 @@ impl Resolution {
     /// The wanted ORT flavor differs from the active one: it is used after a restart.
     pub fn ort_restart_required(&self) -> bool {
         matches!((self.ort_flavor, self.active_ort), (Some(w), Some(a)) if w != a)
+    }
+
+    /// The flavor to mark active (`onnxruntime/active.txt`) so the next start loads it: the
+    /// wanted flavor when it differs from the active one and ORT is not user-managed.
+    pub fn ort_activation(&self) -> Option<Flavor> {
+        let want = self.ort_flavor?;
+        (!self.ort_pinned && self.active_ort != Some(want)).then_some(want)
     }
 
     /// Total size of [`Self::needs`] in bytes.
@@ -275,6 +284,7 @@ pub fn needed(config: &Config, hw: &HardwareInfo, installed: &Installed) -> Reso
             models: Vec::new(),
             ort_flavor: None,
             active_ort: installed.active_flavor(),
+            ort_pinned: installed.ort_pinned,
             auto_download: config.auto_download,
         },
     };
@@ -807,12 +817,13 @@ pub fn download_root(config: &Config) -> PathBuf {
         .unwrap_or_else(crate::exe_dir)
 }
 
-/// Marker files that show a resource directory holds a completed install: `VERSION` (written by
-/// `setup-openvino` / `setup-onnxruntime`) or the manager's `.installed.json`.
-const INSTALL_MARKERS: &[&str] = &["VERSION", ".installed.json"];
-
-fn has_marker(dir: &Path) -> bool {
-    INSTALL_MARKERS.iter().any(|m| dir.join(m).is_file())
+/// `dir` holds a completed install of resource `id`: the manager's `.installed.json` names it,
+/// or (installs from before the manager) a `VERSION` file is present.
+fn installed_in(dir: &Path, id: &str) -> bool {
+    match super::manager::read_manifest(&dir.join(super::manager::MANIFEST_FILE)) {
+        Some(m) => m.id == id,
+        None => dir.join("VERSION").is_file(),
+    }
 }
 
 fn dir_non_empty(dir: &Path) -> bool {
@@ -833,7 +844,8 @@ pub fn detect_installed(config: &Config, root: &Path, probe: Option<RuntimeProbe
         .as_deref()
         .map(crate::resolve_path)
         .is_some_and(|d| d.exists());
-    if user_ov || has_marker(&root.join(crate::backend::libs::BUNDLED_DIR_NAME)) {
+    let ov_dir = root.join(crate::backend::libs::BUNDLED_DIR_NAME);
+    if user_ov || installed_in(&ov_dir, catalog::OPENVINO_RUNTIME_ID) {
         out.resources
             .insert(catalog::OPENVINO_RUNTIME_ID.to_string());
     }
@@ -860,11 +872,17 @@ pub fn detect_installed(config: &Config, root: &Path, probe: Option<RuntimeProbe
     }
     for f in Flavor::ALL {
         let dir = root.join(f.dest());
-        if crate::backend::libs::read_ort_flavor(&dir).as_deref() == Some(f.as_str()) {
+        let by_manifest = super::manager::read_manifest(&dir.join(super::manager::MANIFEST_FILE))
+            .is_some_and(|m| m.id == f.resource_id());
+        if by_manifest || crate::backend::libs::read_ort_flavor(&dir).as_deref() == Some(f.as_str())
+        {
             out.resources.insert(f.resource_id().to_string());
         }
     }
-    if dir_non_empty(&root.join(catalog::CUDA_LIBS_DEST)) {
+    let cuda_dir = root.join(catalog::CUDA_LIBS_DEST);
+    let cuda_manifest =
+        super::manager::read_manifest(&cuda_dir.join(super::manager::MANIFEST_FILE));
+    if cuda_manifest.map_or(dir_non_empty(&cuda_dir), |m| m.id == catalog::CUDA_LIBS_ID) {
         out.resources.insert(catalog::CUDA_LIBS_ID.to_string());
     }
 

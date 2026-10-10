@@ -7,8 +7,6 @@ use blue_onyx_prism::backend::{CoreOptions, LoadRequest, Runtimes, spec};
 use blue_onyx_prism::setup_openvino;
 use std::path::{Path, PathBuf};
 
-const MODEL_URL: &str = "https://huggingface.co/xnorpx/blue-onyx-yolo5/resolve/main/IPcam-general";
-
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -24,18 +22,21 @@ fn ensure_runtime(dir: &Path) {
         version: None,
         archive,
         keep_archive: false,
+        root: Some(repo()),
     })
     .expect("OpenVINO runtime setup");
 }
 
 fn ensure_model(models: &Path) -> PathBuf {
     let onnx = models.join("IPcam-general.onnx");
-    for ext in ["onnx", "yaml"] {
-        let p = models.join(format!("IPcam-general.{ext}"));
-        if !p.is_file() {
-            setup_openvino::download_to_file(&format!("{MODEL_URL}.{ext}"), &p)
-                .unwrap_or_else(|e| panic!("downloading {}: {e:#}", p.display()));
-        }
+    if !onnx.is_file() || !models.join("IPcam-general.yaml").is_file() {
+        blue_onyx_prism::download::download_with_root(
+            &["IPcam-general".to_string()],
+            false,
+            models,
+            &repo(),
+        )
+        .unwrap_or_else(|e| panic!("downloading IPcam-general: {e:#}"));
     }
     onnx
 }

@@ -286,6 +286,8 @@ pub struct Resource {
     pub provides: Provides,
     /// Human-readable name for logs and the UI.
     pub title: &'static str,
+    /// One-line description (`list-models`, `list-resources`).
+    pub description: &'static str,
     /// License of the downloaded content (shown before opt-in downloads).
     pub license: &'static str,
 }
@@ -400,6 +402,7 @@ const fn openvino(
             targets,
         },
         title: "OpenVINO runtime",
+        description: "Intel OpenVINO runtime libraries (openvino:* devices)",
         license: "Apache-2.0",
     }
 }
@@ -513,6 +516,7 @@ const fn ort(
             targets: flavor.targets(),
         },
         title,
+        description: "ONNX Runtime shared libraries (ort:* devices); one flavor is active per process",
         license: "MIT",
     }
 }
@@ -658,6 +662,7 @@ const fn cuda_libs(platform: Platform, parts: &'static [Part]) -> Resource {
         dest: CUDA_LIBS_DEST,
         provides: Provides::CudaLibs,
         title: "NVIDIA CUDA 12 + cuDNN 9 libraries",
+        description: "CUDA runtime, cuBLAS, cuDNN, cuFFT, cuRAND for ort:cuda (large, opt-in)",
         license: "NVIDIA Software License Agreement (CUDA, cuDNN redistributables)",
     }
 }
@@ -776,7 +781,7 @@ const RTDETR_YAML_SHA: &str = "ed029ee87019fa769269fcff15eda24a15c17dcea42b70f4d
 const RTDETR_YAML_SIZE: u64 = 1193;
 
 macro_rules! rtdetr {
-    ($name:literal, $onnx_sha:literal, $onnx_size:literal) => {
+    ($name:literal, $desc:literal, $onnx_sha:literal, $onnx_size:literal) => {
         Resource {
             id: concat!("model:", $name),
             kind: ResourceKind::Model,
@@ -804,13 +809,14 @@ macro_rules! rtdetr {
                 family: ModelFamilyKind::RtDetr,
             },
             title: concat!("Model ", $name),
+            description: $desc,
             license: "Apache-2.0",
         }
     };
 }
 
 macro_rules! yolo5 {
-    ($name:literal, $onnx_sha:literal, $onnx_size:literal, $yaml_sha:literal, $yaml_size:literal) => {
+    ($name:literal, $desc:literal, $onnx_sha:literal, $onnx_size:literal, $yaml_sha:literal, $yaml_size:literal) => {
         Resource {
             id: concat!("model:", $name),
             kind: ResourceKind::Model,
@@ -838,6 +844,7 @@ macro_rules! yolo5 {
                 family: ModelFamilyKind::Yolo5,
             },
             title: concat!("Model ", $name),
+            description: $desc,
             license: "AGPL-3.0",
         }
     };
@@ -848,31 +855,37 @@ macro_rules! yolo5 {
 pub static MODELS: &[Resource] = &[
     rtdetr!(
         "rt-detrv2-s",
+        "RT-DETRv2 small, general COCO",
         "c849b46a43925d0c24d88c7cab096fc8158ade265b7be1ae433e3effe5758a6a",
         80530290
     ),
     rtdetr!(
         "rt-detrv2-ms",
+        "RT-DETRv2 medium-small, general COCO",
         "c3315cec9f1ce83956ae1600b6224ead49bf1e5f347fb6a9a2da9740beb50a64",
         125541681
     ),
     rtdetr!(
         "rt-detrv2-m",
+        "RT-DETRv2 medium, general COCO",
         "a3a7bc94da99678f788f35aeb6078e1045f4f038b266316e769c09fb51abc62d",
         132661010
     ),
     rtdetr!(
         "rt-detrv2-l",
+        "RT-DETRv2 large, general COCO",
         "4c580c4f579a0372c6bea171b0ff3ccea707146a34dc5cea1b817e3c0f4fc0ba",
         169218591
     ),
     rtdetr!(
         "rt-detrv2-x",
+        "RT-DETRv2 extra large, general COCO",
         "810a18839401187bd94004bd722d602158302e3f35400840e7cbcfacb71d61c2",
         300394655
     ),
     yolo5!(
         "delivery",
+        "YOLOv5 delivery (vehicles, people, packages)",
         "1e66d71f3d5bbd6140e15716a43ca0e25fc5132af0a959c2696c11c1bf643e56",
         29571692,
         "17e0d52b7df884f834b9894395847319c0e872725327076df8684ae2045e962b",
@@ -880,6 +893,7 @@ pub static MODELS: &[Resource] = &[
     ),
     yolo5!(
         "IPcam-animal",
+        "YOLOv5 IP camera animals",
         "e62a9f8df5299476cf77e2351c711f7554e64b1200cca7756d7b58bbb9f32085",
         29616938,
         "9ca7e805c2c70013311688ebe1b339dfcb38f17216d5d499cc8195cc6b83ca61",
@@ -887,6 +901,7 @@ pub static MODELS: &[Resource] = &[
     ),
     yolo5!(
         "ipcam-bird",
+        "YOLOv5 IP camera birds",
         "265363bff2eda770463be1a1054eaaf722dec3703ec5b672a155fd1315a486be",
         84407925,
         "d79b8168621ca94221010b958bdebc08ce899ff68d4d03dc60937685f110b847",
@@ -894,6 +909,7 @@ pub static MODELS: &[Resource] = &[
     ),
     yolo5!(
         "IPcam-combined",
+        "YOLOv5 IP camera combined",
         "8f9f39828f979a4440151be2d32660e97f7a41e981af26002c5b638c4db9236a",
         29681724,
         "5224a2b0d32a0ea6ef9bb9a03ed54087280bffd0ee8228af3c46eb800b4a8315",
@@ -901,6 +917,7 @@ pub static MODELS: &[Resource] = &[
     ),
     yolo5!(
         "IPcam-dark",
+        "YOLOv5 IP camera night/dark scenes",
         "ca460c36ff279f0344756b3cadf936323fe01b28ef67b226cf00ca86b05808b7",
         29519768,
         "1e148765187f81e4fd931975810602eb5b7f976fb44ef4e679c578036e4b6558",
@@ -908,6 +925,7 @@ pub static MODELS: &[Resource] = &[
     ),
     yolo5!(
         "IPcam-general",
+        "YOLOv5 IP camera general purpose",
         "3b338be21f271a2924051fc237086a03c49daecd7e0fb2a8e97411ea5a33c6dc",
         29465778,
         "4070e087499ab1bf111efc58d98e6703b9457ce06ff0c22fb79d548074afb9c4",
@@ -915,6 +933,7 @@ pub static MODELS: &[Resource] = &[
     ),
     yolo5!(
         "package",
+        "YOLOv5 package detection",
         "b233f5a622a59f5a7ac7b48fbed79b5989ad6225a9569b3a8866a0bd75d9a9d7",
         29452878,
         "6187ff891bb16e442c0ce36593c04be118ab613299ea6060c4b1fd8c2855fe81",

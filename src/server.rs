@@ -270,12 +270,13 @@ fn devices_snapshot(state: &AppState) -> DevicesSnapshot {
         let selection = select(&hardware, &probe, true);
         (hardware, selection)
     });
-    let ort_dir = state
-        .config_read()
-        .onnxruntime_dir
-        .clone()
-        .unwrap_or_else(|| crate::setup_onnxruntime::DIR_NAME.into());
-    let onnxruntime = crate::setup_onnxruntime::installed(&crate::resolve_path(&ort_dir));
+    // The install the ONNX Runtime loader picks (explicit dir, ORT_DYLIB_PATH, active flavor,
+    // legacy flat dir, ...).
+    let explicit = state.config_read().onnxruntime_dir.clone();
+    let onnxruntime = crate::backend::libs::find_onnxruntime(explicit.as_deref())
+        .library
+        .and_then(|lib| lib.parent().map(std::path::Path::to_path_buf))
+        .and_then(|dir| crate::setup_onnxruntime::installed(&dir));
     DevicesSnapshot {
         hardware,
         selection,

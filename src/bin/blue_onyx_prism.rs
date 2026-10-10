@@ -1,11 +1,13 @@
-//! Main binary: CLI subcommands (setup-openvino, setup-onnxruntime, download-models, list-models, list-devices) or the
-//! HTTP service.
+//! Main binary: CLI subcommands (setup-openvino, setup-onnxruntime, download-models, list-models,
+//! fetch, list-resources, list-devices) or the HTTP service.
 
 use anyhow::Result;
 use blue_onyx_prism::backend::{CoreOptions, OrtOptions, Runtimes, select};
 use blue_onyx_prism::cli::{self, Cli, Command};
 use blue_onyx_prism::config::{Config, LogLevel, ModelConfig};
-use blue_onyx_prism::{download, runner, setup_onnxruntime, setup_openvino, system_info};
+use blue_onyx_prism::{
+    download, resources, runner, setup_onnxruntime, setup_openvino, system_info,
+};
 use clap::Parser;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -171,6 +173,7 @@ fn run(cli: Cli) -> Result<()> {
                 version,
                 archive,
                 keep_archive: false,
+                root: Some(resources::download_root(&read_config(&cli))),
             };
             let dir = setup_openvino::run(&opts)?;
             println!("OpenVINO runtime installed in {}", dir.display());
@@ -182,6 +185,7 @@ fn run(cli: Cli) -> Result<()> {
                 dest: dir,
                 flavor,
                 keep_archive: false,
+                root: Some(resources::download_root(&read_config(&cli))),
             };
             let (dir, flavor) = setup_onnxruntime::run(&opts)?;
             println!(
@@ -202,7 +206,8 @@ fn run(cli: Cli) -> Result<()> {
                 anyhow::bail!("specify --name <model> (repeatable) or --all; see `list-models`");
             }
             let dir = models_dir(&cli, dir);
-            let files = download::download(&name, all, &dir)?;
+            let root = resources::download_root(&read_config(&cli));
+            let files = download::download_with_root(&name, all, &dir, &root)?;
             for f in &files {
                 println!("{}", f.display());
             }
@@ -232,6 +237,36 @@ fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::ListModels { dir }) => {
             download::print_list(&models_dir(&cli, dir));
+            return Ok(());
+        }
+        Some(Command::Fetch {
+            for_config,
+            resource,
+            all_for_platform,
+            allow_large,
+        }) => {
+            let _log = cli::init_logging(LogLevel::Warn, None)?;
+            let req = resources::commands::FetchRequest {
+                for_config,
+                resources: resource,
+                all_for_platform,
+                allow_large,
+            };
+            return resources::commands::fetch(&read_config(&cli), &req);
+        }
+        Some(Command::ListResources) => {
+            let _log = cli::init_logging(LogLevel::Warn, None)?;
+            let cfg = read_config(&cli);
+            let root = resources::download_root(&cfg);
+            let installed = resources::detect_installed(&cfg, &root, None);
+            print!(
+                "{}",
+                resources::commands::list_resources(
+                    &cfg,
+                    blue_onyx_prism::backend::detect::hardware(),
+                    &installed
+                )
+            );
             return Ok(());
         }
         Some(Command::ListDevices { model }) => {

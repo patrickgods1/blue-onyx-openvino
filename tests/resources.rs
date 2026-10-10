@@ -118,19 +118,16 @@ fn large_downloads_are_only_the_cuda_libs() {
 }
 
 #[test]
-fn model_catalog_matches_download_rs() {
+fn download_models_reads_the_catalog() {
+    // `download-models` / `list-models` use the catalog's model table directly.
     let dl = blue_onyx_prism::download::catalog();
     assert_eq!(dl.len(), catalog::MODELS.len());
-    for e in dl {
-        let r = catalog::model(e.name).unwrap_or_else(|| panic!("{} not in catalog", e.name));
-        assert_eq!(r.model_name(), Some(e.name));
+    for r in dl {
+        let name = r.model_name().unwrap();
+        assert_eq!(blue_onyx_prism::download::find(name).unwrap().id, r.id);
+        assert!(!r.description.is_empty(), "{name}");
         let files: Vec<&str> = r.parts.iter().map(|p| p.file_name).collect();
-        assert_eq!(files, e.files, "{}", e.name);
-        assert!(r.parts.iter().all(|p| p.url.contains(e.repo)), "{}", e.name);
-        match r.provides {
-            catalog::Provides::Model { family, .. } => assert_eq!(family, e.family),
-            _ => panic!("{} is not a model resource", e.name),
-        }
+        assert_eq!(files, [format!("{name}.onnx"), format!("{name}.yaml")]);
     }
 }
 
@@ -597,5 +594,108 @@ fn detect_installed_reads_the_layout() {
     if std::env::var_os("ORT_DYLIB_PATH").is_none() {
         assert_eq!(inst.active_ort, None);
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn fetch_jobs_follow_the_resolver() {
+    use blue_onyx_prism::resources::commands::{FetchRequest, fetch_jobs};
+    let root = PathBuf::from("/srv/bop");
+    let cfg = ipcam();
+    let hw = win(vec![rtx(0)]);
+    let inst = files_only(&cfg);
+    let ids = |jobs: &[blue_onyx_prism::resources::Job]| -> Vec<&str> {
+        jobs.iter().map(|j| j.resource.id).collect()
+    };
+    // Default = --for-config: OpenVINO, and a note about the skipped CUDA libraries.
+    let (jobs, notes) = fetch_jobs(&cfg, &hw, &inst, &root, &FetchRequest::default()).unwrap();
+    assert_eq!(ids(&jobs), [OPENVINO_RUNTIME_ID]);
+    assert_eq!(jobs[0].target, root.join("openvino"));
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains(CUDA_LIBS_ID) && n.contains("--allow-large"))
+    );
+    // --allow-large: the CUDA flavor (marked active, nothing active yet) and the libraries.
+    let req = FetchRequest {
+        allow_large: true,
+        ..FetchRequest::default()
+    };
+    let (jobs, _) = fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap();
+    assert_eq!(ids(&jobs), ["onnxruntime-cuda", CUDA_LIBS_ID]);
+    assert!(jobs[0].activate_ort);
+    assert_eq!(jobs[0].target, root.join("onnxruntime/cuda"));
+    assert_eq!(jobs[1].target, root.join("onnxruntime/cuda-libs"));
+    // Named resources; large ones need --allow-large; unknown ids list what exists.
+    let req = FetchRequest {
+        resources: vec!["model:ipcam-dark".into(), "onnxruntime-directml".into()],
+        ..FetchRequest::default()
+    };
+    let (jobs, _) = fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap();
+    assert_eq!(ids(&jobs), ["model:IPcam-dark", "onnxruntime-directml"]);
+    assert!(jobs[0].target.ends_with("models"));
+    let req = FetchRequest {
+        resources: vec![CUDA_LIBS_ID.into()],
+        ..FetchRequest::default()
+    };
+    assert!(
+        format!(
+            "{:#}",
+            fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap_err()
+        )
+        .contains("--allow-large")
+    );
+    let req = FetchRequest {
+        resources: vec!["onnxruntime-coreml".into()],
+        ..FetchRequest::default()
+    };
+    assert!(
+        format!(
+            "{:#}",
+            fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap_err()
+        )
+        .contains("available: openvino-runtime")
+    );
+    // Everything for the platform, without the large libraries.
+    let req = FetchRequest {
+        all_for_platform: true,
+        ..FetchRequest::default()
+    };
+    let (jobs, notes) = fetch_jobs(&cfg, &hw, &inst, &root, &req).unwrap();
+    assert_eq!(jobs.len(), 1 + 3 + catalog::MODELS.len());
+    assert!(!ids(&jobs).contains(&CUDA_LIBS_ID));
+    assert_eq!(notes.len(), 1);
+}
+
+#[test]
+fn detect_installed_reads_manifests() {
+    use blue_onyx_prism::resources::manager::{MANIFEST_FILE, Manifest};
+    use blue_onyx_prism::resources::resolve::detect_installed;
+    let root = std::env::temp_dir().join(format!("bop-manifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |dir: &str, id: &str| {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+        let m = Manifest {
+            id: id.into(),
+            version: "x".into(),
+            sha256: vec![],
+            files: vec![],
+        };
+        std::fs::write(
+            root.join(dir).join(MANIFEST_FILE),
+            serde_json::to_vec(&m).unwrap(),
+        )
+        .unwrap();
+    };
+    write("openvino", OPENVINO_RUNTIME_ID);
+    write("onnxruntime/directml", "onnxruntime-directml");
+    write("onnxruntime/cuda-libs", CUDA_LIBS_ID);
+    // A manifest for something else does not count.
+    write("onnxruntime/cpu", "onnxruntime-cuda");
+    let inst = detect_installed(&Config::default(), &root, None);
+    assert!(inst.has(OPENVINO_RUNTIME_ID));
+    assert!(inst.has("onnxruntime-directml"));
+    assert!(inst.has(CUDA_LIBS_ID));
+    assert!(!inst.has("onnxruntime-cpu"));
     let _ = std::fs::remove_dir_all(&root);
 }
