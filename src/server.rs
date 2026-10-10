@@ -110,6 +110,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/resources/download", post(resources_download))
         .route("/v1/resources/remove", post(resources_remove))
         .route("/v1/resources/add-to-config", post(resources_add_to_config))
+        .route("/v1/resources/export", post(resources_export))
+        .route("/v1/resources/export/cancel", post(resources_export_cancel))
         .route("/stats", get(stats_page))
         .route("/stats.json", get(stats_json))
         .route("/prometheus", get(prometheus))
@@ -984,6 +986,90 @@ async fn resources_add_to_config(
     action_response(&state, &headers, result)
 }
 
+/// `POST /v1/resources/export` (`id` of a YOLO26 model, `confirm_large` when the export
+/// toolchain is not installed yet, `add_to_config` to append it to `models` when done): queues the
+/// export (one at a time). It runs Ultralytics' exporter locally; see `resources::export`.
+async fn resources_export(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    form: Result<Form<HashMap<String, String>>, FormRejection>,
+) -> Response {
+    let form = form.map(|Form(f)| f).unwrap_or_default();
+    let (id, confirm) = action_fields(&form);
+    let add = form.get("add_to_config").is_some_and(|v| {
+        !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off"
+        )
+    });
+    let cfg = state.config_read().clone();
+    let on_done: Option<crate::resources::export::OnDone> = add.then(|| {
+        let config = state.config.clone();
+        let path = state.config_path.clone();
+        let id = id.clone();
+        Box::new(move |_: &crate::resources::export::ExportOutput| {
+            add_export_to_config_file(&config, &path, &id)
+        }) as crate::resources::export::OnDone
+    });
+    let result = match &state.resources {
+        Some(ctx) => crate::resources::status::export(ctx, &cfg, &id, confirm, on_done).map(|m| {
+            if add {
+                format!("{m}; it is added to the config when done")
+            } else {
+                m
+            }
+        }),
+        None => Err(no_manager()),
+    };
+    action_response(&state, &headers, result)
+}
+
+/// After an export: append the model to the config file (the file is what the next generation
+/// loads) and to this generation's in-memory config.
+fn add_export_to_config_file(config: &Arc<RwLock<Config>>, path: &std::path::Path, id: &str) {
+    let mut c = if path.exists() {
+        match Config::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "not adding {id} to the config: reading {}: {e:#}",
+                    path.display()
+                );
+                return;
+            }
+        }
+    } else {
+        config.read().unwrap_or_else(|e| e.into_inner()).clone()
+    };
+    match crate::resources::status::add_to_config(None, &mut c, id) {
+        Ok(msg) => match c.save(path) {
+            Ok(()) => {
+                info!("{msg} ({})", path.display());
+                let mut mem = config.write().unwrap_or_else(|e| e.into_inner());
+                let _ = crate::resources::status::add_to_config(None, &mut mem, id);
+            }
+            Err(e) => warn!("not adding {id} to the config: {e:#}"),
+        },
+        Err(e) => warn!("not adding {id} to the config: {e}"),
+    }
+}
+
+/// `POST /v1/resources/export/cancel` (`id`): cancels a queued or running export (the exporter
+/// process is stopped).
+async fn resources_export_cancel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    form: Result<Form<HashMap<String, String>>, FormRejection>,
+) -> Response {
+    let form = form.map(|Form(f)| f).unwrap_or_default();
+    let (id, _) = action_fields(&form);
+    let result = match &state.resources {
+        Some(ctx) => crate::resources::status::cancel_export(ctx, &id),
+        None => Err(no_manager()),
+    };
+    action_response(&state, &headers, result)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Test page
 
@@ -1233,6 +1319,8 @@ struct ModelSelectRow {
     provider: Option<String>,
     /// Latest benchmark recommendation for this model.
     bench: Option<BenchHint>,
+    /// The file is missing and made by exporting this resource (`model:yolo26s`).
+    needs_export: Option<String>,
 }
 
 /// "benchmark: ort:coreml" link on the Models card.
@@ -1336,12 +1424,21 @@ fn model_choices(
                     href: format!("/benchmark#m-{}", encode_uri_component(&r.model)),
                 }
             });
+            let exists = c.data_path(&m.path).is_file();
+            let needs_export = (!exists
+                && m.path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("onnx")))
+            .then(|| crate::resources::catalog::export_model(&m.path.to_string_lossy()))
+            .flatten()
+            .map(|r| r.id.to_string());
             ModelSelectRow {
                 devices: model_device_choices(snap, m.device.as_deref(), &global),
                 name,
                 family: m.family.to_string(),
                 path: m.path.display().to_string(),
-                exists: c.data_path(&m.path).is_file(),
+                exists,
+                needs_export,
                 enabled: m.enabled,
                 is_default: default == Some(i),
                 provider,
@@ -1375,6 +1472,10 @@ struct ConfigTemplate {
     resources_enabled: bool,
     /// Resolved `models_dir` (where YOLO26 exports go).
     models_dir: String,
+    /// Where the YOLO26 export toolchain lives (`<data root>/tools`).
+    tools_dir: String,
+    /// AGPL-3.0 notice shown with the YOLO26 group.
+    yolo26_notice: &'static str,
     force_cpu_note: Option<String>,
     /// One line about the `benchmark` config section and the last results.
     bench_summary: String,
@@ -1483,6 +1584,12 @@ fn config_template(
             force_cpu_note(&cfg, &snap),
         )
     };
+    let tools_dir = state
+        .config_read()
+        .data_root()
+        .join(crate::resources::export::TOOLS_DIR)
+        .display()
+        .to_string();
     let bench_summary = {
         let cfg = state.config_read();
         let b = &cfg.benchmark;
@@ -1516,6 +1623,8 @@ fn config_template(
         resource_groups,
         local_models,
         models_dir,
+        tools_dir,
+        yolo26_notice: crate::resources::catalog::YOLO26_NOTICE,
         force_cpu_note,
         resources_enabled: state.resources.is_some(),
         nav: "config",
@@ -2900,13 +3009,14 @@ mod tests {
         let models = root.join("models");
         std::fs::create_dir_all(&models).unwrap();
         for f in [
-            "yolo26n.xml",
-            "yolo26n.bin",
-            "yolo26n.onnx",
+            "mynet.xml",
+            "mynet.bin",
+            "mynet.onnx",
             "custom.xml",
             "custom.bin",
             "other.onnx",
             "IPcam-general.onnx",
+            "yolo26s.onnx",
             "notes.txt",
         ] {
             std::fs::write(models.join(f), b"x").unwrap();
@@ -2914,32 +3024,33 @@ mod tests {
         let j = resources(&state).await;
         let local = j["localModels"].as_array().unwrap();
         let ids: Vec<&str> = local.iter().map(|l| l["id"].as_str().unwrap()).collect();
-        // `other.onnx` is configured, IPcam-general is a catalog download; .onnx wins over .xml.
-        assert_eq!(ids, ["local:custom.xml", "local:yolo26n.onnx"], "{j}");
-        assert_eq!(local[1]["also"], "yolo26n.xml");
+        // `other.onnx` is configured, IPcam-general is a catalog download, yolo26s.onnx is an
+        // export (its own row); .onnx wins over .xml.
+        assert_eq!(ids, ["local:custom.xml", "local:mynet.onnx"], "{j}");
+        assert_eq!(local[1]["also"], "mynet.xml");
         assert_eq!(local[1]["family"], "auto");
         assert_eq!(local[1]["group"], "local-models");
         assert_eq!(local[0]["format"], "openvino-ir");
 
         let (_, html) = get_text(&state, "/config").await;
-        assert!(html.contains("value=\"local:yolo26n.onnx\""), "{html}");
+        assert!(html.contains("value=\"local:mynet.onnx\""), "{html}");
         assert!(html.contains("<h3 id=\"res-runtimes\">Runtimes</h3>"));
 
         let (s, b) = post_action(
             &state,
             "/v1/resources/add-to-config",
-            "id=local%3Ayolo26n.onnx",
+            "id=local%3Amynet.onnx",
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{b}");
-        assert!(b["message"].as_str().unwrap().contains("added 'yolo26n'"));
+        assert!(b["message"].as_str().unwrap().contains("added 'mynet'"));
         let saved = Config::load(&state.config_path).unwrap();
         let m = saved
             .models
             .iter()
-            .find(|m| m.effective_name() == "yolo26n")
+            .find(|m| m.effective_name() == "mynet")
             .unwrap();
-        assert_eq!(m.path, PathBuf::from("models/yolo26n.onnx"));
+        assert_eq!(m.path, PathBuf::from("models/mynet.onnx"));
         assert_eq!(m.family, crate::model::ModelFamilyKind::Auto);
         let j = resources(&state).await;
         let ids: Vec<&str> = j["localModels"]
@@ -2958,6 +3069,263 @@ mod tests {
             let (s, b) = post_action(&state, "/v1/resources/add-to-config", bad).await;
             assert_eq!(s, StatusCode::NOT_FOUND, "{bad}: {b}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- YOLO26 export ----
+
+    /// A server whose exporter uses the fake toolchain (no network, no Python). The config has an
+    /// enabled `other.onnx` and a `yolo26s` entry whose file is not exported yet.
+    fn export_state(fake: Arc<crate::resources::export::fake::Fake>) -> (Arc<AppState>, PathBuf) {
+        let root = std::env::temp_dir().join(format!("bop-srv-export-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("models")).unwrap();
+        let config = Config {
+            download_dir: Some(root.clone()),
+            models: vec![
+                ModelConfig {
+                    path: "models/other.onnx".into(),
+                    ..Default::default()
+                },
+                ModelConfig {
+                    path: "models/yolo26s.onnx".into(),
+                    family: crate::model::ModelFamilyKind::Yolo26,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let provisioner = Arc::new(Provisioner::with_options(ProvisionOptions {
+            export_hooks: Some((fake.clone(), fake)),
+            ..ProvisionOptions::default()
+        }));
+        let registry = ModelRegistry::from_handles(
+            vec![],
+            None,
+            RuntimeInfo {
+                openvino_version: "2026.0.0-test".into(),
+                available_devices: vec!["CPU".into()],
+                has_gpu: false,
+            },
+        );
+        let mut state = AppState::new(
+            Arc::new(registry),
+            Arc::new(Metrics::new("0.0.0")),
+            config.clone(),
+            root.join("cfg.json"),
+        );
+        // What the runner plans for this config (the resolver's "needs export").
+        let hw = crate::backend::detect::hardware();
+        let installed = crate::resources::detect_installed(&config, &root, None);
+        let resolution = crate::resources::needed(&config, hw, &installed);
+        let mut provision = Provision::none(&config);
+        provision.resolution = resolution;
+        state.resources = Some(ResourcesCtx {
+            provisioner,
+            provision: Arc::new(provision),
+            openvino_loaded: true,
+            ort_loaded: None,
+        });
+        (Arc::new(state), root)
+    }
+
+    fn export_supported() -> bool {
+        let p = crate::resources::catalog::Platform::current();
+        crate::resources::export::unsupported_reason(p.os, p.arch).is_none()
+    }
+
+    fn exporter(state: &AppState) -> Arc<crate::resources::export::Exporter> {
+        state
+            .resources
+            .as_ref()
+            .unwrap()
+            .provisioner
+            .exporter()
+            .expect("exporter started")
+    }
+
+    #[tokio::test]
+    async fn yolo26_export_endpoints() {
+        if !export_supported() {
+            return;
+        }
+        let fake = Arc::new(crate::resources::export::fake::Fake::new());
+        let (state, root) = export_state(fake.clone());
+        let j = resources(&state).await;
+        let n = row(&j, "model:yolo26n");
+        assert_eq!(n["group"], "models-yolo26");
+        assert_eq!(n["action"], "export");
+        assert_eq!(n["state"], "available", "{n}");
+        assert_eq!(n["large"], true, "toolchain not installed yet");
+        assert!(n["confirm"].as_str().unwrap().contains("AGPL-3.0"));
+        assert!(
+            n["confirm"]
+                .as_str()
+                .unwrap()
+                .contains("runs Ultralytics' exporter locally")
+        );
+        // The configured, not yet exported yolo26s is "needs export", never auto-exported.
+        let s_row = row(&j, "model:yolo26s");
+        assert_eq!(s_row["state"], "needs-export", "{s_row}");
+        assert_eq!(s_row["blocking"], serde_json::json!(["yolo26s"]));
+        let uv = row(&j, "tool:uv");
+        assert_eq!(uv["action"], "toolchain");
+        assert_eq!(uv["state"], "available");
+        assert_eq!(uv["removable"], false);
+
+        // The Download endpoint refuses exports; Export without confirmation is refused too.
+        let (s, b) = post_action(&state, "/v1/resources/download", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::CONFLICT, "{b}");
+        let (s, b) = post_action(&state, "/v1/resources/export", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::CONFLICT, "{b}");
+        assert!(b["message"].as_str().unwrap().contains("confirm"), "{b}");
+        assert!(fake.cmds().is_empty());
+        let (s, _) = post_action(&state, "/v1/resources/export", "id=model%3Anope").await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = post_action(&state, "/v1/resources/export", "id=openvino-runtime").await;
+        assert_eq!(s, StatusCode::CONFLICT);
+
+        // Confirmed export, added to the config when done.
+        let (s, b) = post_action(
+            &state,
+            "/v1/resources/export",
+            "id=model%3Ayolo26n&confirm_large=1&add_to_config=1",
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        let st = exporter(&state)
+            .wait("model:yolo26n", Some(Duration::from_secs(20)))
+            .unwrap();
+        assert_eq!(
+            st.state,
+            crate::resources::export::ExportState::Installed,
+            "{st:?}"
+        );
+        assert!(root.join("models/yolo26n.onnx").is_file());
+        assert!(root.join("models/yolo26n.yaml").is_file());
+        let saved = Config::load(&state.config_path).unwrap();
+        let m = saved
+            .models
+            .iter()
+            .find(|m| m.effective_name() == "yolo26n")
+            .expect("added to the config file");
+        assert_eq!(m.path, PathBuf::from("models/yolo26n.onnx"));
+        assert_eq!(m.family, crate::model::ModelFamilyKind::Yolo26);
+        assert_eq!(m.classes, Some(PathBuf::from("models/yolo26n.yaml")));
+        assert!(!m.enabled, "another model is enabled");
+
+        let j = resources(&state).await;
+        let n = row(&j, "model:yolo26n");
+        assert_eq!(n["state"], "installed", "{n}");
+        assert_eq!(n["state_text"], "exported");
+        assert_eq!(n["can_add_to_config"], false, "already in the config");
+        assert_eq!(n["removable"], true);
+        assert_eq!(n["large"], false, "toolchain installed now");
+        let uv = row(&j, "tool:uv");
+        assert_eq!(uv["state"], "installed", "{uv}");
+        assert_eq!(uv["removable"], true);
+        // Not listed again as a local model.
+        assert!(j["localModels"].as_array().unwrap().is_empty(), "{j}");
+
+        // Re-export of an exported model is a no-op; the second size needs no confirmation now.
+        let (s, b) = post_action(&state, "/v1/resources/export", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(b["message"].as_str().unwrap().contains("already exported"));
+        let (s, b) = post_action(&state, "/v1/resources/export", "id=model%3Ayolo26s").await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        exporter(&state).wait("model:yolo26s", Some(Duration::from_secs(20)));
+        assert!(root.join("models/yolo26s.onnx").is_file());
+
+        // yolo26s is used by an enabled model: Remove is refused. yolo26n can go.
+        let (s, b) = post_action(&state, "/v1/resources/remove", "id=model%3Ayolo26s").await;
+        assert_eq!(s, StatusCode::CONFLICT, "{b}");
+        let (s, b) = post_action(&state, "/v1/resources/remove", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        assert!(!root.join("models/yolo26n.onnx").exists());
+        assert!(!root.join("models/.yolo26n.installed.json").exists());
+        // Remove export toolchain.
+        let (s, b) = post_action(&state, "/v1/resources/remove", "id=tool%3Auv").await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        assert!(!root.join("tools/yolo26-env").exists());
+        assert!(!root.join("tools/uv").exists());
+        let j = resources(&state).await;
+        assert_eq!(row(&j, "tool:uv")["state"], "available");
+        assert_eq!(row(&j, "model:yolo26n")["state"], "available");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn yolo26_export_cancel_and_page() {
+        if !export_supported() {
+            return;
+        }
+        let fake = Arc::new(crate::resources::export::fake::Fake {
+            hang_on: Some("export_yolo26.py"),
+            ..crate::resources::export::fake::Fake::new()
+        });
+        let (state, root) = export_state(fake);
+        {
+            // allow_large_downloads: no confirmation needed.
+            state.config_write().allow_large_downloads = true;
+        }
+        let (s, _) = post_action(&state, "/v1/resources/cancel", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "no such endpoint");
+        let (s, b) = post_action(&state, "/v1/resources/export/cancel", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::CONFLICT, "nothing to cancel: {b}");
+        let (s, b) = post_action(&state, "/v1/resources/export", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        // Wait until it hangs in the exporter: the row is busy with stage text and progress.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let n = loop {
+            let j = resources(&state).await;
+            let n = row(&j, "model:yolo26n").clone();
+            if n["state_text"]
+                .as_str()
+                .unwrap()
+                .starts_with("exporting: exporting to ONNX (5/6)")
+            {
+                break n;
+            }
+            assert!(Instant::now() < deadline, "{n}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(n["state"], "exporting");
+        assert_eq!(n["busy"], true);
+        assert_eq!(n["cancellable"], true);
+        assert!(n["progress"].as_u64().unwrap() >= 78, "{n}");
+        assert!(!n["log"].as_array().unwrap().is_empty());
+        // Busy: the toolchain cannot be removed, the page shows Cancel and the group.
+        let j = resources(&state).await;
+        assert_eq!(row(&j, "tool:uv")["removable"], false);
+        let (_, html) = get_text(&state, "/config").await;
+        assert!(
+            html.contains("YOLO26 (exported locally, AGPL-3.0)"),
+            "{html}"
+        );
+        assert!(html.contains("action=\"/v1/resources/export/cancel\""));
+        assert!(html.contains("needs export"), "Models card marks yolo26s");
+        assert!(html.contains("href=\"#res-models-yolo26\""));
+        assert!(html.contains("Remove export toolchain") || html.contains("an export is running"));
+        let (s, b) = post_action(&state, "/v1/resources/remove", "id=tool%3Auv").await;
+        assert_eq!(s, StatusCode::CONFLICT, "{b}");
+
+        let (s, b) = post_action(&state, "/v1/resources/export/cancel", "id=model%3Ayolo26n").await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        let st = exporter(&state)
+            .wait("model:yolo26n", Some(Duration::from_secs(20)))
+            .unwrap();
+        assert_eq!(st.state, crate::resources::export::ExportState::Cancelled);
+        let j = resources(&state).await;
+        let n = row(&j, "model:yolo26n");
+        assert_eq!(n["state"], "available");
+        assert_eq!(n["state_text"], "export cancelled");
+        assert!(!root.join("models/yolo26n.onnx").exists());
+        // The page renders the Export button with the AGPL confirm.
+        let (_, html) = get_text(&state, "/config").await;
+        assert!(html.contains("action=\"/v1/resources/export\""));
+        assert!(
+            html.contains("data-confirm=\"Export YOLO26 nano?"),
+            "{html}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

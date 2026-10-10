@@ -1,4 +1,5 @@
-# Python environment for scripts/export_yolo26.py (YOLO26 -> OpenVINO IR).
+# Python environment for exporting YOLO26 by hand with scripts/export_yolo26.py (YOLO26 -> OpenVINO IR).
+# The service's on-demand export uses its own pinned set: requirements-yolo26-export.txt.
 # Python 3.10-3.12. Create with:  uv venv --python 3.11 .venv && uv pip install -r scripts/requirements-export.txt
 # (or: python -m venv .venv && .venv/bin/pip install -r scripts/requirements-export.txt)
 ultralytics>=8.4,<9

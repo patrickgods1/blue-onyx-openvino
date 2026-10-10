@@ -13,6 +13,8 @@
 //!   DirectML shared libraries, flat.
 //! - [`Layout::NvidiaWheel`]: CUDA/cuDNN shared libraries from `nvidia/<component>/{bin,lib}/`,
 //!   flat.
+//! - [`Layout::Uv`]: only the `uv` / `uv.exe` binary of a uv release archive (made executable;
+//!   it is run only by a YOLO26 export the user starts, see `super::export`).
 //! - [`Layout::File`]: not an archive; the manager moves the verified file into place.
 
 use super::catalog::{ArchiveKind, Flavor, Layout, Resource, ResourceKind};
@@ -82,8 +84,49 @@ pub fn extract_part(
                 ArchiveKind::TarGz => extract_tgz(archive, dest, wanted, |_, _, _| None),
             }
         }
+        Layout::Uv => {
+            let wanted = |e: &str| uv_wanted(windows, e);
+            match kind {
+                ArchiveKind::Zip => extract_zip(archive, dest, wanted),
+                ArchiveKind::TarGz => extract_tgz(archive, dest, wanted, |_, _, _| None),
+            }
+        }
         Layout::File => anyhow::bail!("{} is not an archive", archive.display()),
     }
+}
+
+/// File name of the uv binary.
+pub fn uv_binary_name(windows: bool) -> &'static str {
+    if windows { "uv.exe" } else { "uv" }
+}
+
+/// uv release archives: `uv-<triple>/uv` (tar.gz) or `uv.exe` at the top (Windows zip). Only the
+/// binary itself is kept (not `uvx` / `uvw`).
+pub fn uv_wanted(windows: bool, entry: &str) -> Option<String> {
+    let parts = components(entry)?;
+    let name = uv_binary_name(windows);
+    match parts.as_slice() {
+        [file] | [_, file] if file == name => Some(name.to_string()),
+        _ => None,
+    }
+}
+
+/// Make the extracted uv binary executable and check it is there.
+fn uv_check(windows: bool, dest: &Path, got: &BTreeSet<String>) -> Result<Vec<String>> {
+    let name = uv_binary_name(windows);
+    if !got.contains(name) {
+        anyhow::bail!("the uv archive has no {name}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dest.join(name);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dest;
+    Ok(Vec::new())
 }
 
 /// After every part of `resource` is extracted into `dest`: platform fix-ups, sanity checks
@@ -108,7 +151,8 @@ pub fn finalize(
             w
         }
         ResourceKind::CudaLibs => wheel_check(target.windows(), dest, got)?,
-        ResourceKind::Model | ResourceKind::BenchImages => Vec::new(),
+        ResourceKind::Tool => uv_check(target.windows(), dest, got)?,
+        ResourceKind::Model | ResourceKind::BenchImages | ResourceKind::ExportModel => Vec::new(),
     };
     if !resource.kind.is_plain_files() {
         write_marker(dest, "VERSION", version, got)?;
@@ -625,7 +669,7 @@ pub fn ort_wanted(layout: Layout, flavor: Flavor, windows: bool, entry: &str) ->
         Layout::NugetDirectMl => {
             (dirs == ["bin", "x64-win"] && name == DIRECTML_DLL).then(|| name.clone())
         }
-        Layout::OpenVino | Layout::NvidiaWheel | Layout::File => None,
+        Layout::OpenVino | Layout::NvidiaWheel | Layout::Uv | Layout::File => None,
     }
 }
 
@@ -1288,6 +1332,83 @@ mod tests {
         );
         assert!(!dest.join("libcustom.so").exists());
         assert!(!dest.join("libonnxruntime_providers_shared.so").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn uv_archives_extract_only_the_binary() {
+        assert_eq!(
+            uv_wanted(false, "uv-aarch64-apple-darwin/uv").as_deref(),
+            Some("uv")
+        );
+        assert_eq!(uv_wanted(false, "uv-aarch64-apple-darwin/uvx"), None);
+        assert_eq!(
+            uv_wanted(false, "a/b/uv"),
+            None,
+            "only top level or one folder deep"
+        );
+        assert_eq!(uv_wanted(false, "../uv"), None);
+        assert_eq!(uv_wanted(true, "uv.exe").as_deref(), Some("uv.exe"));
+        assert_eq!(uv_wanted(true, "uvw.exe"), None);
+        assert_eq!(uv_wanted(true, "uv"), None);
+
+        let dir = std::env::temp_dir().join(format!("bop-uv-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mac = crate::resources::catalog::uv_for("macos", "aarch64").unwrap();
+        // tar.gz with uv + uvx in a top folder.
+        let archive = dir.join("uv.tgz");
+        {
+            let f = std::fs::File::create(&archive).unwrap();
+            let gz = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+            let mut tar = tar::Builder::new(gz);
+            for name in ["uv-aarch64-apple-darwin/uv", "uv-aarch64-apple-darwin/uvx"] {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(4);
+                h.set_mode(0o644);
+                h.set_cksum();
+                tar.append_data(&mut h, name, &b"\x7fELF"[..]).unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        let t = Target {
+            os: "macos",
+            arch: "aarch64",
+        };
+        let dest = dir.join("out");
+        let mut got =
+            extract_part(&archive, ArchiveKind::TarGz, Layout::Uv, None, t, &dest).unwrap();
+        assert_eq!(got.iter().collect::<Vec<_>>(), ["uv"]);
+        assert!(!dest.join("uvx").exists());
+        finalize(mac, "0.12.19", t, &dest, &mut got).unwrap();
+        assert!(got.contains("VERSION"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dest.join("uv"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        // Windows zip: uv.exe at the top; an archive without it is refused.
+        let win = crate::resources::catalog::uv_for("windows", "x86_64").unwrap();
+        let wt = Target {
+            os: "windows",
+            arch: "x86_64",
+        };
+        let zip = dir.join("uv.zip");
+        zip_with(
+            &zip,
+            &[("uv.exe", b"MZ"), ("uvx.exe", b"MZ"), ("uvw.exe", b"MZ")],
+        );
+        let wdest = dir.join("win");
+        let mut got = extract_part(&zip, ArchiveKind::Zip, Layout::Uv, None, wt, &wdest).unwrap();
+        assert_eq!(got.iter().collect::<Vec<_>>(), ["uv.exe"]);
+        finalize(win, "0.12.19", wt, &wdest, &mut got).unwrap();
+        zip_with(&zip, &[("uvx.exe", b"MZ")]);
+        let empty = dir.join("empty");
+        let mut got = extract_part(&zip, ArchiveKind::Zip, Layout::Uv, None, wt, &empty).unwrap();
+        assert!(finalize(win, "0.12.19", wt, &empty, &mut got).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

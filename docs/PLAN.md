@@ -227,7 +227,7 @@ Each `Resource { id, kind, version, platform, url, sha256, size, dest, provides 
 - **`openvino-runtime`**: the per-OS/arch archive that `setup_openvino.rs` already pins, with a SHA-256 added. It provides `openvino:*`.
 - **`onnxruntime-<flavor>`**: `cpu`, `cuda` (includes TensorRT), `directml` or `coreml` (the macOS package). Each provides its `ort:*` options.
 - **`nvidia-cuda-libs`**: the CUDA 12 runtime, cuBLAS and cuDNN 9 shared libraries, taken from NVIDIA's redistributable wheels on PyPI (`nvidia-cuda-runtime-cu12`, `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`). They're extracted with whitelisted names into `<exe_dir>/onnxruntime/cuda-libs`, so a CUDA toolkit install is no longer needed. **Opt-in**, because it's around 1 GB and comes under NVIDIA's license: `allow_large_downloads` or a click in the UI.
-- **Models**: the existing hf-hub catalog in `download.rs` (IPcam and RT-DETR `.onnx` + `.yaml`), with sizes. YOLO26 can't be fetched (AGPL weights, exported locally), so it stays a manual export and the UI explains that.
+- **Models**: the existing hf-hub catalog in `download.rs` (IPcam and RT-DETR `.onnx` + `.yaml`), with sizes. YOLO26 can't be fetched (AGPL weights): it is exported on this machine on request (Config page Export / `fetch --resource model:yolo26s`, `src/resources/export.rs`: pinned uv, hashed package locks, the embedded export script), never automatically.
 
 Pins, URLs and hashes live in one table per resource kind, and a test checks that every `(os, arch)` we ship has an entry.
 

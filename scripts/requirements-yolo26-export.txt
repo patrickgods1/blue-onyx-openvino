@@ -1,0 +1,19 @@
+# Pinned Python packages for the on-demand YOLO26 export (Config page "Export", or
+# `blue-onyx-prism fetch --resource model:yolo26s`). ONNX only: no OpenVINO Python package (the
+# OpenVINO runtime reads the .onnx directly). Every release is at least two weeks old.
+#
+# This is the input of the hashed per-platform locks in scripts/yolo26-export/locks/, which the
+# service installs with `uv pip install --require-hashes --no-deps --only-binary :all:`. Regenerate
+# them after changing a pin (see scripts/yolo26-export/README.md).
+#
+# torch / torchvision: CPU builds. On Linux and Windows they come from the PyTorch CPU index
+# (`--torch-backend cpu`, https://download.pytorch.org/whl/cpu) so the ~2 GB CUDA wheels are not
+# pulled; on macOS from PyPI.
+ultralytics==8.4.163
+torch==2.14.0
+torchvision==0.29.0
+onnx==1.22.0
+onnxslim==0.1.96
+# Ultralytics checks for onnxruntime when it simplifies the ONNX graph (and would otherwise try to
+# pip-install it).
+onnxruntime==1.29.0

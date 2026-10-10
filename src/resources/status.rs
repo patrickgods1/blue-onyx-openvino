@@ -12,10 +12,16 @@
 //!   `download-models --add-to-config`, or a model file found in `models_dir` that no config
 //!   entry references (id `local:<file>`, see [`local_models`]; family `auto`).
 //!
+//! - **Export** (YOLO26, [`export`]): queues a user-confirmed export on the [`super::export`]
+//!   exporter (the toolchain download needs `confirm_large` unless `allow_large_downloads`);
+//!   **Cancel** stops it. Remove deletes the exported files; removing `tool:uv` removes the whole
+//!   export toolchain.
+//!
 //! Rows carry a `group` ([`group_of`]) so the UI shows Runtimes, GPU libraries and Models
 //! (by family) as separate tables ([`grouped`]).
 
-use super::catalog::{self, Flavor, Resource, ResourceKind};
+use super::catalog::{self, Flavor, Platform, Resource, ResourceKind};
+use super::export::{self, ExportState};
 use super::manager::{self, Job, State, Status};
 use super::provision::{Provision, Provisioner};
 use super::resolve::{self, Installed, Resolution};
@@ -93,6 +99,17 @@ pub struct ResourceRow {
     pub can_add_to_config: bool,
     /// Where it installs.
     pub target: String,
+    /// Which buttons the UI shows: `download` (catalog downloads), `export` (YOLO26), `toolchain`
+    /// (`tool:uv`: Remove deletes the whole export toolchain), `none` (not possible here).
+    pub action: &'static str,
+    /// A running export or download can be cancelled.
+    pub cancellable: bool,
+    /// Text of the confirmation before the action (exports: size and license).
+    pub confirm: Option<String>,
+    /// Second size line, e.g. "+ export toolchain ~350 MB (once)".
+    pub size_note: Option<String>,
+    /// Last lines of output of a running or failed export.
+    pub log: Vec<String>,
 }
 
 /// Why an action was refused.
@@ -136,6 +153,8 @@ fn kind_str(k: ResourceKind) -> &'static str {
         ResourceKind::CudaLibs => "cuda-libs",
         ResourceKind::Model => "model",
         ResourceKind::BenchImages => "bench-images",
+        ResourceKind::ExportModel => "export-model",
+        ResourceKind::Tool => "tool",
     }
 }
 
@@ -147,6 +166,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("models-rt-detr", "Models \u{b7} RT-DETRv2"),
     ("models-d-fine", "Models \u{b7} D-FINE"),
     ("models-rf-detr", "Models \u{b7} RF-DETR"),
+    ("models-yolo26", "YOLO26 (exported locally, AGPL-3.0)"),
     ("bench-images", "Benchmark images"),
 ];
 
@@ -161,8 +181,12 @@ pub fn group_of(r: &Resource) -> &'static str {
         ResourceKind::CudaLibs => "gpu-libraries",
         ResourceKind::Model => model_group(r.id),
         ResourceKind::BenchImages => "bench-images",
+        ResourceKind::ExportModel | ResourceKind::Tool => YOLO26_GROUP,
     }
 }
+
+/// Group key of the YOLO26 exports and their toolchain.
+pub const YOLO26_GROUP: &str = "models-yolo26";
 
 fn model_group(id: &str) -> &'static str {
     let id = id.to_ascii_lowercase();
@@ -269,6 +293,13 @@ pub fn local_models(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<LocalMod
         .chain(catalog::MODELS.iter())
         .filter(|r| r.kind == ResourceKind::Model)
         .flat_map(|r| r.parts.iter().map(|p| p.file_name.to_ascii_lowercase()))
+        // Exported YOLO26 models have their own rows (with Add to config).
+        .chain(
+            catalog::EXPORT_MODELS
+                .iter()
+                .filter_map(catalog::export_files)
+                .map(|(onnx, _)| onnx),
+        )
         .collect();
     let configured: Vec<PathBuf> = config
         .models
@@ -365,7 +396,7 @@ pub fn find(ctx: Option<&ResourcesCtx>, id: &str) -> Option<&'static Resource> {
 /// root.
 pub fn target_dir(config: &Config, res: &Resource) -> PathBuf {
     match res.kind {
-        ResourceKind::Model => config.data_path(&config.models_dir),
+        ResourceKind::Model | ResourceKind::ExportModel => config.data_path(&config.models_dir),
         _ => config.data_root().join(res.dest),
     }
 }
@@ -388,8 +419,20 @@ fn model_installed(res: &Resource, dir: &Path) -> bool {
 fn is_installed(res: &Resource, installed: &Installed, config: &Config) -> bool {
     match res.kind {
         ResourceKind::Model => model_installed(res, &target_dir(config, res)),
-        ResourceKind::BenchImages => manager::is_installed(res, &target_dir(config, res)),
+        ResourceKind::ExportModel => export::is_exported(res, &target_dir(config, res)),
+        ResourceKind::BenchImages | ResourceKind::Tool => {
+            manager::is_installed(res, &target_dir(config, res))
+        }
         _ => installed.has(res.id),
+    }
+}
+
+/// The model files of `res` in the models directory (exports: the `.onnx` and `.yaml` they write).
+fn model_paths(res: &Resource, config: &Config) -> Vec<PathBuf> {
+    let dir = target_dir(config, res);
+    match catalog::export_files(res) {
+        Some((onnx, yaml)) => vec![dir.join(onnx), dir.join(yaml)],
+        None => res.parts.iter().map(|p| dir.join(p.file_name)).collect(),
     }
 }
 
@@ -401,8 +444,7 @@ fn ours(res: &Resource, config: &Config) -> bool {
 
 /// Enabled config models whose file is part of `res`.
 fn models_using(res: &Resource, config: &Config) -> Vec<String> {
-    let dir = target_dir(config, res);
-    let files: Vec<PathBuf> = res.parts.iter().map(|p| dir.join(p.file_name)).collect();
+    let files = model_paths(res, config);
     config
         .enabled_models()
         .filter(|m| files.contains(&config.data_path(&m.path)))
@@ -421,8 +463,22 @@ fn remove_blocked(
         return Some("downloading; wait until it finishes".into());
     }
     let restart = "loaded by this process; restart required (stop the service, then remove it)";
+    let exporting = ctx
+        .and_then(|c| c.provisioner.exporter())
+        .is_some_and(|e| e.busy());
     match res.kind {
-        ResourceKind::Model => {
+        ResourceKind::Tool if exporting => {
+            return Some("an export is running; cancel it or wait until it finishes".into());
+        }
+        ResourceKind::ExportModel
+            if ctx
+                .and_then(|c| c.provisioner.exporter())
+                .and_then(|e| e.status(res.id))
+                .is_some_and(|s| s.state.is_busy()) =>
+        {
+            return Some("being exported; cancel it first".into());
+        }
+        ResourceKind::Model | ResourceKind::ExportModel => {
             let users = models_using(res, config);
             if !users.is_empty() {
                 return Some(format!(
@@ -445,7 +501,7 @@ fn remove_blocked(
         }
         _ => {}
     }
-    if res.kind != ResourceKind::Model && !ours(res, config) {
+    if !res.kind.is_model() && res.kind != ResourceKind::Tool && !ours(res, config) {
         return Some("not installed by Blue Onyx Prism (user-managed); remove it by hand".into());
     }
     None
@@ -480,6 +536,9 @@ pub fn rows(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<ResourceRow> {
     platform_resources(ctx)
         .into_iter()
         .map(|r| {
+            if matches!(r.kind, ResourceKind::ExportModel | ResourceKind::Tool) {
+                return export_row(ctx, config, r, &res, &statuses, &configured);
+            }
             let status = status_of(&statuses, r.id);
             let on_disk = is_installed(r, &installed, config);
             let need = res.needs.iter().find(|n| n.id() == r.id);
@@ -532,7 +591,10 @@ pub fn rows(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<ResourceRow> {
                 ResourceKind::OpenVinoRuntime => on_disk && ctx.is_some_and(|c| c.openvino_loaded),
                 ResourceKind::OnnxRuntime(f) => ctx.is_some_and(|c| c.ort_loaded == Some(f)),
                 ResourceKind::CudaLibs => crate::backend::libs::cuda_libs_preloaded().is_some(),
-                ResourceKind::Model | ResourceKind::BenchImages => false,
+                ResourceKind::Model
+                | ResourceKind::BenchImages
+                | ResourceKind::ExportModel
+                | ResourceKind::Tool => false,
             };
             let blocked = if on_disk {
                 remove_blocked(ctx, r, config, status)
@@ -572,9 +634,296 @@ pub fn rows(ctx: Option<&ResourcesCtx>, config: &Config) -> Vec<ResourceRow> {
                 remove_blocked: if on_disk { blocked } else { None },
                 can_add_to_config: can_add,
                 target: target_dir(config, r).display().to_string(),
+                action: "download",
+                cancellable: false,
+                confirm: r.is_large().then(|| {
+                    format!(
+                        "{} is {} ({}). Download it?",
+                        r.title,
+                        catalog::format_size(r.size()),
+                        r.license
+                    )
+                }),
+                size_note: None,
+                log: Vec::new(),
             }
         })
         .collect()
+}
+
+/// "~350 MB download, ~1.1 GB on disk".
+fn toolchain_cost(p: Platform) -> Option<String> {
+    catalog::toolchain_estimate(p.os, p.arch).map(|e| {
+        format!(
+            "~{} download, ~{} on disk",
+            catalog::format_size(e.download),
+            catalog::format_size(e.disk)
+        )
+    })
+}
+
+/// Confirmation text before exporting `res`.
+pub fn export_confirm(res: &Resource, toolchain_ready: bool, p: Platform) -> String {
+    let what = if toolchain_ready {
+        format!(
+            "Downloads the {} weights ({}).",
+            res.title,
+            catalog::format_size(res.size())
+        )
+    } else {
+        format!(
+            "Sets up the export toolchain once (uv, Python 3.11, PyTorch CPU and Ultralytics: {}) \
+             and downloads the {} weights ({}).",
+            toolchain_cost(p).unwrap_or_else(|| "large".into()),
+            res.title,
+            catalog::format_size(res.size())
+        )
+    };
+    format!(
+        "Export {}? {what} It runs Ultralytics' exporter locally (a few minutes). {}",
+        res.title,
+        catalog::YOLO26_NOTICE
+    )
+}
+
+/// Rows of the YOLO26 group: exportable models and the `tool:uv` toolchain row.
+fn export_row(
+    ctx: Option<&ResourcesCtx>,
+    config: &Config,
+    r: &'static Resource,
+    resolution: &Resolution,
+    statuses: &[Status],
+    configured: &[PathBuf],
+) -> ResourceRow {
+    let platform = Platform::current();
+    let paths = export::Paths::for_config(config);
+    let toolchain = export::toolchain_state(&paths, platform);
+    let unsupported = export::unsupported_reason(platform.os, platform.arch);
+    let exporter = ctx.and_then(|c| c.provisioner.exporter());
+    let mut row = ResourceRow {
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        kind: kind_str(r.kind),
+        group: group_of(r),
+        version: r.version,
+        license: r.license,
+        size: r.size(),
+        size_text: catalog::format_size(r.size()),
+        large: false,
+        state: "available",
+        state_text: String::new(),
+        busy: false,
+        progress: None,
+        error: None,
+        retry_in: None,
+        provides: r.provides.labels(),
+        blocking: Vec::new(),
+        active: false,
+        loaded: false,
+        removable: false,
+        remove_blocked: None,
+        can_add_to_config: false,
+        target: target_dir(config, r).display().to_string(),
+        action: if unsupported.is_some() {
+            "none"
+        } else if r.kind == ResourceKind::Tool {
+            "toolchain"
+        } else {
+            "export"
+        },
+        cancellable: false,
+        confirm: None,
+        size_note: None,
+        log: Vec::new(),
+    };
+    if r.kind == ResourceKind::Tool {
+        let dl = status_of(statuses, r.id).filter(|s| !s.state.is_final());
+        let exporting = exporter.as_ref().is_some_and(|e| e.busy());
+        row.target = paths.tools.display().to_string();
+        row.size_note = toolchain_cost(platform).map(|c| format!("with Python env: {c}"));
+        if let Some(s) = dl {
+            row.state = "downloading";
+            row.busy = true;
+            row.state_text = s.state.describe();
+            if let State::Downloading { bytes, total } = s.state {
+                row.progress = Some((bytes * 100).checked_div(total).unwrap_or(0) as u8);
+            }
+        } else if toolchain.present {
+            row.state = "installed";
+            row.state_text = match (toolchain.uv, toolchain.env_ready) {
+                (true, true) => format!(
+                    "installed: uv {}, Python {} environment in {}",
+                    catalog::UV_VERSION,
+                    export::PYTHON_VERSION,
+                    paths.env.display()
+                ),
+                (true, false) => {
+                    "uv installed; the Python environment is set up by the first export".into()
+                }
+                _ => "partly installed (an export was interrupted); the next export completes it"
+                    .into(),
+            };
+            let blocked = exporting.then(|| "an export is running".to_string());
+            row.removable = blocked.is_none();
+            row.remove_blocked = blocked;
+            row.confirm = Some(format!(
+                "Remove the YOLO26 export toolchain ({})? Exported models stay; a later export \
+                 downloads it again.",
+                paths.tools.display()
+            ));
+        } else {
+            row.state_text = "not installed; the first YOLO26 export downloads it".into();
+        }
+        if let Some(why) = unsupported {
+            row.state_text = why;
+        }
+        return row;
+    }
+
+    // An exportable model.
+    let on_disk = export::is_exported(r, &target_dir(config, r));
+    let st = exporter.as_ref().and_then(|e| e.status(r.id));
+    let needed_by: Vec<String> = resolution
+        .models
+        .iter()
+        .filter(|m| m.needs_export == Some(r.id))
+        .map(|m| m.model.clone())
+        .collect();
+    row.blocking = needed_by.clone();
+    row.size_note = Some(if toolchain.ready() {
+        "weights; export toolchain installed".to_string()
+    } else {
+        format!(
+            "weights + export toolchain once ({})",
+            toolchain_cost(platform).unwrap_or_else(|| "large".into())
+        )
+    });
+    row.large = !toolchain.ready();
+    row.confirm = Some(export_confirm(r, toolchain.ready(), platform));
+    match st.as_ref().map(|s| &s.state) {
+        Some(state @ ExportState::Running { percent, .. }) => {
+            row.state = "exporting";
+            row.busy = true;
+            row.progress = Some(*percent);
+            row.state_text = state.describe();
+        }
+        Some(ExportState::Queued) => {
+            row.state = "queued";
+            row.busy = true;
+            row.state_text = "export queued (one export at a time)".into();
+        }
+        Some(state @ ExportState::Failed { error, .. }) if !on_disk => {
+            row.state = "failed";
+            row.error = Some(error.clone());
+            row.state_text = state.describe();
+        }
+        _ if on_disk => {
+            row.state = "installed";
+            row.state_text = if export::manifest(r, &target_dir(config, r)).is_some() {
+                "exported".into()
+            } else {
+                "exported (by hand)".into()
+            };
+        }
+        _ if !needed_by.is_empty() => {
+            row.state = "needs-export";
+            row.state_text = format!(
+                "needs export: used by {} in the config; click Export",
+                needed_by.join(", ")
+            );
+        }
+        Some(ExportState::Cancelled) => row.state_text = "export cancelled".into(),
+        _ => row.state_text = "not exported".into(),
+    }
+    if let Some(s) = &st
+        && (row.busy || row.state == "failed")
+    {
+        row.log = s.log.iter().rev().take(6).rev().cloned().collect();
+    }
+    row.cancellable = row.busy;
+    if on_disk {
+        let blocked = remove_blocked(ctx, r, config, None);
+        row.removable = blocked.is_none();
+        row.remove_blocked = blocked;
+        row.can_add_to_config = !model_paths(r, config)
+            .first()
+            .is_some_and(|onnx| configured.contains(onnx));
+    }
+    if let Some(why) = unsupported
+        && !on_disk
+    {
+        row.state = "unavailable";
+        row.state_text = why;
+    }
+    row
+}
+
+/// Queue an export of `id` (a YOLO26 model). Without a ready toolchain it needs `confirm` unless
+/// `allow_large_downloads` is set. `on_done` runs after a successful export (e.g. add it to the
+/// config).
+pub fn export(
+    ctx: &ResourcesCtx,
+    config: &Config,
+    id: &str,
+    confirm: bool,
+    on_done: Option<export::OnDone>,
+) -> Result<String, ActionError> {
+    let res = find(Some(ctx), id)
+        .ok_or_else(|| ActionError::NotFound(format!("unknown resource '{id}'")))?;
+    if res.kind != ResourceKind::ExportModel {
+        return Err(ActionError::Conflict(format!(
+            "{} is not exported locally; use Download",
+            res.title
+        )));
+    }
+    let platform = Platform::current();
+    if let Some(why) = export::unsupported_reason(platform.os, platform.arch) {
+        return Err(ActionError::Conflict(why));
+    }
+    let paths = export::Paths::for_config(config);
+    if export::is_exported(res, &paths.models) {
+        return Ok(format!(
+            "{} is already exported in {}",
+            res.title,
+            paths.models.display()
+        ));
+    }
+    let toolchain = export::toolchain_state(&paths, platform);
+    if !toolchain.ready() && !confirm && !config.allow_large_downloads {
+        return Err(ActionError::Conflict(format!(
+            "exporting {} sets up the export toolchain first ({}) and runs Ultralytics' exporter \
+             ({}); confirm it",
+            res.title,
+            toolchain_cost(platform).unwrap_or_else(|| "large".into()),
+            catalog::YOLO26_LICENSE
+        )));
+    }
+    let exporter = ctx.provisioner.exporter_for(config);
+    exporter.forget(res.id);
+    let mut job = export::ExportJob::new(res, paths);
+    job.platform = platform;
+    exporter
+        .enqueue(export::ExportRequest { job, on_done })
+        .map_err(ActionError::Conflict)?;
+    Ok(format!(
+        "exporting {} ({}): progress is shown below and in the Logs",
+        res.title,
+        catalog::YOLO26_LICENSE
+    ))
+}
+
+/// Cancel a queued or running export of `id`.
+pub fn cancel_export(ctx: &ResourcesCtx, id: &str) -> Result<String, ActionError> {
+    let res = find(Some(ctx), id)
+        .ok_or_else(|| ActionError::NotFound(format!("unknown resource '{id}'")))?;
+    match ctx.provisioner.exporter() {
+        Some(e) if e.cancel(res.id) => Ok(format!("cancelling the export of {}", res.title)),
+        _ => Err(ActionError::Conflict(format!(
+            "no export of {} is running",
+            res.title
+        ))),
+    }
 }
 
 /// Queue `id` for download. Large resources need `confirm_large` unless the config allows them.
@@ -587,6 +936,12 @@ pub fn download(
 ) -> Result<String, ActionError> {
     let res = find(Some(ctx), id)
         .ok_or_else(|| ActionError::NotFound(format!("unknown resource '{id}'")))?;
+    if res.kind == ResourceKind::ExportModel {
+        return Err(ActionError::Conflict(format!(
+            "{} cannot be downloaded ({}); use Export",
+            res.title, res.license
+        )));
+    }
     let installed = installed_snapshot(Some(ctx), config);
     if is_installed(res, &installed, config) {
         return Ok(format!("{} is already installed", res.title));
@@ -628,7 +983,13 @@ pub fn remove(
     let res =
         find(ctx, id).ok_or_else(|| ActionError::NotFound(format!("unknown resource '{id}'")))?;
     let installed = installed_snapshot(ctx, config);
-    if !is_installed(res, &installed, config) {
+    let platform = Platform::current();
+    let paths = export::Paths::for_config(config);
+    let present = match res.kind {
+        ResourceKind::Tool => export::toolchain_state(&paths, platform).present,
+        _ => is_installed(res, &installed, config),
+    };
+    if !present {
         return Err(ActionError::Conflict(format!(
             "{} is not installed",
             res.title
@@ -648,6 +1009,29 @@ pub fn remove(
     let fail =
         |e: std::io::Error, p: &Path| ActionError::Failed(format!("removing {}: {e}", p.display()));
     match res.kind {
+        ResourceKind::ExportModel => {
+            export::remove_export(res, &dir).map_err(|e| ActionError::Failed(format!("{e:#}")))?;
+            if let Some(e) = ctx.and_then(|c| c.provisioner.exporter()) {
+                e.forget(res.id);
+            }
+        }
+        ResourceKind::Tool => {
+            export::remove_toolchain(&paths).map_err(|e| ActionError::Failed(format!("{e:#}")))?;
+            // The manager remembers the uv and weights downloads as installed.
+            if let Some(m) = ctx.and_then(|c| c.provisioner.manager()) {
+                for s in m
+                    .statuses()
+                    .iter()
+                    .filter(|s| s.id == res.id || catalog::export_model(s.id).is_some())
+                {
+                    m.forget(&s.key);
+                }
+            }
+            return Ok(format!(
+                "removed the YOLO26 export toolchain from {}",
+                paths.tools.display()
+            ));
+        }
         ResourceKind::Model => {
             for p in res.parts {
                 let f = dir.join(p.file_name);
@@ -687,6 +1071,9 @@ pub fn add_to_config(
     }
     let res =
         find(ctx, id).ok_or_else(|| ActionError::NotFound(format!("unknown resource '{id}'")))?;
+    if res.kind == ResourceKind::ExportModel {
+        return add_export_to_config(config, res);
+    }
     if res.kind != ResourceKind::Model {
         return Err(ActionError::Conflict(format!(
             "{} is not a model",
@@ -720,6 +1107,41 @@ pub fn add_to_config(
         });
     }
     let out = crate::download::add_to_config(config, models);
+    Ok(describe_outcomes(&out))
+}
+
+/// Append an exported YOLO26 model: `models/yolo26<size>.onnx` with its class file, family
+/// `yolo26`.
+fn add_export_to_config(config: &mut Config, res: &Resource) -> Result<String, ActionError> {
+    let dir = target_dir(config, res);
+    if !export::is_exported(res, &dir) {
+        return Err(ActionError::Conflict(format!(
+            "{} is not exported yet; export it first",
+            res.title
+        )));
+    }
+    let files = model_paths(res, config);
+    let rel = |p: &Path| {
+        p.strip_prefix(config.data_root())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| p.to_path_buf())
+    };
+    let catalog::Provides::Model { name, family } = res.provides else {
+        return Err(ActionError::Conflict(format!(
+            "{} is not a model",
+            res.title
+        )));
+    };
+    let out = crate::download::add_to_config(
+        config,
+        vec![crate::config::ModelConfig {
+            name: Some(name.to_string()),
+            path: rel(&files[0]),
+            family,
+            classes: files.get(1).filter(|p| p.is_file()).map(|p| rel(p)),
+            ..Default::default()
+        }],
+    );
     Ok(describe_outcomes(&out))
 }
 

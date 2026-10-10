@@ -272,6 +272,18 @@ impl ModelRegistry {
                     return Ok((device, Vec::new()));
                 }
                 if !path.is_file() {
+                    // A YOLO26 file is made by a user-started export, never downloaded.
+                    if path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("onnx"))
+                        && let Some(r) =
+                            crate::resources::catalog::export_model(&path.to_string_lossy())
+                    {
+                        bail!(
+                            "{}",
+                            crate::resources::export::needs_export_message(r, &m.path)
+                        );
+                    }
                     bail!(
                         "model file not found: {} (download it with `download-models` or fix `path`)",
                         path.display()

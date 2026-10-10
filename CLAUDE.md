@@ -18,6 +18,7 @@ cargo run -- list-devices                    # runnable device options and the `
 cargo run -- download-models --name IPcam-general
 cargo run -- fetch [--for-config] [--resource <id>] [--all-for-platform] [--allow-large]   # pre-download what the config needs
 cargo run -- list-resources [--check-urls]   # installed / needed / available; --check-urls checks every pinned URL (weekly CI)
+cargo run -- fetch --resource model:yolo26s --allow-large   # on-demand YOLO26 export (pinned uv + Python env in <data root>/tools)
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --force-cpu
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --device ort:cpu
 cargo run -- benchmark --all-devices [--apply] [--report r.html] [--dataset coco-cctv|bmd45-cctv|exdark-night|dir:<p>] [--max-images 20]   # grade models x devices; benchmark.json next to the config
@@ -28,7 +29,11 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-Python export env (YOLO26 -> OpenVINO IR): `.venv` (Python 3.11, `ultralytics`, `openvino`),
+On-demand YOLO26 export (`src/resources/export.rs`, the only code that runs downloaded programs; user-triggered
+only, never by `auto_download`): `tool:uv` + `scripts/yolo26-export/locks/*.txt` (hashed; regenerate with
+`scripts/yolo26-export/gen_locks.sh`) + the embedded `scripts/export_yolo26.py`; everything under `<data root>/tools/`.
+
+Python export env (YOLO26 -> OpenVINO IR, by hand): `.venv` (Python 3.11, `ultralytics`, `openvino`),
 created with `uv venv --python 3.11 .venv && uv pip install -r scripts/requirements-export.txt`;
 run `.venv/Scripts/python.exe scripts/export_yolo26.py` (Windows) or `.venv/bin/python scripts/export_yolo26.py`.
 
@@ -73,7 +78,8 @@ NPU are never auto. RT-DETR runs on CoreML only with every input dim pinned (a d
   installed), `manager` (one download thread, Range resume, SHA-256, staging + atomic rename, `.installed.json`,
   `.downloads.lock`, backoff), `extract` (whitelist-only, nothing executed), `provision` (startup: models wait
   with progress; a new runtime starts a new registry generation), `status` (`/v1/resources` + UI actions),
-  `commands` (`fetch`, `list-resources`).
+  `commands` (`fetch`, `list-resources`), `export` (YOLO26 export: stages uv -> Python -> packages -> weights ->
+  export -> install, fake-able `CommandRunner`/`Fetcher`, one at a time, cancellable).
 - `src/config.rs` JSON config next to the exe; CLI overrides only non-default values and writes back.
 - Windows service in `src/bin/blue_onyx_prism_service.rs` (cfg windows). systemd/launchd/Docker in `deploy/`.
 

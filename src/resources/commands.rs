@@ -1,4 +1,6 @@
 //! `fetch` and `list-resources` subcommands, on top of the resolver and the download manager.
+//! `fetch --resource model:yolo26<size>` runs the YOLO26 export ([`super::export`]) instead of a
+//! download.
 
 use super::catalog::{self, Resource, ResourceKind};
 use super::manager::{self, Job, ManagerOptions};
@@ -76,6 +78,10 @@ pub fn fetch_jobs(
                 ids.join(", ")
             );
         };
+        // Exports run after the downloads (see `fetch`), never as a download job.
+        if res.kind == ResourceKind::ExportModel {
+            continue;
+        }
         // Naming a large resource explicitly is the opt-in (like --allow-large).
         if res.is_large() && !allow_large {
             notes.push(format!(
@@ -90,9 +96,13 @@ pub fn fetch_jobs(
     if req.all_for_platform {
         let auto = crate::setup_onnxruntime::auto_flavor(hw);
         // Benchmark image sets are not part of a deployment; name them (`bench:<id>`) to fetch.
-        for res in
-            catalog::for_platform(&hw.os, &hw.arch).filter(|r| r.kind != ResourceKind::BenchImages)
-        {
+        // YOLO26 exports (and their toolchain) run code: only when named.
+        for res in catalog::for_platform(&hw.os, &hw.arch).filter(|r| {
+            !matches!(
+                r.kind,
+                ResourceKind::BenchImages | ResourceKind::ExportModel | ResourceKind::Tool
+            )
+        }) {
             if res.is_large() && !allow_large {
                 notes.push(format!(
                     "skipped {} ({}): pass --allow-large to download it",
@@ -118,17 +128,100 @@ fn job_for(res: &'static Resource, root: &Path, models_dir: &Path, activate: boo
     }
 }
 
-/// Run `fetch`: resolve, download with progress bars, mark the wanted ORT flavor active.
+/// Exportable models named in `req` (`model:yolo26s`).
+pub fn requested_exports(req: &FetchRequest, os: &str, arch: &str) -> Vec<&'static Resource> {
+    let mut out: Vec<&'static Resource> = Vec::new();
+    for id in &req.resources {
+        if let Some(r) = catalog::find(id, os, arch).filter(|r| r.kind == ResourceKind::ExportModel)
+            && !out.iter().any(|o| o.id == r.id)
+        {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// Export `res` now (CLI). The toolchain download needs `allow_large` unless it is installed.
+pub fn export_model(config: &Config, res: &'static Resource, allow_large: bool) -> Result<()> {
+    use super::export;
+    let platform = catalog::Platform::current();
+    let paths = export::Paths::for_config(config);
+    if export::is_exported(res, &paths.models) {
+        println!(
+            "{} is already exported in {} (remove the .onnx to export it again)",
+            res.title,
+            paths.models.display()
+        );
+        return Ok(());
+    }
+    if let Some(why) = export::unsupported_reason(platform.os, platform.arch) {
+        bail!(why);
+    }
+    let toolchain = export::toolchain_state(&paths, platform);
+    if !toolchain.ready() && !allow_large {
+        let cost =
+            catalog::toolchain_estimate(platform.os, platform.arch).map_or_else(String::new, |e| {
+                format!(
+                    " (~{} download, ~{} on disk)",
+                    catalog::format_size(e.download),
+                    catalog::format_size(e.disk)
+                )
+            });
+        bail!(
+            "exporting {} first sets up the export toolchain in {}{cost} and runs Ultralytics' \
+             exporter ({}); pass --allow-large to go ahead",
+            res.id,
+            paths.tools.display(),
+            catalog::YOLO26_LICENSE
+        );
+    }
+    println!("note: {}", catalog::YOLO26_NOTICE);
+    println!(
+        "Exporting {} into {} (toolchain in {}):",
+        res.title,
+        paths.models.display(),
+        paths.tools.display()
+    );
+    let fetcher = export::cli_fetcher(&config.data_root());
+    let started = std::time::Instant::now();
+    let out = export::export_now(
+        &export::ExportJob::new(res, paths),
+        &export::SystemRunner,
+        &fetcher,
+        true,
+    )?;
+    println!(
+        "Exported {} in {:.0} s: {} and {} ({} classes). Add it on the Config page (Add to \
+         config) or to `models`: {{\"name\": \"{}\", \"path\": \"models/{}\", \"family\": \"yolo26\"}}",
+        res.title,
+        started.elapsed().as_secs_f64(),
+        out.onnx.display(),
+        out.yaml.display(),
+        out.classes,
+        res.model_name().unwrap_or_default(),
+        out.onnx
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// Run `fetch`: resolve, download with progress bars, mark the wanted ORT flavor active, then run
+/// the YOLO26 exports that were named.
 pub fn fetch(config: &Config, req: &FetchRequest) -> Result<()> {
     let root = resolve::download_root(config);
     let hw = crate::backend::detect::hardware();
     let installed = resolve::detect_installed(config, &root, None);
+    let exports = requested_exports(req, &hw.os, &hw.arch);
     let (jobs, notes) = fetch_jobs(config, hw, &installed, &root, req)?;
     for n in &notes {
         println!("note: {n}");
     }
     if jobs.is_empty() {
-        println!("Nothing to download.");
+        if exports.is_empty() {
+            println!("Nothing to download.");
+        }
     } else {
         let total: u64 = jobs.iter().map(|j| j.resource.size()).sum();
         println!(
@@ -159,6 +252,10 @@ pub fn fetch(config: &Config, req: &FetchRequest) -> Result<()> {
         if let Some(f) = manager::apply_ort_activation(&r, &root)? {
             println!("ONNX Runtime flavor '{f}' marked active (used from the next start)");
         }
+    }
+    let allow_large = req.allow_large || config.allow_large_downloads;
+    for res in exports {
+        export_model(config, res, allow_large)?;
     }
     Ok(())
 }
@@ -226,9 +323,28 @@ fn state_of(
                     .iter()
                     .all(|p| models_dir.join(p.file_name).is_file())
         }
-        ResourceKind::BenchImages => manager::is_installed(res, &root.join(res.dest)),
+        ResourceKind::BenchImages | ResourceKind::Tool => {
+            manager::is_installed(res, &root.join(res.dest))
+        }
+        ResourceKind::ExportModel => super::export::is_exported(res, models_dir),
         _ => installed.has(res.id),
     };
+    if res.kind == ResourceKind::ExportModel && !installed_now {
+        let users: Vec<&str> = r
+            .models
+            .iter()
+            .filter(|m| m.needs_export == Some(res.id))
+            .map(|m| m.model.as_str())
+            .collect();
+        return if users.is_empty() {
+            "not exported (export)".to_string()
+        } else {
+            format!("needs export: {}", users.join(", "))
+        };
+    }
+    if installed_now && res.kind == ResourceKind::ExportModel {
+        return "exported".to_string();
+    }
     if installed_now {
         let active = res.flavor().is_some() && res.flavor() == installed.active_ort;
         return if active {

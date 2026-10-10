@@ -298,3 +298,7 @@ figure.thumb figcaption { font-size: 0.78rem; color: var(--muted); word-break: b
 .thr-chart .thr-tip text { fill: var(--fg); font-size: 11px; }
 table.bench tr.best-row td { background: var(--ok-bg); font-weight: 600; }
 table.bench tr.selected td:first-child { font-weight: 600; }
+
+/* Config page: YOLO26 export output tail and the export form. */
+.res-log pre { font-size: 0.75rem; max-height: 10rem; margin: 0.3rem 0 0; white-space: pre-wrap; }
+form.export label.check { font-size: 0.85rem; }
