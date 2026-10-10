@@ -89,17 +89,15 @@ fn run(cli: Cli) -> Result<()> {
                 } else {
                     Config::default()
                 };
-                let mut changed = false;
-                for m in download::model_configs(&files, &blue_onyx_openvino::exe_dir()) {
-                    let name = m.effective_name();
-                    if cfg.add_model_if_absent(m) {
-                        println!("added '{name}' to {}", path.display());
-                        changed = true;
-                    } else {
-                        println!("'{name}' already in {}, skipped", path.display());
-                    }
+                let models = download::model_configs(&files, &blue_onyx_openvino::exe_dir());
+                let outcomes = download::add_to_config(&mut cfg, models);
+                for o in &outcomes {
+                    println!("{}", o.describe(&path));
                 }
-                if changed {
+                if outcomes
+                    .iter()
+                    .any(|o| matches!(o, download::AddOutcome::Added { .. }))
+                {
                     cfg.save(&path)?;
                 }
             }

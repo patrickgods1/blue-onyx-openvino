@@ -240,15 +240,22 @@ fn merge_cli(config: &mut Config, cli: &Cli) {
     if let Some(v) = &cli.openvino_dir {
         config.openvino_dir = Some(v.clone());
     }
-    if let Some(model) = &cli.model
-        && !config.models.iter().any(|m| &m.path == model)
-    {
-        config.models = vec![ModelConfig {
-            path: model.clone(),
-            family: cli.family.unwrap_or(ModelFamilyKind::Auto),
-            classes: cli.classes.clone(),
-            ..Default::default()
-        }];
+    if let Some(model) = &cli.model {
+        // `--model` always loads that model: enable an existing entry, else replace the list.
+        let mut found = false;
+        for m in config.models.iter_mut().filter(|m| &m.path == model) {
+            m.enabled = true;
+            found = true;
+        }
+        if !found {
+            config.models = vec![ModelConfig {
+                path: model.clone(),
+                family: cli.family.unwrap_or(ModelFamilyKind::Auto),
+                classes: cli.classes.clone(),
+                enabled: true,
+                ..Default::default()
+            }];
+        }
     }
 }
 
@@ -480,14 +487,44 @@ mod tests {
         assert_eq!(c.models[0].family, ModelFamilyKind::Yolo5);
         assert_eq!(c.models[0].classes, Some(cwd.join("c.yaml")));
 
+        assert!(c.models[0].enabled);
+
         // Already present: list is untouched.
         let cli = Cli {
-            config: Some(path),
+            config: Some(path.clone()),
             model: Some("models/new.onnx".into()),
             ..Default::default()
         };
         let (c2, _) = resolve_config(&cli).unwrap();
         assert_eq!(c2.models, c.models);
+
+        // Already present but disabled: it gets enabled, other entries are kept as they are.
+        let new_path = c.models[0].path.clone();
+        Config {
+            models: vec![
+                ModelConfig {
+                    enabled: true,
+                    ..existing.clone()
+                },
+                ModelConfig {
+                    path: new_path.clone(),
+                    enabled: false,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        let cli = Cli {
+            config: Some(path),
+            model: Some("models/new.onnx".into()),
+            ..Default::default()
+        };
+        let (c3, _) = resolve_config(&cli).unwrap();
+        assert_eq!(c3.models.len(), 2);
+        assert!(c3.models[0].enabled && c3.models[1].enabled);
+        assert_eq!(c3.models[1].path, new_path);
     }
 
     #[test]

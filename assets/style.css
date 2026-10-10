@@ -93,3 +93,4 @@ textarea { width: 100%; font-family: ui-monospace, "SF Mono", Menlo, Consolas, m
 button { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); cursor: pointer; padding: 0.45rem 1.1rem; }
 button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
 img.result { max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; }
+.card .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }

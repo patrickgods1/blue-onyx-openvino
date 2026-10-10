@@ -3,7 +3,7 @@
 //! Downloaded files are untrusted data: file names come only from the static catalog below
 //! and everything is written strictly under the destination directory.
 
-use crate::config::ModelConfig;
+use crate::config::{Config, ModelConfig};
 use crate::model::ModelFamilyKind;
 use anyhow::{Context, Result, anyhow, bail};
 use hf_hub::HFClientSync;
@@ -273,6 +273,55 @@ pub fn model_configs(files: &[PathBuf], exe_dir: &Path) -> Vec<ModelConfig> {
     out
 }
 
+/// What [`add_to_config`] did with one downloaded model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddOutcome {
+    Added { name: String, enabled: bool },
+    Skipped { name: String },
+}
+
+impl AddOutcome {
+    /// One line for the `download-models --add-to-config` output.
+    pub fn describe(&self, config_path: &Path) -> String {
+        match self {
+            AddOutcome::Added {
+                name,
+                enabled: true,
+            } => format!("added '{name}' to {} (enabled)", config_path.display()),
+            AddOutcome::Added {
+                name,
+                enabled: false,
+            } => format!(
+                "added '{name}' to {} (disabled; enable it on the Config page)",
+                config_path.display()
+            ),
+            AddOutcome::Skipped { name } => {
+                format!("'{name}' already in {}, skipped", config_path.display())
+            }
+        }
+    }
+}
+
+/// Append downloaded models to `config` (duplicates by name or path are skipped). New entries
+/// are disabled when the config already has an enabled model; otherwise the first new entry is
+/// enabled and the rest disabled, so a fresh config loads exactly one model.
+pub fn add_to_config(config: &mut Config, models: Vec<ModelConfig>) -> Vec<AddOutcome> {
+    let mut have_enabled = config.models.iter().any(|m| m.enabled);
+    models
+        .into_iter()
+        .map(|m| {
+            let name = m.effective_name();
+            let enabled = !have_enabled;
+            if config.add_model_if_absent(ModelConfig { enabled, ..m }) {
+                have_enabled |= enabled;
+                AddOutcome::Added { name, enabled }
+            } else {
+                AddOutcome::Skipped { name }
+            }
+        })
+        .collect()
+}
+
 /// Print the catalog and whether each model is already in `dest_dir`.
 pub fn print_list(dest_dir: &Path) {
     println!("Available models (destination: {})", dest_dir.display());
@@ -341,6 +390,149 @@ mod tests {
         assert_eq!(c[1].path, Path::new("/elsewhere/rt-detrv2-s.onnx"));
         assert_eq!(c[1].family, ModelFamilyKind::RtDetr);
         assert_eq!(c[1].classes, None);
+    }
+
+    #[test]
+    fn add_to_config_enables_only_the_first_model_of_an_empty_config() {
+        let m = |n: &str| ModelConfig {
+            name: Some(n.into()),
+            path: format!("models/{n}.onnx").into(),
+            ..Default::default()
+        };
+        let mut c = Config::default();
+        let out = add_to_config(&mut c, vec![m("a"), m("b"), m("a")]);
+        assert_eq!(
+            out,
+            [
+                AddOutcome::Added {
+                    name: "a".into(),
+                    enabled: true
+                },
+                AddOutcome::Added {
+                    name: "b".into(),
+                    enabled: false
+                },
+                AddOutcome::Skipped { name: "a".into() },
+            ]
+        );
+        let on: Vec<bool> = c.models.iter().map(|m| m.enabled).collect();
+        assert_eq!(on, [true, false]);
+        assert!(
+            out[1]
+                .describe(Path::new("cfg.json"))
+                .contains("(disabled; enable it on the Config page)")
+        );
+
+        // Existing enabled model: everything new is disabled.
+        let out = add_to_config(&mut c, vec![m("c")]);
+        assert_eq!(
+            out,
+            [AddOutcome::Added {
+                name: "c".into(),
+                enabled: false
+            }]
+        );
+
+        // Only disabled models present: the first new one is enabled.
+        let mut c = Config {
+            models: vec![ModelConfig {
+                enabled: false,
+                ..m("x")
+            }],
+            ..Default::default()
+        };
+        add_to_config(&mut c, vec![m("y"), m("z")]);
+        let on: Vec<bool> = c.models.iter().map(|m| m.enabled).collect();
+        assert_eq!(on, [false, true, false]);
+    }
+
+    #[test]
+    fn add_to_config_with_an_enabled_model_appends_disabled_and_skips_known_paths() {
+        let existing_off = ModelConfig {
+            name: Some("old-off".into()),
+            path: "models/old-off.onnx".into(),
+            enabled: false,
+            ..Default::default()
+        };
+        let mut c = Config {
+            models: vec![
+                ModelConfig {
+                    name: Some("main".into()),
+                    path: "models/main.onnx".into(),
+                    ..Default::default()
+                },
+                existing_off.clone(),
+            ],
+            ..Default::default()
+        };
+        let new = |n: &str, path: &str| ModelConfig {
+            name: Some(n.into()),
+            path: path.into(),
+            ..Default::default()
+        };
+        let out = add_to_config(
+            &mut c,
+            vec![
+                new("x", "models/x.onnx"),
+                // Same path as the disabled entry, other name: skipped, flag untouched.
+                new("renamed", "models/old-off.onnx"),
+                // Same path as the enabled entry: skipped, stays enabled.
+                new("again", "models/main.onnx"),
+                new("y", "models/y.onnx"),
+            ],
+        );
+        assert_eq!(
+            out,
+            [
+                AddOutcome::Added {
+                    name: "x".into(),
+                    enabled: false
+                },
+                AddOutcome::Skipped {
+                    name: "renamed".into()
+                },
+                AddOutcome::Skipped {
+                    name: "again".into()
+                },
+                AddOutcome::Added {
+                    name: "y".into(),
+                    enabled: false
+                },
+            ]
+        );
+        let flags: Vec<(String, bool)> = c
+            .models
+            .iter()
+            .map(|m| (m.effective_name(), m.enabled))
+            .collect();
+        assert_eq!(
+            flags,
+            [
+                ("main".to_string(), true),
+                ("old-off".to_string(), false),
+                ("x".to_string(), false),
+                ("y".to_string(), false),
+            ]
+        );
+        assert_eq!(c.models[1], existing_off);
+
+        let cfg = Path::new("cfg.json");
+        assert_eq!(
+            AddOutcome::Added {
+                name: "a".into(),
+                enabled: true
+            }
+            .describe(cfg),
+            "added 'a' to cfg.json (enabled)"
+        );
+        assert_eq!(
+            out[0].describe(cfg),
+            "added 'x' to cfg.json (disabled; enable it on the Config page)"
+        );
+        assert_eq!(
+            out[1].describe(cfg),
+            "'renamed' already in cfg.json, skipped"
+        );
     }
 
     #[test]
