@@ -127,6 +127,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/benchmark/cancel", post(benchmark::cancel))
         .route("/v1/benchmark/apply", post(benchmark::apply))
+        .route(
+            "/v1/benchmark/apply-threshold",
+            post(benchmark::apply_threshold),
+        )
+        .route(
+            "/v1/benchmark/threshold-search",
+            get(benchmark::search_options).post(benchmark::threshold_search),
+        )
         .route("/v1/benchmark/settings", post(benchmark::settings))
         .route("/v1/benchmark/images", get(benchmark::images_detail))
         .route("/v1/benchmark/image", get(benchmark::image_file))

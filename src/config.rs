@@ -238,6 +238,9 @@ pub struct BenchmarkConfig {
     /// Download the selected built-in datasets when a run starts (large ones still need
     /// `allow_large_downloads`).
     pub auto_download_datasets: bool,
+    /// What the best confidence threshold optimizes: `f1` (default), `f2` (favor recall) or
+    /// `precision:<p>` (highest recall with precision >= p).
+    pub threshold_objective: crate::benchmark::threshold::Objective,
 }
 
 impl Default for BenchmarkConfig {
@@ -255,6 +258,7 @@ impl Default for BenchmarkConfig {
             reference_model: None,
             weights: Default::default(),
             auto_download_datasets: true,
+            threshold_objective: Default::default(),
         }
     }
 }
@@ -735,8 +739,134 @@ pub fn apply_model_devices(
     Ok(changes)
 }
 
+/// A per-model `confidence_threshold` change made by [`apply_model_thresholds`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ThresholdChange {
+    pub model: String,
+    /// Previous per-model threshold (None = global).
+    pub from: Option<f32>,
+    pub to: f32,
+    /// The global `confidence_threshold`.
+    pub global: f32,
+}
+
+impl ThresholdChange {
+    /// "IPcam-general: 0.50 (global) -> 0.35".
+    pub fn describe(&self) -> String {
+        let from = match self.from {
+            Some(t) => format!("{t:.2}"),
+            None => format!("{:.2} (global)", self.global),
+        };
+        format!("{}: {from} -> {:.2}", self.model, self.to)
+    }
+}
+
+/// Set the per-model `confidence_threshold` of the named models (matched like
+/// `/v1/vision/custom/{model}`). A model whose effective threshold (its own, else the global
+/// one) already equals the value is left alone. Every name and value (0 < t <= 1) is validated
+/// first; on error `config` is unchanged. Returns the entries that changed.
+pub fn apply_model_thresholds(
+    config: &mut Config,
+    thresholds: &[(String, f32)],
+) -> Result<Vec<ThresholdChange>> {
+    use crate::registry::normalize_name;
+    let mut c = config.clone();
+    let global = c.confidence_threshold;
+    let mut changes = Vec::new();
+    for (name, t) in thresholds {
+        if !(t.is_finite() && *t > 0.0 && *t <= 1.0) {
+            anyhow::bail!("model '{name}': confidence threshold {t} is not in (0, 1]");
+        }
+        let key = normalize_name(name);
+        let Some(m) = c
+            .models
+            .iter_mut()
+            .find(|m| normalize_name(&m.effective_name()) == key)
+        else {
+            anyhow::bail!("'{name}' is not one of the configured models");
+        };
+        let effective = m.confidence_threshold.unwrap_or(global);
+        if (effective - t).abs() > 1e-6 {
+            changes.push(ThresholdChange {
+                model: m.effective_name(),
+                from: m.confidence_threshold,
+                to: *t,
+                global,
+            });
+            m.confidence_threshold = Some(*t);
+        }
+    }
+    *config = c;
+    Ok(changes)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn threshold_objective_parsing_and_defaults() {
+        use crate::benchmark::threshold::Objective;
+        // Old files (no key, or a benchmark section without it) get f1.
+        let c: super::Config = serde_json::from_str(r#"{"benchmark":{"warmup":2}}"#).unwrap();
+        assert_eq!(c.benchmark.threshold_objective, Objective::F1);
+        assert_eq!(c.benchmark.warmup, 2);
+        let c: super::Config =
+            serde_json::from_str(r#"{"benchmark":{"threshold_objective":"precision:0.9"}}"#)
+                .unwrap();
+        assert_eq!(c.benchmark.threshold_objective, Objective::Precision(0.9));
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(
+            text.contains(r#""threshold_objective":"precision:0.9""#),
+            "{text}"
+        );
+        let back: super::Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, c);
+        // A bad objective is an error, not a silent default.
+        assert!(
+            serde_json::from_str::<super::Config>(r#"{"benchmark":{"threshold_objective":"f3"}}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn apply_thresholds_writes_per_model_values() {
+        use super::{Config, ModelConfig, apply_model_thresholds};
+        let m = |n: &str, t: Option<f32>| ModelConfig {
+            name: Some(n.into()),
+            path: format!("models/{n}.onnx").into(),
+            confidence_threshold: t,
+            ..Default::default()
+        };
+        let mut c = Config {
+            confidence_threshold: 0.5,
+            models: vec![m("a", None), m("b", Some(0.4)), m("c", None)],
+            ..Default::default()
+        };
+        let changes = apply_model_thresholds(
+            &mut c,
+            &[("A".into(), 0.35), ("b".into(), 0.4), ("c".into(), 0.5)],
+        )
+        .unwrap();
+        // b and c already have these effective thresholds.
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].describe(), "a: 0.50 (global) -> 0.35");
+        assert_eq!(c.models[0].confidence_threshold, Some(0.35));
+        assert_eq!(c.models[2].confidence_threshold, None);
+        let changes = apply_model_thresholds(&mut c, &[("b".into(), 0.6)]).unwrap();
+        assert_eq!(changes[0].describe(), "b: 0.40 -> 0.60");
+        // Bad input changes nothing.
+        let before = c.clone();
+        for bad in [("zzz", 0.3), ("a", 0.0), ("a", 1.5), ("a", f32::NAN)] {
+            assert!(
+                apply_model_thresholds(&mut c, &[("c".into(), 0.3), (bad.0.into(), bad.1)])
+                    .is_err()
+            );
+            assert_eq!(c, before);
+        }
+        // The value round-trips through the config file as written.
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains(r#""confidence_threshold":0.35"#), "{text}");
+    }
+
     #[test]
     fn benchmark_section_defaults_and_round_trip() {
         // Old files without the key get the defaults.

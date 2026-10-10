@@ -18,6 +18,7 @@
 use super::grade::Weights;
 use super::images::{self, ImageSet};
 use super::report::{HardwareSummary, RuntimeVersions};
+use super::threshold::Objective;
 use super::{
     Bench, BenchmarkResults, ModelResult, Phase, Progress, SweepOptions, configured_device,
     find_model, is_cancelled, job_for_config, pick_reference, pseudo_ground_truth,
@@ -54,6 +55,9 @@ pub struct RunRequest {
     /// Pseudo-ground-truth model (None = automatic).
     pub reference_model: Option<String>,
     pub weights: Weights,
+    /// What the best confidence threshold optimizes.
+    #[serde(default)]
+    pub threshold_objective: Objective,
 }
 
 impl RunRequest {
@@ -68,12 +72,14 @@ impl RunRequest {
             warmup: b.warmup,
             reference_model: b.reference_model.clone(),
             weights: b.weights,
+            threshold_objective: b.threshold_objective,
         }
     }
 
     /// Parse form fields over the configured defaults: `model`, `device`, `dataset` (repeated:
     /// a given field replaces the default list), `max_images`, `repeat`, `warmup`,
-    /// `reference_model` ("" = automatic), `accuracy_weight` (0..1).
+    /// `reference_model` ("" = automatic), `accuracy_weight` (0..1), `threshold_objective`
+    /// (`f1`, `f2`, `precision:<p>`).
     pub fn from_form(form: &[(String, String)], defaults: &BenchmarkConfig) -> Result<Self> {
         let has = |k: &str| form.iter().any(|(key, _)| key == k);
         let all = |k: &str| -> Vec<String> {
@@ -120,6 +126,9 @@ impl RunRequest {
                 speed: 1.0 - a,
             };
         }
+        if let Some(o) = one("threshold_objective").filter(|o| !o.is_empty()) {
+            req.threshold_objective = o.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+        }
         req.validate()?;
         Ok(req)
     }
@@ -153,6 +162,7 @@ impl RunRequest {
         b.warmup = self.warmup;
         b.reference_model = self.reference_model.clone();
         b.weights = self.weights;
+        b.threshold_objective = self.threshold_objective;
     }
 }
 
@@ -767,9 +777,11 @@ pub fn run(ctx: &RunContext, req: &RunRequest, h: &RunHandle) -> Result<String> 
         bench.cancel = Some(h.cancel_flag());
         bench.progress = Some(&progress);
         bench.weights = req.weights;
+        bench.threshold_objective = req.threshold_objective;
         let opts = SweepOptions {
             devices: devices.clone(),
             configured,
+            threshold_objective: req.threshold_objective,
         };
         let swept = sweep(&bench, &runtimes, &job, &opts, &mut |partial| {
             runs_done.fetch_add(1, Ordering::Relaxed);
@@ -793,6 +805,7 @@ pub fn run(ctx: &RunContext, req: &RunRequest, h: &RunHandle) -> Result<String> 
         let merged =
             BenchmarkResults::merge(BenchmarkResults::load_or_warn(&ctx.results_path), results);
         merged.save(&ctx.results_path)?;
+        super::search::save_beside(&ctx.results_path, &merged, &finished);
     }
     outcome?;
     let recs: Vec<String> = finished
@@ -843,6 +856,7 @@ mod tests {
             warmup: 0,
             reference_model: None,
             weights: Weights::default(),
+            threshold_objective: Objective::default(),
         }
     }
 
@@ -863,6 +877,7 @@ mod tests {
                 ("max_images", "25"),
                 ("reference_model", "rt-detrv2-x"),
                 ("accuracy_weight", "0.8"),
+                ("threshold_objective", "precision:0.9"),
             ]),
             &defaults,
         )
@@ -874,6 +889,7 @@ mod tests {
         assert_eq!(r.datasets.len(), 2);
         assert_eq!(r.reference_model.as_deref(), Some("rt-detrv2-x"));
         assert!((r.weights.accuracy_share() - 0.8).abs() < 1e-12);
+        assert_eq!(r.threshold_objective, Objective::Precision(0.9));
         let d = r.parsed_devices().unwrap().unwrap();
         assert_eq!(d.len(), 2);
         assert_eq!(d[1].to_string(), "ort:coreml");
@@ -891,10 +907,18 @@ mod tests {
         assert_eq!(r.datasets, b.datasets);
         assert!(r.models.is_empty());
         // ...and save back.
-        let r =
-            RunRequest::from_form(&form(&[("dataset", "sample"), ("repeat", "3")]), &b).unwrap();
+        let r = RunRequest::from_form(
+            &form(&[
+                ("dataset", "sample"),
+                ("repeat", "3"),
+                ("threshold_objective", "f2"),
+            ]),
+            &b,
+        )
+        .unwrap();
         r.to_config(&mut b);
         assert_eq!(b.repeat_per_image, 3);
+        assert_eq!(b.threshold_objective, Objective::F2);
         assert_eq!(b.datasets, [DatasetRef::Id("sample".into())]);
 
         for (bad, needle) in [
@@ -905,6 +929,7 @@ mod tests {
             (form(&[("device", "auto")]), "auto"),
             (form(&[("accuracy_weight", "2")]), "accuracy_weight"),
             (form(&[("dataset", "")]), "dataset"),
+            (form(&[("threshold_objective", "f3")]), "objective"),
         ] {
             let e = RunRequest::from_form(&bad, &defaults).unwrap_err();
             assert!(format!("{e:#}").contains(needle), "{e:#}");

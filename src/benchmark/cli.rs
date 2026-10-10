@@ -6,17 +6,24 @@
 //! blue-onyx-prism-benchmark --model models/yolo26s.xml --compare-cpu      # GPU vs CPU + confidence diff
 //! blue-onyx-prism-benchmark --json                                         # every enabled model in the config
 //! blue-onyx-prism-benchmark --all-devices --apply                          # sweep, save, set per-model devices
+//! blue-onyx-prism-benchmark --apply-threshold --threshold-objective f2      # also set per-model thresholds
+//! blue-onyx-prism-benchmark --threshold-search --tag night --threshold-objective recall:0.9
+//!                                                       # search the stored predictions, no inference
 //! ```
 
 use super::images::{self, ImageSet};
 use super::report::{HardwareSummary, RuntimeVersions, Verdict};
+use super::threshold::{Objective, ThresholdAdvice};
 use super::{
     Bench, BenchmarkResults, Comparison, Job, MATCH_IOU, ModelResult, Phase, RunResult, Stats,
     SweepOptions, compare, config_models, configured_device, export, job_for_config, job_for_file,
     pick_reference, pseudo_ground_truth, reference_device, results_path, sweep,
 };
 use crate::backend::{CoreOptions, OrtOptions, Runtimes, libs, spec};
-use crate::config::{Config, DatasetRef, DeviceChange, ModelConfig, apply_model_devices};
+use crate::config::{
+    Config, DatasetRef, DeviceChange, ModelConfig, ThresholdChange, apply_model_devices,
+    apply_model_thresholds,
+};
 use crate::model::{ModelFamilyKind, PostParams};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -51,6 +58,39 @@ pub struct BenchArgs {
     /// `device` in the config file and print what changed (restart the server to apply).
     #[arg(long, conflicts_with_all = ["device", "force_cpu", "compare_cpu", "model"])]
     pub apply: bool,
+    /// Implies --all-devices: write each benchmarked config model's best confidence threshold
+    /// (see --threshold-objective) into its `confidence_threshold` in the config file and print
+    /// what changed. Independent of --apply (devices); both may be given.
+    #[arg(long, conflicts_with_all = ["device", "force_cpu", "compare_cpu", "model", "min_confidence"])]
+    pub apply_threshold: bool,
+    /// What the best confidence threshold optimizes: f1 (balance), f2 (favor recall: fewer
+    /// missed objects) or precision:<p> (highest recall with precision >= p, e.g.
+    /// precision:0.9 for fewer false alerts) or recall:<r> (highest precision with recall >= r).
+    /// Default: benchmark.threshold_objective (f1).
+    #[arg(long, value_parser = parse_objective_arg)]
+    pub threshold_objective: Option<Objective>,
+    /// Search the best confidence threshold over the predictions stored by the last benchmark
+    /// (`benchmark-preds.json` beside the config; no inference), filtered by --dataset, --tag,
+    /// --class, --search-model, --search-device and --iou, for --threshold-objective (also
+    /// `recall:<r>`). Runs the benchmark first when nothing is stored.
+    #[arg(long, conflicts_with_all = ["device", "force_cpu", "compare_cpu"])]
+    pub threshold_search: bool,
+    /// --threshold-search: only images with this tag (repeatable: all must match), e.g. night.
+    #[arg(long, requires = "threshold_search")]
+    pub tag: Vec<String>,
+    /// --threshold-search: only these scored classes (repeatable), e.g. person.
+    #[arg(long = "class", requires = "threshold_search")]
+    pub class: Vec<String>,
+    /// --threshold-search: only these models (repeatable; default every stored model).
+    #[arg(long, requires = "threshold_search")]
+    pub search_model: Vec<String>,
+    /// --threshold-search: the device whose predictions to use (default each model's
+    /// recommended device).
+    #[arg(long, requires = "threshold_search", value_parser = parse_device_arg)]
+    pub search_device: Option<String>,
+    /// --threshold-search: matching IoU (default 0.5).
+    #[arg(long, requires = "threshold_search")]
+    pub iou: Option<f32>,
     /// Implies --all-devices: also write a standalone report of the saved results (`.html` or
     /// `.md`).
     #[arg(long, conflicts_with_all = ["device", "force_cpu", "compare_cpu"])]
@@ -118,6 +158,10 @@ pub struct BenchArgs {
     pub verbose: bool,
 }
 
+fn parse_objective_arg(s: &str) -> Result<Objective, String> {
+    s.parse()
+}
+
 /// Default timed runs for a single image (the pre-dataset default).
 pub const SINGLE_IMAGE_REPEAT: usize = 100;
 
@@ -152,6 +196,9 @@ struct ModelReport {
     /// `--all-devices`: device whose detections the others were compared with.
     #[serde(skip_serializing_if = "Option::is_none")]
     reference: Option<String>,
+    /// `--all-devices`: the best confidence threshold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    threshold: Option<ThresholdAdvice>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,6 +215,9 @@ struct Report {
     /// `--apply`: per-model device changes written to the config file.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     applied: Vec<DeviceChange>,
+    /// `--apply-threshold`: per-model threshold changes written to the config file.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    applied_thresholds: Vec<ThresholdChange>,
     /// Datasets used (ids) and warnings about them.
     datasets: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -397,18 +447,47 @@ pub fn run(args: BenchArgs) -> Result<bool> {
         list_datasets(&config);
         return Ok(true);
     }
-    if args.apply && !config_path.exists() {
+    if args.threshold_search {
+        let results = BenchmarkResults::load(&results_path(&config_path))?;
+        let preds = super::search::StoredPreds::load(&super::search::preds_path(&config_path))?;
+        match (results, preds) {
+            (Some(r), Some(p)) if !p.runs.is_empty() => {
+                return threshold_search_cli(&args, &config, &r, &p);
+            }
+            _ => {
+                if !args.json {
+                    eprintln!(
+                        "--threshold-search: no stored predictions beside {}; running the benchmark first",
+                        config_path.display()
+                    );
+                }
+            }
+        }
+    }
+    if (args.apply || args.apply_threshold) && !config_path.exists() {
         bail!(
-            "--apply needs a config file; {} does not exist",
+            "{} needs a config file; {} does not exist",
+            if args.apply {
+                "--apply"
+            } else {
+                "--apply-threshold"
+            },
             config_path.display()
         );
     }
+    let objective = args
+        .threshold_objective
+        .unwrap_or(config.benchmark.threshold_objective);
     if let Some(w) = args.accuracy_weight
         && !(0.0..=1.0).contains(&w)
     {
         bail!("--accuracy-weight must be between 0 and 1");
     }
-    let all_devices = args.all_devices || args.apply || args.report.is_some();
+    let all_devices = args.all_devices
+        || args.apply
+        || args.apply_threshold
+        || args.threshold_search
+        || args.report.is_some();
     let openvino_dir = config.openvino_dir_effective();
     libs::prepare_environment(openvino_dir.as_deref());
 
@@ -457,6 +536,7 @@ pub fn run(args: BenchArgs) -> Result<bool> {
         errors,
         results_file: None,
         applied: Vec::new(),
+        applied_thresholds: Vec::new(),
         datasets: sets.iter().map(|s| s.id.clone()).collect(),
         warnings,
         ranking: Vec::new(),
@@ -571,6 +651,7 @@ pub fn run(args: BenchArgs) -> Result<bool> {
     bench.object_filter = &config.object_filter;
     bench.cache_dir = cache_dir.as_deref();
     bench.weights = weights;
+    bench.threshold_objective = objective;
 
     let mut swept: Vec<ModelResult> = Vec::new();
     for Planned { job, entry } in &jobs {
@@ -585,6 +666,7 @@ pub fn run(args: BenchArgs) -> Result<bool> {
             let opts = SweepOptions {
                 devices: None,
                 configured,
+                threshold_objective: objective,
             };
             bench.progress = Some(&progress);
             let result = sweep(&bench, &runtimes, job, &opts, &mut |_| {})?;
@@ -628,6 +710,7 @@ pub fn run(args: BenchArgs) -> Result<bool> {
             recommended: None,
             recommendation: None,
             reference: None,
+            threshold: None,
         };
         if args.compare_cpu {
             if model_report.primary.device == "CPU" {
@@ -668,12 +751,16 @@ pub fn run(args: BenchArgs) -> Result<bool> {
         if !args.json && report.ranking.len() > 1 {
             print_ranking(&report.ranking);
         }
+        if !args.json {
+            print_thresholds(&swept, objective);
+        }
         let path = results_path(&config_path);
         let merged = if args.no_save {
             results
         } else {
             let merged = BenchmarkResults::merge(BenchmarkResults::load_or_warn(&path), results);
             merged.save(&path)?;
+            super::search::save_beside(&path, &merged, &swept);
             if !args.json {
                 println!("\nresults saved to {}", path.display());
             }
@@ -721,12 +808,368 @@ pub fn run(args: BenchArgs) -> Result<bool> {
             }
             report.applied = changes;
         }
+        if args.apply_threshold {
+            report.applied_thresholds = apply_thresholds(&swept, &config_path, args.json)?;
+        }
+        if args.threshold_search {
+            let preds = super::search::StoredPreds::merge(None, &merged, &swept);
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            return Ok(
+                threshold_search_cli(&args, &config, &merged, &preds)? && report.errors.is_empty()
+            );
+        }
     }
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     }
     Ok(report.errors.is_empty())
+}
+
+/// `--threshold-search`: search the stored predictions and print the results.
+fn threshold_search_cli(
+    args: &BenchArgs,
+    config: &Config,
+    results: &BenchmarkResults,
+    preds: &super::search::StoredPreds,
+) -> Result<bool> {
+    use super::search::{SearchRequest, search};
+    let req = SearchRequest {
+        models: args.search_model.clone(),
+        device: args.search_device.clone(),
+        datasets: args.dataset.clone(),
+        tags: args.tag.clone(),
+        classes: args.class.clone(),
+        objective: args
+            .threshold_objective
+            .unwrap_or(config.benchmark.threshold_objective),
+        iou: args.iou.unwrap_or(0.5),
+    };
+    let current = |m: &str| {
+        super::find_model(config, m).map(|c| {
+            c.confidence_threshold
+                .unwrap_or(config.confidence_threshold)
+        })
+    };
+    let out = search(results, preds, &req, &current)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(out.errors.is_empty());
+    }
+    let mut filters = Vec::new();
+    if !req.datasets.is_empty() {
+        filters.push(format!("datasets {}", req.datasets.join(", ")));
+    }
+    if !req.tags.is_empty() {
+        filters.push(format!("tags {}", req.tags.join(" + ")));
+    }
+    if !req.classes.is_empty() {
+        filters.push(format!("classes {}", req.classes.join(", ")));
+    }
+    println!(
+        "== Confidence threshold search ({}; IoU {}; {}; {:.1} ms, no inference)",
+        req.objective.describe(),
+        req.iou,
+        if filters.is_empty() {
+            "all images".to_string()
+        } else {
+            filters.join("; ")
+        },
+        out.elapsed_ms
+    );
+    println!(
+        "  {:<20} {:<14} {:>5} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5} {:>6}  {:>4} {:>4}",
+        "model", "device", "conf", "P", "R", "F1", "best", "P", "R", "F1", "dF1", "imgs", "objs"
+    );
+    for r in &out.results {
+        let c = &r.configured;
+        let b = r.best.as_ref();
+        println!(
+            "  {:<20} {:<14} {:>5.2} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5} {:>6}  {:>4} {:>4}{}",
+            r.model,
+            r.device,
+            c.threshold,
+            pct1(c.precision),
+            pct1(c.recall),
+            pct1(c.f1),
+            b.map_or("-".into(), |b| format!(
+                "{:.2}{}",
+                b.threshold,
+                if b.met { "" } else { "!" }
+            )),
+            pct1(b.and_then(|b| b.point.precision)),
+            pct1(b.and_then(|b| b.point.recall)),
+            pct1(b.and_then(|b| b.point.f1)),
+            match (b.and_then(|b| b.point.f1), c.f1) {
+                (Some(x), Some(y)) => format!("{:+.1}", (x - y) * 100.0),
+                _ => "-".into(),
+            },
+            r.images,
+            r.gt,
+            if r.relative { "  (relative)" } else { "" }
+        );
+    }
+    for r in &out.results {
+        let Some(b) = &r.best else { continue };
+        println!();
+        println!(
+            "  {} on {}: best {:.2} (exact optimum {:.3}, near-optimal range {}){}",
+            r.model,
+            r.device,
+            b.threshold,
+            b.exact_threshold.unwrap_or(b.threshold),
+            b.plateau
+                .map_or("-".into(), |[lo, hi]| format!("{lo:.3}..{hi:.3}")),
+            b.note.as_ref().map_or(String::new(), |n| format!("; {n}"))
+        );
+        println!(
+            "    {:>5} {:>6} {:>6} {:>6} {:>6} {:>7}",
+            "conf", "P", "R", "F1", "F2", "FP/img"
+        );
+        let mut extra = vec![r.configured, b.point];
+        if let Some(c) = r.current {
+            extra.push(c);
+        }
+        for p in super::threshold::table_points(&r.grid, &extra) {
+            let mut marks = Vec::new();
+            if (b.threshold - p.threshold).abs() < 1e-6 {
+                marks.push("best");
+            }
+            if (r.configured.threshold - p.threshold).abs() < 1e-6 {
+                marks.push("configured");
+            }
+            if r.current
+                .is_some_and(|c| (c.threshold - p.threshold).abs() < 1e-6)
+            {
+                marks.push("in config now");
+            }
+            println!(
+                "    {:>5.2} {:>6} {:>6} {:>6} {:>6} {:>7.2}{}",
+                p.threshold,
+                pct1(p.precision),
+                pct1(p.recall),
+                pct1(p.f1),
+                pct1(p.f2),
+                p.fp_per_image,
+                if marks.is_empty() {
+                    String::new()
+                } else {
+                    format!("  <- {}", marks.join(", "))
+                }
+            );
+        }
+        let groups: Vec<String> = r
+            .by_dataset
+            .iter()
+            .chain(&r.per_class)
+            .filter_map(|g| Some(format!("{} {:.2}", g.key, g.best.as_ref()?.threshold)))
+            .collect();
+        if !groups.is_empty() {
+            println!("    best by dataset/class: {}", groups.join(", "));
+        }
+    }
+    for e in &out.errors {
+        eprintln!("error: {e}");
+    }
+    println!("{BLUE_IRIS_NOTE}");
+    Ok(out.errors.is_empty())
+}
+
+/// `--apply-threshold`: write the best thresholds of `swept` into the config file.
+fn apply_thresholds(
+    swept: &[ModelResult],
+    config_path: &Path,
+    quiet: bool,
+) -> Result<Vec<ThresholdChange>> {
+    let picks: Vec<(String, f32)> = swept
+        .iter()
+        .filter_map(|m| {
+            let t = m.threshold.as_ref()?.apply_value()?;
+            Some((m.model.clone(), t))
+        })
+        .collect();
+    let mut cfg = Config::load(config_path)?;
+    // Results may name models that are not configured (--model files): skip those.
+    let picks: Vec<(String, f32)> = picks
+        .into_iter()
+        .filter(|(m, _)| super::find_model(&cfg, m).is_some())
+        .collect();
+    let changes = apply_model_thresholds(&mut cfg, &picks)?;
+    if !changes.is_empty() {
+        cfg.save(config_path)?;
+    }
+    if !quiet {
+        println!();
+        if changes.is_empty() {
+            println!(
+                "--apply-threshold: {} already uses the best thresholds; nothing changed",
+                config_path.display()
+            );
+        } else {
+            println!("--apply-threshold: updated {}:", config_path.display());
+            for c in &changes {
+                println!("  {}", c.describe());
+            }
+            println!("Restart the server to use the new thresholds.");
+        }
+        for m in swept {
+            match &m.threshold {
+                None => println!("  {}: unchanged (no threshold curve)", m.model),
+                Some(a) if a.apply_value().is_none() => println!(
+                    "  {}: unchanged ({})",
+                    m.model,
+                    a.best
+                        .as_ref()
+                        .and_then(|b| b.note.clone())
+                        .unwrap_or_else(|| "no usable threshold".into())
+                ),
+                _ => {}
+            }
+        }
+        println!("{BLUE_IRIS_NOTE}");
+    }
+    Ok(changes)
+}
+
+/// How the server threshold relates to Blue Iris's own confidence settings.
+pub const BLUE_IRIS_NOTE: &str = "note: Blue Iris can send its own min_confidence with each request (it then replaces the server threshold for that request), and each camera's minimum confidence filters the returned objects again on top.";
+
+fn pct1(v: Option<f64>) -> String {
+    v.map_or("-".to_string(), |v| format!("{:.1}", v * 100.0))
+}
+
+/// The best-threshold summary across models.
+fn print_thresholds(swept: &[ModelResult], objective: Objective) {
+    let rows: Vec<(&ModelResult, &ThresholdAdvice)> = swept
+        .iter()
+        .filter_map(|m| m.threshold.as_ref().map(|a| (m, a)))
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "== Best confidence threshold per model ({}; P/R/F1 in %)",
+        objective.describe()
+    );
+    println!(
+        "  {:<20} {:<14} {:>5} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5}  {:>4} {:>4} {:>5}  night",
+        "model", "device", "conf", "P", "R", "F1", "best", "P", "R", "F1", "F2", "P90", "dF1"
+    );
+    for (m, a) in rows {
+        let c = &a.configured;
+        let alt = |o: Objective| {
+            a.alternatives
+                .iter()
+                .find(|p| p.objective == o.to_string())
+                .map_or("-".to_string(), |p| {
+                    format!("{:.2}{}", p.threshold, if p.met { "" } else { "!" })
+                })
+        };
+        let night = a
+            .by_dataset
+            .iter()
+            .chain(&a.by_tag)
+            .find(|g| g.key.contains("night"))
+            .and_then(|g| {
+                g.best
+                    .as_ref()
+                    .map(|b| format!("{:.2} ({})", b.threshold, g.key))
+            })
+            .unwrap_or_else(|| "-".into());
+        match &a.best {
+            Some(b) => println!(
+                "  {:<20} {:<14} {:>5.2} {:>5} {:>5} {:>5}   {:>5.2} {:>5} {:>5} {:>5}  {:>4} {:>4} {:>5}  {}{}",
+                m.model,
+                a.device,
+                c.threshold,
+                pct1(c.precision),
+                pct1(c.recall),
+                pct1(c.f1),
+                b.threshold,
+                pct1(b.point.precision),
+                pct1(b.point.recall),
+                pct1(b.point.f1),
+                alt(Objective::F2),
+                alt(Objective::Precision(0.9)),
+                match (b.point.f1, c.f1) {
+                    (Some(x), Some(y)) => format!("{:+.1}", (x - y) * 100.0),
+                    _ => "-".into(),
+                },
+                night,
+                if a.relative { "  (relative)" } else { "" }
+            ),
+            None => println!(
+                "  {:<20} {:<14} no ground truth for a curve",
+                m.model, a.device
+            ),
+        }
+    }
+    println!("  (! = precision 90% not reached; the most precise threshold is shown)");
+}
+
+/// The compact threshold table of one model's advice.
+fn print_threshold_table(a: &ThresholdAdvice) {
+    let best = a.best.as_ref().map(|b| b.threshold);
+    let mut extra = vec![a.configured];
+    if let Some(b) = &a.best {
+        extra.push(b.point);
+    }
+    println!(
+        "  confidence threshold on {} ({}{}):",
+        a.device,
+        a.objective().describe(),
+        if a.relative { ", relative" } else { "" }
+    );
+    println!(
+        "    {:>5} {:>6} {:>6} {:>6} {:>6} {:>7}",
+        "conf", "P", "R", "F1", "F2", "FP/img"
+    );
+    for p in super::threshold::table_points(&a.curve, &extra) {
+        let mut marks = Vec::new();
+        if best.is_some_and(|b| (b - p.threshold).abs() < 1e-6) {
+            marks.push("best");
+        }
+        if (a.configured.threshold - p.threshold).abs() < 1e-6 {
+            marks.push("configured");
+        }
+        println!(
+            "    {:>5.2} {:>6} {:>6} {:>6} {:>6} {:>7.2}{}",
+            p.threshold,
+            pct1(p.precision),
+            pct1(p.recall),
+            pct1(p.f1),
+            pct1(p.f2),
+            p.fp_per_image,
+            if marks.is_empty() {
+                String::new()
+            } else {
+                format!("  <- {}", marks.join(", "))
+            }
+        );
+    }
+    let groups: Vec<String> = a
+        .by_dataset
+        .iter()
+        .chain(&a.by_tag)
+        .filter_map(|g| {
+            let b = g.best.as_ref()?;
+            Some(format!("{} {:.2}", g.key, b.threshold))
+        })
+        .collect();
+    if !groups.is_empty() {
+        println!("    best by dataset/tag: {}", groups.join(", "));
+    }
+    let classes: Vec<String> = a
+        .per_class
+        .iter()
+        .filter_map(|g| Some(format!("{} {:.2}", g.key, g.best.as_ref()?.threshold)))
+        .collect();
+    if !classes.is_empty() {
+        println!("    best by class: {}", classes.join(", "));
+    }
 }
 
 fn print_ranking(rows: &[super::report::RankRow]) {
@@ -801,6 +1244,7 @@ fn model_report(m: &ModelResult) -> Result<ModelReport> {
         recommended: m.recommended.clone(),
         recommendation: Some(m.recommendation.clone()),
         reference: m.reference.clone(),
+        threshold: m.threshold.clone(),
     })
 }
 
@@ -941,6 +1385,9 @@ fn print_all_devices(result: &ModelResult, m: &ModelReport) {
                 println!("  accuracy not scored: {n}");
             }
         }
+    }
+    if let Some(a) = &result.threshold {
+        print_threshold_table(a);
     }
     if p.images > 1 {
         // Every bucket; one without images is n/a (it does not enter any grade).
@@ -1165,6 +1612,22 @@ mod tests {
         assert!(a.apply);
         assert!(parse(&["x", "--apply", "--model", "a.onnx"]).is_err());
         assert!(parse(&["x", "--apply", "--device", "cpu"]).is_err());
+        // Thresholds: separate from --apply, both allowed together.
+        let a = parse(&[
+            "x",
+            "--apply",
+            "--apply-threshold",
+            "--threshold-objective",
+            "precision:0.9",
+        ])
+        .unwrap();
+        assert!(a.apply && a.apply_threshold);
+        assert_eq!(a.threshold_objective, Some(Objective::Precision(0.9)));
+        let a = parse(&["x", "--apply-threshold"]).unwrap();
+        assert!(a.apply_threshold && !a.apply && a.threshold_objective.is_none());
+        assert!(parse(&["x", "--threshold-objective", "f3"]).is_err());
+        assert!(parse(&["x", "--apply-threshold", "--model", "a.onnx"]).is_err());
+        assert!(parse(&["x", "--apply-threshold", "--min-confidence", "0.3"]).is_err());
     }
 
     #[test]
@@ -1182,6 +1645,119 @@ mod tests {
             format!("{err:#}").contains("needs a config file"),
             "{err:#}"
         );
+        let a = parse(&[
+            "x",
+            "--apply-threshold",
+            "--config",
+            dir.join("missing.json").to_str().unwrap(),
+        ])
+        .unwrap();
+        let err = run(a).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("--apply-threshold needs a config file"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn threshold_search_uses_stored_predictions() {
+        assert!(
+            parse(&["x", "--tag", "night"]).is_err(),
+            "--tag needs --threshold-search"
+        );
+        assert!(parse(&["x", "--threshold-search", "--device", "cpu"]).is_err());
+        let a = parse(&[
+            "x",
+            "--threshold-search",
+            "--tag",
+            "night",
+            "--class",
+            "person",
+            "--iou",
+            "0.6",
+            "--threshold-objective",
+            "recall:0.9",
+        ])
+        .unwrap();
+        assert_eq!((a.tag.len(), a.class.len(), a.iou), (1, 1, Some(0.6)));
+        assert_eq!(a.threshold_objective, Some(Objective::Recall(0.9)));
+
+        let dir = std::env::temp_dir().join(format!("bop-bsearch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("cfg.json");
+        Config::default().save(&cfg).unwrap();
+        let (results, preds) = super::super::search::tests::fixture();
+        results.save(&results_path(&cfg)).unwrap();
+        preds.save(&super::super::search::preds_path(&cfg)).unwrap();
+        let c = cfg.to_str().unwrap();
+        assert!(
+            run(parse(&["x", "--threshold-search", "--json", "--config", c]).unwrap()).unwrap()
+        );
+        assert!(
+            run(parse(&[
+                "x",
+                "--threshold-search",
+                "--tag",
+                "night",
+                "--search-device",
+                "openvino:cpu",
+                "--config",
+                c
+            ])
+            .unwrap())
+            .unwrap()
+        );
+        // A model without stored predictions: reported, not fatal; exit status false.
+        assert!(
+            !run(parse(&[
+                "x",
+                "--threshold-search",
+                "--search-model",
+                "m",
+                "--search-model",
+                "zzz",
+                "--json",
+                "--config",
+                c
+            ])
+            .unwrap())
+            .unwrap()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_thresholds_writes_the_config() {
+        let dir = std::env::temp_dir().join(format!("bop-bthr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cfg.json");
+        let cfg = Config {
+            models: ["a", "b"]
+                .iter()
+                .map(|n| ModelConfig {
+                    name: Some(n.to_string()),
+                    path: format!("models/{n}.onnx").into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+        let mk = |name: &str, t: Option<f32>| {
+            let mut m = ModelResult::failed(name, "", String::new());
+            m.threshold = t.map(super::super::threshold::test_advice);
+            m
+        };
+        let swept = [mk("a", Some(0.31)), mk("b", None), mk("c.onnx", Some(0.2))];
+        let changes = apply_thresholds(&swept, &path, true).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].model, "a");
+        let saved = Config::load(&path).unwrap();
+        assert_eq!(saved.models[0].confidence_threshold, Some(0.31));
+        assert_eq!(saved.models[1].confidence_threshold, None);
+        // Again: nothing to change.
+        assert!(apply_thresholds(&swept, &path, true).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1239,6 +1815,7 @@ mod tests {
             grades: None,
             agreement: None,
             per_image: Vec::new(),
+            eval_preds: Vec::new(),
         };
         assert_eq!(agreement_text(&r), "-");
         let a = |verdict, matched, only_device, only_reference| Agreement {
