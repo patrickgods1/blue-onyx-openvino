@@ -30,14 +30,17 @@ jobs:
             target: x86_64-pc-windows-msvc
             label: windows-x86_64
             ext: zip
+            ort_flavor: directml
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             label: linux-x86_64
             ext: tar.gz
+            ort_flavor: cpu
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-aarch64
             ext: tar.gz
+            ort_flavor: auto # CoreML build on Apple silicon
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -56,7 +59,7 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "NAME=blue-onyx-prism-$VERSION-${{ matrix.label }}" >> "$GITHUB_ENV"
 
-      - name: Build release
+      - name: Build release (default features, OpenVINO + ONNX Runtime)
         run: cargo build --release --locked --bins --target ${{ matrix.target }}
 
       - name: Stage files
@@ -89,6 +92,9 @@ jobs:
           cp README.md LICENSE "$STAGE/"
           mkdir -p "$STAGE/models"
           "$OUT/blue-onyx-prism" setup-openvino --dest "$STAGE/openvino"
+          # Default ONNX Runtime flavor per OS (default features build the `ort` backend, load-dynamic).
+          # NVIDIA users run `setup-onnxruntime --flavor cuda` to swap it.
+          "$OUT/blue-onyx-prism" setup-onnxruntime --flavor ${{ matrix.ort_flavor }} --dir "$STAGE/onnxruntime"
           find "$STAGE" -maxdepth 2 | sort
 
       - name: Archive

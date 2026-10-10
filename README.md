@@ -1,10 +1,11 @@
 # Blue Onyx Prism
 
 Blue Iris / CodeProject.AI compatible object detection service, written in Rust on native
-[OpenVINO](https://github.com/openvinotoolkit/openvino). Runs on Intel integrated and discrete GPUs
-(Windows, Linux) and on CPU everywhere (Windows x86_64, Linux x86_64, macOS arm64). ONNX Runtime
-(NVIDIA CUDA/TensorRT, DirectML, CoreML) with automatic device selection by detected hardware is
-in progress; see [docs/PLAN.md](docs/PLAN.md), phases 6 and 7.
+[OpenVINO](https://github.com/openvinotoolkit/openvino) and [ONNX Runtime](https://onnxruntime.ai/).
+Runs on Intel integrated and discrete GPUs (OpenVINO), NVIDIA GPUs (CUDA/TensorRT), any DirectX 12 GPU on
+Windows (DirectML), Apple silicon (CoreML) and on CPU everywhere (Windows x86_64, Linux x86_64, macOS arm64).
+The default device `auto` picks the best option for the detected hardware; see
+[Hardware and device selection](#hardware-and-device-selection) and [docs/PLAN.md](docs/PLAN.md).
 
 Formerly **Blue Onyx OpenVINO**. Existing `blue_onyx_openvino_config*.json` files are renamed to
 the new names on first start, and `scripts/install_service.ps1` removes the old
@@ -17,6 +18,7 @@ Modeled on [blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT), adding multi-
 
 - Drop-in CodeProject.AI / DeepStack compatible API for Blue Iris (`/v1/vision/detection`, `/v1/vision/custom/{model}`, `/v1/vision/custom/list`).
 - Native OpenVINO inference: Intel integrated/discrete GPU on Windows and Linux, CPU everywhere, automatic GPU -> CPU fallback.
+- ONNX Runtime as a second runtime (NVIDIA CUDA/TensorRT, DirectML, CoreML, CPU) with `auto` device selection by detected hardware.
 - Several models served at once, each with its own worker and metrics; per-model device, threshold, class filter and lazy loading.
 - Model families: YOLO26 (end-to-end), YOLOv5 (the blue-onyx IPcam models), YOLOv8/11, RT-DETRv2. ONNX or OpenVINO IR.
 - Compiled-model cache (fast restarts), HTTP served while models compile, web UI (stats, test page, config editor), Prometheus metrics.
@@ -28,14 +30,62 @@ Modeled on [blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT), adding multi-
 |---|---|---|
 | Windows 11 x86_64 | Intel GPU (iGPU/Arc) + CPU | Primary target; Windows service. Needs the MSVC runtime redistributable. |
 | Linux x86_64 | Intel GPU (`/dev/dri`) + CPU | Install `intel-opencl-icd`; user in the `render` group. systemd and Docker files provided. |
-| macOS arm64 | CPU only | launchd daemon. No GPU plugin exists for Apple silicon. |
+| macOS arm64 | CPU, CoreML | launchd daemon. No OpenVINO GPU plugin exists for Apple silicon; CoreML runs through ONNX Runtime. |
+
+NVIDIA (CUDA/TensorRT) and DirectML devices use ONNX Runtime; see the matrix below.
+
+## Hardware and device selection
+
+`"device": "auto"` (the default) chooses per model, tries the next candidate if compile or warm-up
+fails, and always ends on the CPU. Ranking: NVIDIA GPU with CUDA, Intel GPU (OpenVINO), AMD or other GPU
+on Windows (DirectML), Apple silicon (CoreML), CPU (`openvino:cpu`, else `ort:cpu`).
+
+| OS | GPU | `auto` picks | Setup | Notes |
+|---|---|---|---|---|
+| Windows | Intel iGPU/Arc | `openvino:gpu` | `setup-openvino` | Primary target. `ort:directml` is selectable. |
+| Windows | NVIDIA | `ort:cuda` | `setup-onnxruntime --flavor cuda` | CUDA 12 and cuDNN 9 are installed by you (not bundled). Without them `auto` skips CUDA. |
+| Windows | AMD / other DX12 | `ort:directml` | `setup-onnxruntime --flavor directml` | |
+| Linux | Intel | `openvino:gpu` | `setup-openvino` | `intel-opencl-icd`, `render` group. |
+| Linux | NVIDIA | `ort:cuda` | `setup-onnxruntime --flavor cuda` | CUDA 12 + cuDNN 9 user-installed. |
+| Linux | AMD | `openvino:cpu` | `setup-openvino` | No ROCm/MIGraphX in the stock ONNX Runtime packages: CPU. |
+| macOS arm64 | Apple GPU | `ort:coreml` | `setup-onnxruntime` | RT-DETR is never run on CoreML (it aborts in ONNX Runtime 1.24.4); it uses the CPU. |
+| any | none | `openvino:cpu` | `setup-openvino` | `ort:cpu` if OpenVINO is missing. |
+
+TensorRT (`ort:tensorrt`, first engine build takes minutes) and the NPU (`openvino:npu`) can be
+selected but are never chosen by `auto`. ONNX Runtime needs `.onnx` models; an IR `.xml` model uses a
+sibling `<stem>.onnx` if present, otherwise its ONNX Runtime options are skipped.
+
+Device specs: `auto`, `openvino:gpu[.N]`, `openvino:cpu`, `openvino:npu`, `ort:cuda[:N]`,
+`ort:tensorrt[:N]`, `ort:directml[:N]`, `ort:coreml`, `ort:cpu`. The old `GPU`, `GPU.N` and `CPU` still
+work and mean `openvino:*`. Set it globally (`device`), per model (`models[].device`) or with `--device <spec>`.
+
+```sh
+blue-onyx-prism list-devices         # detected GPUs, runnable options with reasons, and the auto pick
+curl http://127.0.0.1:32168/v1/devices   # the same as JSON
+```
+
+The Config page has a device dropdown ("Auto - currently: ...", then the runnable options; options that
+cannot run are greyed out with the reason).
+
+Measured on an Apple M1 (`inferenceMs`):
+
+| Model | `openvino:cpu` | `ort:cpu` | `ort:coreml` |
+|---|---|---|---|
+| IPcam-general | 37 | 69 | 104 |
+| rt-detrv2-s | 101 | 235 | not run (excluded) |
+
+On Apple silicon `auto` currently picks CoreML, which measured slower than OpenVINO CPU for these models
+(CoreML splits the graph into many pieces). To use the faster option set `"device": "openvino:cpu"`.
 
 ## Quick start
 
 Download the archive for your OS from the [releases page](https://github.com/patrickgods1/blue-onyx-prism/releases)
 (`blue-onyx-prism-<version>-<os>-<arch>.zip|tar.gz`, with a `.sha256` file). It already contains the
-OpenVINO runtime in `openvino/`, the binaries and the helper scripts. Or build from source (see
-[Developer setup](#developer-setup)) and run `blue-onyx-prism setup-openvino`.
+OpenVINO runtime in `openvino/`, the default ONNX Runtime in `onnxruntime/` (CPU on Linux, CoreML on
+macOS, DirectML on Windows), the binaries and the helper scripts. Or build from source (see
+[Developer setup](#developer-setup)) and run `blue-onyx-prism setup-openvino`. For NVIDIA, DirectML or
+CoreML devices run `blue-onyx-prism setup-onnxruntime` (`--flavor auto|cpu|cuda|directml`, default `auto`;
+installs into `onnxruntime/` next to the executable, `--dir` to change).
 
 Windows (PowerShell):
 
@@ -73,11 +123,12 @@ against the executable directory. The Windows service reads `blue_onyx_prism_con
 | `port` | `32168` | HTTP listen port (binds `0.0.0.0`) |
 | `request_timeout_secs` | `15` | Max time a request may wait in the queue plus processing |
 | `worker_queue_size` | `0` | Per-model queue length; 0 = auto from timeout and measured inference time |
-| `device` | `"GPU"` | `GPU`, `GPU.N` or `CPU`; falls back to CPU when no GPU is available |
+| `device` | `"auto"` | Device spec (`auto`, `openvino:gpu`, `ort:cuda`, ..., or legacy `GPU`/`CPU`); see [Hardware and device selection](#hardware-and-device-selection). Falls back to CPU when the device cannot run |
 | `gpu_index` | `0` | GPU to use when several are present |
 | `force_cpu` | `false` | Always use the CPU |
 | `cache_dir` | `"cache"` | Compiled-model cache; empty disables it |
 | `openvino_dir` | `null` | OpenVINO runtime dir; default `<exe_dir>/openvino`, else the system install |
+| `onnxruntime_dir` | `null` | ONNX Runtime dir; lookup order: this field, `ORT_DYLIB_PATH`, `<exe_dir>/onnxruntime` |
 | `confidence_threshold` | `0.5` | Default minimum confidence (a request's `min_confidence` > 0 overrides it) |
 | `nms_iou` | `0.5` | IoU threshold for NMS-based families |
 | `object_filter` | `[]` | Only report these labels (case-insensitive); empty = all |
@@ -130,6 +181,9 @@ cargo build --release
 
 # 1. Fetch the OpenVINO runtime (~100 MB) into ./target/release/openvino (next to the exe).
 cargo run --release -- setup-openvino
+# 1b. Optional, for NVIDIA / DirectML / CoreML: ONNX Runtime into ./target/release/onnxruntime.
+cargo run --release -- setup-onnxruntime        # --flavor auto|cpu|cuda|directml
+cargo run --release -- list-devices             # what can run here and what `auto` picks
 
 # 2. Get a model. Either download a ready-made ONNX model from Hugging Face ...
 cargo run --release -- download-models --name IPcam-general
@@ -147,6 +201,7 @@ Development loop:
 
 ```sh
 cargo test                                  # unit + synthetic post-processing tests, no OpenVINO needed
+cargo build --no-default-features           # OpenVINO-only build without ONNX Runtime
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 ```
@@ -256,7 +311,7 @@ sudo /opt/blue-onyx-prism/scripts/install_systemd.sh      # creates user blueony
 journalctl -u blue-onyx-prism -f
 ```
 
-**macOS** (launchd, CPU only):
+**macOS** (launchd):
 
 ```sh
 sudo cp -r blue-onyx-prism-<version>-macos-aarch64 /usr/local/blue-onyx-prism
@@ -293,9 +348,11 @@ canUseGPU, inferenceMs, processMs, analysisRoundTripMs`.
 ```sh
 blue-onyx-prism-benchmark --model models/IPcam-general.onnx --family yolo5 --repeat 50 --warmup 5
 blue-onyx-prism-benchmark --model models/yolo26s.xml --family yolo26 --device GPU --compare-cpu --json
+blue-onyx-prism-benchmark --model models/IPcam-general.onnx --family yolo5 --all-devices
 ```
 
-Flags: `--model`, `--family`, `--device`, `--force-cpu`, `--image`, `--repeat`, `--warmup`,
+`--device` takes any device spec and `--all-devices` benchmarks every runnable option for each model.
+Flags: `--model`, `--family`, `--device`, `--all-devices`, `--force-cpu`, `--image`, `--repeat`, `--warmup`,
 `--compare-cpu` (also runs on CPU and diffs detections), `--cache-dir` (`""` disables), `--threads`,
 `--classes`, `--min-confidence`, `--config` (enabled models from the config when no `--model`), `--json`, `-v`.
 If GPU latency is not clearly below CPU latency, the GPU was probably not used (check the log) or
@@ -322,7 +379,10 @@ response has `success: false` or a non-200 status.
   CPU and reports `OpenVINO CPU (fallback)`. Under Windows services try `-Account` (see above).
 - **First start is slow:** GPU kernels are compiled once (20-60 s per model) and cached in `cache/`;
   keep that directory. Windows service starts allow up to 10 minutes.
-- **macOS:** only the CPU plugin exists for Apple silicon; the GPU option is ignored.
+- **macOS:** only the CPU plugin exists for OpenVINO on Apple silicon. `auto` uses CoreML through ONNX Runtime
+  (run `setup-onnxruntime`); set `"device": "openvino:cpu"` if that is slower for your models.
+- **`ort:*` device shows as unavailable:** run `list-devices` for the reason. Usually `setup-onnxruntime` has not
+  been run, or (NVIDIA) CUDA 12 / cuDNN 9 is not installed.
 - **`Unable to find the openvino_c library`:** run `blue-onyx-prism setup-openvino` or set
   `openvino_dir` / `OPENVINO_INSTALL_DIR`. On Windows install the Visual C++ redistributable.
 - **Windows error 1053 / `ServicesPipeTimeout`:** the service did not report in time; reboot once after

@@ -199,6 +199,8 @@ The result is shown on the welcome page.
 
 ### Getting ORT libraries (`src/setup_onnxruntime.rs`, `setup-onnxruntime` subcommand)
 
+The pin is ORT 1.24.4 (with DirectML 1.15.4) because the DirectML NuGet package stops at 1.24, and the `ort` crate's api-level must not exceed the pinned library. The constants live in `src/setup_onnxruntime.rs`.
+
 This mirrors `setup_openvino.rs`: a pinned version constant, whitelisted extraction, and nothing executed. It installs to `<exe_dir>/onnxruntime`. A process can load only one ORT library, so `--flavor auto|cpu|cuda|directml` picks the package from `HardwareInfo`:
 - **Windows**: NVIDIA → `onnxruntime-win-x64-gpu` (CPU, CUDA and TensorRT). Otherwise the `Microsoft.ML.OnnxRuntime.DirectML` nupkg plus `DirectML.dll`.
 - **Linux x64**: NVIDIA → `onnxruntime-linux-x64-gpu`, else `onnxruntime-linux-x64`. **Linux arm64**: CPU.
@@ -357,6 +359,8 @@ Handler flow: multipart (`image`, optional `min_confidence`; 32 MB body limit) -
 - **CUDA/cuDNN are user-installed:** they're too large to bundle. The CUDA option shows exactly which library is missing, and `auto` skips it until it loads.
 - **TensorRT first-build time:** building the first engine takes minutes, so it's never picked by `auto` and keeps an engine cache in `cache/tensorrt`.
 - **DirectML EP in maintenance mode:** it's still shipped and works on DX12 GPUs. Revisit if Microsoft drops it, with Windows ML EPs as a possible replacement.
+- **CoreML slower than OpenVINO CPU on M1:** measured `inferenceMs` for IPcam-general is 37 (openvino:cpu), 69 (ort:cpu), 104 (ort:coreml); rt-detrv2-s is 101 (openvino:cpu), 235 (ort:cpu). CoreML partitions the graph (203 of 257 nodes in 53 pieces), so the Neural Engine/GPU gains are lost to transfers. `auto` still ranks CoreML first on Apple silicon; revisit that ranking (users can set `"device": "openvino:cpu"` meanwhile).
+- **RT-DETR on CoreML aborts the process:** ORT 1.24.4 hits an MPSGraph assertion, so RT-DETR models are excluded from `ort:coreml` and use the next candidate.
 - **Linux AMD not covered:** MIGraphX/ROCm aren't in the stock ORT packages, so these machines fall back to CPU. Planned as a later flavor.
 - **`ort` 2.x API changes:** pin the exact version and keep all `ort` code in `backend/ort.rs`.
 - **Download sources move or change:** URLs and hashes are pinned in one table, a CI job checks each URL with `HEAD` weekly, and a failed download falls back to whatever is installed, CPU at worst.

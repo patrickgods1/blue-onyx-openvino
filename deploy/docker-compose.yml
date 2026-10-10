@@ -1,3 +1,6 @@
+# The image ships OpenVINO (Intel GPU via /dev/dri, and CPU) plus the ONNX Runtime CPU build
+# (`ort:cpu`). CUDA/NVIDIA is not available in this image; `"device": "auto"` picks openvino:gpu
+# when /dev/dri is passed through, else openvino:cpu.
 services:
   blue-onyx-prism:
     image: blue-onyx-prism:latest
