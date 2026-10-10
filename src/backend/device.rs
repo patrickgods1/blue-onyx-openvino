@@ -15,9 +15,9 @@ use openvino::{
 use std::time::Instant;
 
 /// Static input shape used when the image input has dynamic dimensions.
-const DEFAULT_IMAGE_SHAPE: [i64; 4] = [1, 3, 640, 640];
+pub(crate) const DEFAULT_IMAGE_SHAPE: [i64; 4] = [1, 3, 640, 640];
 /// Static shape for RT-DETR's `orig_target_sizes` when dynamic.
-const DEFAULT_TARGET_SIZES_SHAPE: [i64; 2] = [1, 2];
+pub(crate) const DEFAULT_TARGET_SIZES_SHAPE: [i64; 2] = [1, 2];
 
 /// Which device a model was requested on and ended up on.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -207,7 +207,7 @@ fn introspect(model: &Model) -> Result<(Vec<PortSpec>, Vec<PortSpec>)> {
 }
 
 /// Index of the image input: named `images`/`input`, else the first 4-D input.
-fn find_image_input(inputs: &[PortSpec]) -> Option<usize> {
+pub(crate) fn find_image_input(inputs: &[PortSpec]) -> Option<usize> {
     inputs
         .iter()
         .position(|p| p.name == "images")
@@ -247,7 +247,11 @@ fn read_model(core: &mut openvino::Core, path: &std::path::Path) -> Result<Model
 /// Index of the extra (non-image) input `name`. IR converted from ONNX can keep the ONNX name
 /// only as a tensor alias (e.g. RT-DETR's `orig_target_sizes` shows up as
 /// `/postprocessor/Expand_output_0`), so fall back to the sole other input when it is 2-D.
-fn extra_input_index(inputs: &[PortSpec], image_idx: usize, name: &str) -> Option<usize> {
+pub(crate) fn extra_input_index(
+    inputs: &[PortSpec],
+    image_idx: usize,
+    name: &str,
+) -> Option<usize> {
     if let Some(i) = inputs.iter().position(|p| p.name == name) {
         return Some(i);
     }

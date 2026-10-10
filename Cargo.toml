@@ -27,6 +27,11 @@ path = "src/bin/blue_onyx_prism_benchmark.rs"
 name = "test-blue-onyx-prism"
 path = "src/bin/test_blue_onyx_prism.rs"
 
+[features]
+default = ["onnxruntime"]
+# ONNX Runtime backend (CUDA, TensorRT, DirectML, CoreML, CPU execution providers).
+onnxruntime = ["dep:ort"]
+
 [dependencies]
 openvino = { version = "0.11", features = ["runtime-linking"] }
 anyhow = "1"
@@ -63,13 +68,16 @@ tar = "0.4"
 flate2 = "1"
 num_cpus = "1"
 base64 = "0.22"
+# Same major as openvino-sys's runtime-linking dependency; used to preload libtbb/libopenvino
+# (Unix) and to probe the ONNX Runtime / CUDA libraries.
+libloading = "0.8"
+# ONNX Runtime (feature `onnxruntime`): the shared library is loaded at runtime (`load-dynamic`),
+# so nothing is linked or downloaded at build time. All `ort` code lives in src/backend/ort.rs.
+# No `api-NN` feature: any ONNX Runtime 1.17+ library loads (`setup-onnxruntime` pins 1.24.4).
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "load-dynamic", "tracing", "cuda", "tensorrt", "directml", "coreml"] }
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 raw-cpuid = "11"
-
-[target.'cfg(unix)'.dependencies]
-# Same major as openvino-sys's runtime-linking dependency; used to preload libtbb/libopenvino.
-libloading = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

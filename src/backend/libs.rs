@@ -402,6 +402,146 @@ pub fn diagnostics() -> String {
     s
 }
 
+// ---------------------------------------------------------------------------------------------
+// ONNX Runtime library lookup (pure apart from directory listings; shared with
+// `setup-onnxruntime`). Layout: the shared library (plus provider libraries / DirectML.dll) flat
+// in `<exe_dir>/onnxruntime/`, with `flavor.txt` naming the installed flavor.
+// ---------------------------------------------------------------------------------------------
+
+/// Folder next to the executable that `setup-onnxruntime` installs into.
+pub const ORT_DIR_NAME: &str = "onnxruntime";
+/// File in the ONNX Runtime folder naming the installed flavor (`cpu`, `cuda`, `directml`,
+/// `coreml`).
+pub const ORT_FLAVOR_FILE: &str = "flavor.txt";
+/// Environment variable `ort` itself honors: the path of the ONNX Runtime library (or, for us, a
+/// directory holding it).
+pub const ENV_ORT_DYLIB_PATH: &str = "ORT_DYLIB_PATH";
+
+/// File name of the ONNX Runtime shared library on this OS (`onnxruntime.dll`,
+/// `libonnxruntime.so`, `libonnxruntime.dylib`). Installs may carry only a versioned name
+/// (`libonnxruntime.so.1.24.4`, `libonnxruntime.1.24.4.dylib`); [`find_ort_library_in`] accepts
+/// those too.
+pub fn ort_library_file_name() -> &'static str {
+    if cfg!(windows) {
+        "onnxruntime.dll"
+    } else if cfg!(target_vendor = "apple") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    }
+}
+
+/// `<exe_dir>/onnxruntime`.
+pub fn default_onnxruntime_dir() -> PathBuf {
+    crate::exe_dir().join(ORT_DIR_NAME)
+}
+
+/// Pick the ONNX Runtime library among the file names of one directory: the plain name
+/// ([`ort_library_file_name`]) when present, else the shortest versioned one
+/// (`libonnxruntime.so.1`, `libonnxruntime.1.24.4.dylib`). Provider libraries
+/// (`libonnxruntime_providers_cuda.so`) never match.
+pub fn pick_ort_library<'a>(names: &[&'a str], plain: &str) -> Option<&'a str> {
+    if let Some(n) = names.iter().find(|n| n.eq_ignore_ascii_case(plain)) {
+        return Some(n);
+    }
+    // Versioned names exist only on Unix-like systems ("lib" prefix).
+    let base = plain
+        .strip_prefix("lib")
+        .and_then(|b| b.split('.').next())
+        .filter(|_| !plain.ends_with(".dll"))?;
+    pick_library(names, base)
+}
+
+/// The ONNX Runtime library inside `dir`, if any.
+pub fn find_ort_library_in(dir: &Path) -> Option<PathBuf> {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    pick_ort_library(&refs, ort_library_file_name()).map(|n| dir.join(n))
+}
+
+/// Where the ONNX Runtime library was looked for, and what was found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrtLookup {
+    /// The library to load (None = not found anywhere).
+    pub library: Option<PathBuf>,
+    /// Every place checked, in order, for error messages.
+    pub checked: Vec<String>,
+}
+
+impl OrtLookup {
+    /// Error text when nothing was found: where we looked and how to install it.
+    pub fn not_found_message(&self) -> String {
+        format!(
+            "ONNX Runtime library ({}) not found; checked {}. Run `blue-onyx-prism \
+             setup-onnxruntime` to install it into {}",
+            ort_library_file_name(),
+            if self.checked.is_empty() {
+                "nothing".to_string()
+            } else {
+                self.checked.join(", ")
+            },
+            default_onnxruntime_dir().display()
+        )
+    }
+}
+
+/// Locate the ONNX Runtime library. Order: config `onnxruntime_dir` (`explicit`, a directory or
+/// the library file itself), `ORT_DYLIB_PATH` (file or directory), then
+/// `<exe_dir>/onnxruntime`. The first hit wins.
+pub fn find_onnxruntime(explicit: Option<&Path>) -> OrtLookup {
+    let env = std::env::var_os(ENV_ORT_DYLIB_PATH)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    find_onnxruntime_from(explicit, env.as_deref(), &default_onnxruntime_dir())
+}
+
+/// [`find_onnxruntime`] with the environment and the default folder passed in (testable).
+pub fn find_onnxruntime_from(
+    explicit: Option<&Path>,
+    env_path: Option<&Path>,
+    default_dir: &Path,
+) -> OrtLookup {
+    let mut out = OrtLookup::default();
+    let mut try_path = |label: &str, p: &Path| -> Option<PathBuf> {
+        let hit = if p.is_file() {
+            Some(p.to_path_buf())
+        } else if p.is_dir() {
+            find_ort_library_in(p)
+        } else {
+            None
+        };
+        let state = match (&hit, p.exists()) {
+            (Some(_), _) => "found",
+            (None, true) => "no ONNX Runtime library inside",
+            (None, false) => "does not exist",
+        };
+        out.checked
+            .push(format!("{label} {} ({state})", p.display()));
+        hit
+    };
+    let explicit = explicit.map(crate::resolve_path);
+    let found = explicit
+        .as_deref()
+        .and_then(|p| try_path("onnxruntime_dir", p))
+        .or_else(|| env_path.and_then(|p| try_path(ENV_ORT_DYLIB_PATH, p)))
+        .or_else(|| try_path("bundled", default_dir));
+    out.library = found;
+    out
+}
+
+/// Installed flavor from `flavor.txt` next to the library (trimmed, lowercase), if present.
+pub fn read_ort_flavor(lib_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(lib_dir.join(ORT_FLAVOR_FILE))
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +636,94 @@ mod tests {
         let d = diagnostics();
         assert!(d.contains(&openvino_c_file_name()));
         assert!(d.contains("OPENVINO_INSTALL_DIR"));
+    }
+
+    #[test]
+    fn picks_onnxruntime_library() {
+        let mac = [
+            "libonnxruntime.1.24.4.dylib",
+            "libonnxruntime_providers_shared.dylib",
+            "flavor.txt",
+        ];
+        assert_eq!(
+            pick_ort_library(&mac, "libonnxruntime.dylib"),
+            Some("libonnxruntime.1.24.4.dylib")
+        );
+        let mac_plain = ["libonnxruntime.1.24.4.dylib", "libonnxruntime.dylib"];
+        assert_eq!(
+            pick_ort_library(&mac_plain, "libonnxruntime.dylib"),
+            Some("libonnxruntime.dylib")
+        );
+        let linux = [
+            "libonnxruntime.so.1.24.4",
+            "libonnxruntime.so.1",
+            "libonnxruntime_providers_cuda.so",
+            "libonnxruntime_providers_shared.so",
+        ];
+        assert_eq!(
+            pick_ort_library(&linux, "libonnxruntime.so"),
+            Some("libonnxruntime.so.1")
+        );
+        let win = [
+            "onnxruntime.dll",
+            "onnxruntime_providers_shared.dll",
+            "DirectML.dll",
+        ];
+        assert_eq!(
+            pick_ort_library(&win, "onnxruntime.dll"),
+            Some("onnxruntime.dll")
+        );
+        assert_eq!(
+            pick_ort_library(&["onnxruntime_providers_cuda.dll"], "onnxruntime.dll"),
+            None
+        );
+        assert_eq!(
+            pick_ort_library(&["libonnxruntime_providers_cuda.so"], "libonnxruntime.so"),
+            None
+        );
+    }
+
+    #[test]
+    fn onnxruntime_lookup_order() {
+        let root = std::env::temp_dir().join(format!("bop_ortlib_{}", uuid::Uuid::new_v4()));
+        let (a, b, c) = (root.join("a"), root.join("b"), root.join("c"));
+        for d in [&a, &b, &c] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let lib = ort_library_file_name();
+        std::fs::write(b.join(lib), b"").unwrap();
+        std::fs::write(c.join(lib), b"").unwrap();
+        std::fs::write(c.join(ORT_FLAVOR_FILE), " CoreML\n").unwrap();
+
+        // Explicit dir without a library falls through to the env path.
+        let r = find_onnxruntime_from(Some(&a), Some(&b), &c);
+        assert_eq!(r.library, Some(b.join(lib)));
+        assert_eq!(r.checked.len(), 2);
+        assert!(r.checked[0].contains("no ONNX Runtime library inside"));
+        // Explicit dir with a library wins; a file path works too.
+        assert_eq!(
+            find_onnxruntime_from(Some(&c), Some(&b), &a).library,
+            Some(c.join(lib))
+        );
+        assert_eq!(
+            find_onnxruntime_from(None, Some(&b.join(lib)), &c).library,
+            Some(b.join(lib))
+        );
+        // Default dir last; nothing found anywhere.
+        assert_eq!(
+            find_onnxruntime_from(None, None, &c).library,
+            Some(c.join(lib))
+        );
+        let none = find_onnxruntime_from(Some(&root.join("missing")), None, &a);
+        assert_eq!(none.library, None);
+        assert!(
+            none.checked[0].contains("does not exist"),
+            "{:?}",
+            none.checked
+        );
+        assert_eq!(read_ort_flavor(&c).as_deref(), Some("coreml"));
+        assert_eq!(read_ort_flavor(&a), None);
+        assert!(default_onnxruntime_dir().ends_with(ORT_DIR_NAME));
+        std::fs::remove_dir_all(&root).ok();
     }
 }

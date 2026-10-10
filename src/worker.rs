@@ -58,7 +58,7 @@ pub struct WorkerConfig {
     pub save_ref_image: bool,
     /// Compile on the first request instead of at startup.
     pub lazy: bool,
-    /// Reported as `canUseGPU` (OpenVINO lists a GPU device).
+    /// Reported as `canUseGPU` (some GPU-class device option of any runtime can run).
     pub can_use_gpu: bool,
 }
 
