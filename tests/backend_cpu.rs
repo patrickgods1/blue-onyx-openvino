@@ -3,7 +3,7 @@
 //! Set `BLUE_ONYX_SKIP_OPENVINO_TESTS=1` to skip (e.g. offline CI).
 //! Run with `cargo test --test backend_cpu -- --nocapture` to see timings.
 
-use blue_onyx_openvino::backend::{CoreOptions, LoadRequest, OvBackend, OvCore};
+use blue_onyx_openvino::backend::{CoreOptions, LoadRequest, Runtimes, spec};
 use blue_onyx_openvino::setup_openvino;
 use std::path::{Path, PathBuf};
 
@@ -51,40 +51,44 @@ fn cpu_and_gpu_inference() {
     ensure_runtime(&ov_dir);
     let model_path = ensure_model(&root.join("models"));
 
-    let mut core = OvCore::new(&CoreOptions {
+    let mut rt = Runtimes::new(&CoreOptions {
         cache_dir: Some(root.join("cache")),
         intra_threads: 0,
         openvino_dir: Some(ov_dir),
-    })
-    .expect("OvCore::new");
+    });
+    rt.require_any().expect("Runtimes::new");
+    let core = rt.openvino().expect("OpenVINO core");
     println!("OpenVINO {}", core.openvino_version());
     println!("available devices: {:?}", core.available_devices());
     for d in core.available_devices().to_vec() {
         println!("  {d}: {}", core.device_full_name(&d));
     }
+    let has_gpu = core.has_gpu();
+    let req = |requested: &str| LoadRequest {
+        path: model_path.clone(),
+        requested: requested.into(),
+        gpu_precision: None,
+    };
 
     // CPU, no fallback.
-    let loaded = core
-        .load(&LoadRequest {
-            path: model_path.clone(),
-            device: "CPU".into(),
-            gpu_precision: None,
-            allow_cpu_fallback: false,
-        })
+    let mut backend = rt
+        .load(&spec::parse("CPU").unwrap(), &req("CPU"))
         .expect("load on CPU");
+    let info = backend.info().clone();
     println!(
         "CPU: {:?} compile {} ms, inputs {:?}, outputs {:?}",
-        loaded.device, loaded.compile_ms, loaded.inputs, loaded.outputs
+        info.device, info.compile_ms, info.inputs, info.outputs
     );
-    assert_eq!(loaded.image_input, "images");
-    assert_eq!(loaded.input_size, (640, 640));
-    assert_eq!(loaded.inputs.len(), 1);
-    assert_eq!(loaded.inputs[0].shape, vec![1, 3, 640, 640]);
-    assert_eq!(loaded.outputs.len(), 1);
-    assert_eq!(loaded.outputs[0].shape, vec![1, 25200, 8]);
-    assert_eq!(loaded.device.actual, "CPU");
+    assert_eq!(info.image_input, "images");
+    assert_eq!(info.input_size, (640, 640));
+    assert_eq!(info.inputs.len(), 1);
+    assert_eq!(info.inputs[0].shape, vec![1, 3, 640, 640]);
+    assert_eq!(info.outputs.len(), 1);
+    assert_eq!(info.outputs[0].shape, vec![1, 25200, 8]);
+    assert_eq!(info.device.actual, "CPU");
+    assert_eq!(info.device.spec, "openvino:cpu");
+    assert!(!info.device.fell_back);
 
-    let mut backend = OvBackend::new(loaded).expect("backend");
     let chw = vec![0f32; 3 * 640 * 640];
     let t = std::time::Instant::now();
     let outs = backend.infer(&chw, &[]).expect("infer CPU");
@@ -99,21 +103,23 @@ fn cpu_and_gpu_inference() {
 
     // GPU with CPU fallback, loaded twice (second load should hit the compile cache).
     for run in 1..=2 {
-        let loaded = core
-            .load(&LoadRequest {
-                path: model_path.clone(),
-                device: "GPU".into(),
-                gpu_precision: None,
-                allow_cpu_fallback: true,
-            })
+        let mut backend = rt
+            .load(&spec::parse("GPU").unwrap(), &req("GPU"))
             .expect("load on GPU (with fallback)");
+        let dev = &backend.info().device;
         println!(
             "GPU run {run}: {:?} compile {} ms, provider '{}'",
-            loaded.device,
-            loaded.compile_ms,
-            loaded.device.execution_provider()
+            dev,
+            backend.info().compile_ms,
+            dev.execution_provider()
         );
-        let mut backend = OvBackend::new(loaded).expect("backend GPU");
+        assert_eq!(dev.requested, "GPU");
+        if !has_gpu {
+            // No GPU listed: CPU, reported as a fallback (unchanged from before 6.1).
+            assert_eq!(dev.actual, "CPU");
+            assert!(dev.fell_back);
+            assert!(dev.execution_provider().ends_with(", fallback)"));
+        }
         let t = std::time::Instant::now();
         let outs = backend.infer(&chw, &[]).expect("infer GPU");
         let first = t.elapsed().as_millis();
@@ -125,4 +131,12 @@ fn cpu_and_gpu_inference() {
         );
         assert_eq!(outs[0].as_f32().expect("f32 output").len(), 25200 * 8);
     }
+
+    // ONNX Runtime is not in this build yet: the spec falls back to OpenVINO CPU.
+    let backend = rt
+        .load(&spec::parse("ort:cuda").unwrap(), &req("ort:cuda"))
+        .expect("ort:cuda falls back to CPU");
+    let dev = &backend.info().device;
+    assert_eq!((dev.actual.as_str(), dev.fell_back), ("CPU", true));
+    assert_eq!(dev.requested, "ort:cuda");
 }

@@ -1,14 +1,16 @@
 //! Per-model inference thread.
 //!
-//! Each configured model gets one OS thread that owns its `OvBackend` (the `InferRequest` is
-//! created on that thread) and receives work over a bounded crossbeam channel. The channel is
+//! Each configured model gets one OS thread that owns its [`Backend`] (the `InferRequest` is
+//! created on that thread) and receives work over a bounded crossbeam channel. Loading walks the
+//! device candidates of the model's [`DeviceSpec`] (e.g. GPU, then CPU): a candidate is accepted
+//! only once it compiles, creates its request and passes the warm-up inference. The channel is
 //! created before the model is compiled so the HTTP layer can route to it immediately; the
 //! effective queue depth is a "soft capacity" computed after the warm-up inference
 //! (`request_timeout / warmup_ms`, clamped to 1..=64) and checked by the server through
 //! [`WorkerHandle::is_full`]. Flow modeled on blue-onyx `worker.rs` (MIT).
 
 use crate::api::{VisionDetectionRequest, VisionDetectionResponse};
-use crate::backend::{DeviceInfo, LoadRequest, OvBackend, OvCore};
+use crate::backend::{Backend, Candidate, DeviceInfo, DeviceSpec, LoadRequest, Runtimes};
 use crate::config::ModelConfig;
 use crate::metrics::{ModelGauges, ModelMetrics, ModelStateLabel};
 use crate::model::preprocess::Preprocessor;
@@ -42,6 +44,8 @@ const POLL: Duration = Duration::from_millis(250);
 pub struct WorkerConfig {
     pub name: String,
     pub model: ModelConfig,
+    /// Where to run; expanded into candidates by `Runtimes::plan`.
+    pub device: DeviceSpec,
     pub load: LoadRequest,
     pub classes: Vec<String>,
     pub object_filter: Vec<String>,
@@ -54,7 +58,7 @@ pub struct WorkerConfig {
     pub save_ref_image: bool,
     /// Compile on the first request instead of at startup.
     pub lazy: bool,
-    /// Reported as `canUseGPU` (the Core lists a GPU device).
+    /// Reported as `canUseGPU` (OpenVINO lists a GPU device).
     pub can_use_gpu: bool,
 }
 
@@ -218,23 +222,23 @@ pub fn effective_threshold(min_confidence: f32, configured: f32) -> f32 {
 
 /// Spawn a worker that starts loading immediately.
 pub fn spawn_worker(
-    core: Arc<Mutex<OvCore>>,
+    runtimes: Arc<Mutex<Runtimes>>,
     cfg: WorkerConfig,
     metrics: Arc<ModelMetrics>,
     shutdown: CancellationToken,
 ) -> WorkerHandle {
-    spawn_worker_after(core, cfg, metrics, shutdown, None)
+    spawn_worker_after(runtimes, cfg, metrics, shutdown, None)
 }
 
-/// Spawn a worker that waits for `after` to open before touching the `Core`, so models
+/// Spawn a worker that waits for `after` to open before touching the runtimes, so models
 /// compile in a deterministic order.
 ///
 /// A lazy worker does not take part in the startup order: it starts serving its channel at once
-/// (so its first request compiles it as soon as the `Core` mutex is free, without waiting for
+/// (so its first request compiles it as soon as the runtimes mutex is free, without waiting for
 /// every earlier model) and its handle's [`WorkerHandle::load_gate`] simply forwards `after`, so
 /// the next model in the config still waits for the previous non-lazy one.
 pub fn spawn_worker_after(
-    core: Arc<Mutex<OvCore>>,
+    runtimes: Arc<Mutex<Runtimes>>,
     cfg: WorkerConfig,
     metrics: Arc<ModelMetrics>,
     shutdown: CancellationToken,
@@ -263,7 +267,7 @@ pub fn spawn_worker_after(
     let load_started = Arc::new(AtomicBool::new(false));
 
     let ctx = WorkerCtx {
-        core,
+        runtimes,
         cfg: cfg.clone(),
         metrics: metrics.clone(),
         state: state.clone(),
@@ -303,14 +307,14 @@ pub fn spawn_worker_after(
 
 /// Model state owned by the worker thread after a successful load.
 struct Engine {
-    backend: OvBackend,
+    backend: Backend,
     family: Box<dyn Family>,
     pre: Preprocessor,
     provider: String,
 }
 
 struct WorkerCtx {
-    core: Arc<Mutex<OvCore>>,
+    runtimes: Arc<Mutex<Runtimes>>,
     cfg: WorkerConfig,
     metrics: Arc<ModelMetrics>,
     state: StateHandle,
@@ -436,38 +440,24 @@ impl WorkerCtx {
 
     fn load(&self) -> Result<Engine> {
         let name = &self.cfg.name;
+        let candidates = {
+            let rt = self.runtimes.lock().unwrap_or_else(|e| e.into_inner());
+            rt.plan(&self.cfg.device)
+        };
         info!(
             model = %name,
             path = %self.cfg.load.path.display(),
-            device = %self.cfg.load.device,
+            device = %self.cfg.load.requested,
+            candidates = %candidates.iter().map(|c| c.device.to_string()).collect::<Vec<_>>().join(", "),
             "loading model"
         );
-        let loaded = {
-            let mut core = self.core.lock().unwrap_or_else(|e| e.into_inner());
-            core.load(&self.cfg.load)
-                .with_context(|| format!("loading {}", self.cfg.load.path.display()))?
-        };
-        let dev = loaded.device.clone();
-        let provider = dev.execution_provider();
-        let (in_w, in_h) = loaded.input_size;
-        let compile_ms = loaded.compile_ms;
-        let family = crate::model::make_family(
-            self.cfg.model.family,
-            &loaded.inputs,
-            &loaded.outputs,
-            self.cfg.classes.len(),
-        )?;
-        let mut pre = Preprocessor::new(in_w, in_h, family.resize_mode());
-        let mut backend = OvBackend::new(loaded)?;
+        let label = format!("model {name}");
+        let (engine, compile_ms, warmup_ms) =
+            crate::backend::try_candidates(&label, &candidates, |cand| self.load_on(cand))
+                .with_context(|| format!("loading {}", self.cfg.load.path.display()))?;
 
-        // Warm-up on a mid-gray frame the size of the model input.
-        let gray = vec![114u8; in_w as usize * in_h as usize * 3];
-        let t = Instant::now();
-        let (chw, ctx) = pre.run(&gray, in_w, in_h)?;
-        let extra = family.extra_inputs(&ctx);
-        backend.infer(chw, &extra).context("warm-up inference")?;
-        let warmup_ms = t.elapsed().as_millis() as u64;
-
+        let dev = engine.backend.info().device.clone();
+        let (in_w, in_h) = engine.backend.info().input_size;
         let cap = if self.cfg.queue_size > 0 {
             self.cfg.queue_size
         } else {
@@ -478,12 +468,13 @@ impl WorkerCtx {
             *d = Some(dev.clone());
         }
         self.metrics
-            .set_loaded(dev.actual.clone(), provider.clone());
+            .set_loaded(dev.actual.clone(), engine.provider.clone());
         info!(
             model = %name,
-            family = %family.kind(),
+            family = %engine.family.kind(),
             device = %dev.actual,
-            provider = %provider,
+            spec = %dev.spec,
+            provider = %engine.provider,
             fell_back = dev.fell_back,
             input = %format!("{in_w}x{in_h}"),
             classes = self.cfg.classes.len(),
@@ -492,12 +483,46 @@ impl WorkerCtx {
             queue = cap,
             "model ready"
         );
-        Ok(Engine {
-            backend,
-            family,
-            pre,
-            provider,
-        })
+        Ok(engine)
+    }
+
+    /// Compile (under the runtimes lock), create the request and warm up on one candidate.
+    /// Returns the engine with its compile and warm-up times.
+    fn load_on(&self, cand: &Candidate) -> Result<(Engine, u64, u64)> {
+        let compiled = {
+            let mut rt = self.runtimes.lock().unwrap_or_else(|e| e.into_inner());
+            rt.compile(cand, &self.cfg.load)?
+        };
+        let info = compiled.info();
+        let provider = info.device.execution_provider();
+        let (in_w, in_h) = info.input_size;
+        let compile_ms = info.compile_ms;
+        let family = crate::model::make_family(
+            self.cfg.model.family,
+            &info.inputs,
+            &info.outputs,
+            self.cfg.classes.len(),
+        )?;
+        let mut pre = Preprocessor::new(in_w, in_h, family.resize_mode());
+        let mut backend = compiled.into_backend()?;
+
+        // Warm-up on a mid-gray frame the size of the model input.
+        let gray = vec![114u8; in_w as usize * in_h as usize * 3];
+        let t = Instant::now();
+        let (chw, ctx) = pre.run(&gray, in_w, in_h)?;
+        let extra = family.extra_inputs(&ctx);
+        backend.infer(chw, &extra).context("warm-up inference")?;
+        let warmup_ms = t.elapsed().as_millis() as u64;
+        Ok((
+            Engine {
+                backend,
+                family,
+                pre,
+                provider,
+            },
+            compile_ms,
+            warmup_ms,
+        ))
     }
 
     fn error_response(

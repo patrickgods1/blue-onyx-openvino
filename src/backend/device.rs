@@ -1,10 +1,12 @@
-//! Device selection, core properties, model loading with GPU->CPU fallback, tensor IO.
+//! OpenVINO core properties, model loading on one device, tensor IO. The GPU->CPU fallback is
+//! the caller's candidate loop (`plan.rs`, `WorkerCtx::load`).
 //!
 //! Built against the `openvino` 0.11 crate (runtime-linking). Port metadata is read from the
 //! (possibly reshaped) `Model` before compilation; tensors are addressed by port index so models
 //! whose ports have no tensor names still work.
 
-use super::{CoreOptions, LoadRequest, LoadedModel, OvBackend};
+use super::spec::{Runtime, Target};
+use super::{Candidate, CoreOptions, LoadRequest, ModelInfo, OvBackend, OvCompiled};
 use crate::model::{ExtraData, ExtraInput, NamedOutput, OutputBuf, PortElem, PortSpec};
 use anyhow::{Context, Result};
 use openvino::{
@@ -20,54 +22,43 @@ const DEFAULT_TARGET_SIZES_SHAPE: [i64; 2] = [1, 2];
 /// Which device a model was requested on and ended up on.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeviceInfo {
+    /// Device as configured ("GPU", "GPU.1", "CPU", "auto", "ort:cuda", ...).
     pub requested: String,
-    /// "GPU", "GPU.1", "CPU"
+    /// Runtime device: "GPU", "GPU.1", "CPU" for OpenVINO.
     pub actual: String,
     /// FULL_DEVICE_NAME, e.g. "Intel(R) UHD Graphics 630 (iGPU)"
     pub full_name: String,
     pub fell_back: bool,
+    pub runtime: Runtime,
+    /// Canonical spec of the candidate that loaded, e.g. "openvino:gpu", "openvino:cpu".
+    pub spec: String,
 }
 
 impl DeviceInfo {
     pub fn is_gpu(&self) -> bool {
-        self.actual.starts_with("GPU")
+        match self.runtime {
+            Runtime::OpenVino => self.actual.starts_with("GPU"),
+            Runtime::Ort => super::spec::parse(&self.spec).is_ok_and(|s| s.is_gpu_like()),
+        }
     }
-    /// String reported as `executionProvider` in API responses.
+    /// String reported as `executionProvider` in API responses, e.g.
+    /// "OpenVINO GPU (Intel(R) UHD Graphics 630, fallback)".
     pub fn execution_provider(&self) -> String {
-        let kind = if self.is_gpu() { "GPU" } else { "CPU" };
+        let kind = match self.runtime {
+            // OpenVINO keeps the pre-6.1 wording: GPU or CPU only.
+            Runtime::OpenVino if self.is_gpu() => "GPU",
+            Runtime::OpenVino => "CPU",
+            Runtime::Ort => super::spec::parse(&self.spec)
+                .ok()
+                .and_then(|s| s.device().map(|d| d.target.display_name()))
+                .unwrap_or(Target::Cpu.display_name()),
+        };
+        let runtime = self.runtime.display_name();
         let fb = if self.fell_back { ", fallback" } else { "" };
         if self.full_name.is_empty() {
-            format!("OpenVINO {kind}{fb}")
+            format!("{runtime} {kind}{fb}")
         } else {
-            format!("OpenVINO {kind} ({}{fb})", self.full_name)
-        }
-    }
-}
-
-/// Parsed device preference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceSelection {
-    pub primary: String,
-    pub fallback: Option<String>,
-}
-
-impl DeviceSelection {
-    pub fn from_request(req: &LoadRequest, available: &[String]) -> Self {
-        let wants_gpu = req.device.to_ascii_uppercase().starts_with("GPU");
-        let gpu_present = available.iter().any(|d| d.starts_with("GPU"));
-        if wants_gpu && !gpu_present {
-            return Self {
-                primary: "CPU".into(),
-                fallback: None,
-            };
-        }
-        Self {
-            primary: req.device.clone(),
-            fallback: if wants_gpu && req.allow_cpu_fallback {
-                Some("CPU".into())
-            } else {
-                None
-            },
+            format!("{runtime} {kind} ({}{fb})", self.full_name)
         }
     }
 }
@@ -374,11 +365,18 @@ fn prefer_intel_gpu(core: &openvino::Core, primary: &str, available: &[String]) 
         .cloned()
 }
 
+/// Read, reshape to static, compile on exactly `cand.device` (an OpenVINO device; a bare `GPU`
+/// may resolve to the first Intel `GPU.N`) and introspect ports. No fallback here.
 pub fn load_model(
     core: &mut openvino::Core,
     available: &[String],
+    cand: &Candidate,
     req: &LoadRequest,
-) -> Result<LoadedModel> {
+) -> Result<OvCompiled> {
+    let mut primary = cand
+        .device
+        .openvino_device()
+        .with_context(|| format!("{} is not an OpenVINO device", cand.device))?;
     let path = &req.path;
     if !path.is_file() {
         anyhow::bail!("model file {} does not exist", path.display());
@@ -415,15 +413,12 @@ pub fn load_model(
     let input_size = (img.shape[3] as u32, img.shape[2] as u32);
     let image_input = img.name.clone();
 
-    let mut sel = DeviceSelection::from_request(req, available);
-    // GPU requested but none present -> CPU counts as a fallback.
-    let unavailable = sel.primary != req.device;
-    if let Some(intel) = prefer_intel_gpu(core, &sel.primary, available) {
+    if let Some(intel) = prefer_intel_gpu(core, &primary, available) {
         tracing::info!(
             "model {}: device GPU resolved to {intel} (first Intel GPU; non-Intel OpenCL GPUs are skipped)",
             path.display()
         );
-        sel.primary = intel;
+        primary = intel;
     }
     let precision = req
         .gpu_precision
@@ -431,34 +426,16 @@ pub fn load_model(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("f16")
         .to_ascii_lowercase();
-    if unavailable {
-        tracing::warn!(
-            "model {}: requested device {} not available (devices: {available:?}); using {}",
-            path.display(),
-            req.device,
-            sel.primary
-        );
-    }
-    let mut fell_back = unavailable;
-    let (compiled, actual) = match compile_on(core, &model, &sel.primary, &precision, path) {
-        Ok(c) => (c, sel.primary.clone()),
-        Err(e) => match &sel.fallback {
-            Some(fb) => {
-                tracing::warn!("{e:#}; falling back to {fb}");
-                fell_back = true;
-                let c = compile_on(core, &model, fb, &precision, path)
-                    .with_context(|| format!("fallback after: {e:#}"))?;
-                (c, fb.clone())
-            }
-            None => return Err(e),
-        },
-    };
+    let compiled = compile_on(core, &model, &primary, &precision, path)?;
+    let actual = primary;
     let compile_ms = t0.elapsed().as_millis() as u64;
     let device = DeviceInfo {
-        requested: req.device.clone(),
+        requested: req.requested.clone(),
         full_name: full_device_name(core, &actual),
         actual,
-        fell_back,
+        fell_back: cand.fell_back,
+        runtime: Runtime::OpenVino,
+        spec: cand.device.to_string(),
     };
     tracing::info!(
         "model {} compiled on {} ({}) in {compile_ms} ms; inputs {:?}, outputs {:?}",
@@ -474,19 +451,21 @@ pub fn load_model(
             .map(|p| (&p.name, &p.shape))
             .collect::<Vec<_>>()
     );
-    Ok(LoadedModel {
+    Ok(OvCompiled {
         compiled,
-        path: path.clone(),
-        inputs,
-        outputs,
-        device,
-        image_input,
-        input_size,
-        compile_ms,
+        info: ModelInfo {
+            path: path.clone(),
+            inputs,
+            outputs,
+            device,
+            image_input,
+            input_size,
+            compile_ms,
+        },
     })
 }
 
-fn image_index(model: &LoadedModel) -> Result<usize> {
+fn image_index(model: &ModelInfo) -> Result<usize> {
     model
         .inputs
         .iter()
@@ -500,8 +479,11 @@ fn image_index(model: &LoadedModel) -> Result<usize> {
         })
 }
 
-pub fn create_backend(model: LoadedModel) -> Result<OvBackend> {
-    let mut model = model;
+pub fn create_backend(compiled: OvCompiled) -> Result<OvBackend> {
+    let OvCompiled {
+        mut compiled,
+        info: model,
+    } = compiled;
     let idx = image_index(&model)?;
     let spec = &model.inputs[idx];
     if spec.elem != PortElem::F32 {
@@ -528,7 +510,7 @@ pub fn create_backend(model: LoadedModel) -> Result<OvBackend> {
             spec.name
         )
     })?;
-    let request = model.compiled.create_infer_request().with_context(|| {
+    let request = compiled.create_infer_request().with_context(|| {
         format!(
             "model {}: creating infer request on {}",
             model.path.display(),
@@ -536,13 +518,14 @@ pub fn create_backend(model: LoadedModel) -> Result<OvBackend> {
         )
     })?;
     Ok(OvBackend {
-        model,
+        info: model,
         request,
         input_tensor,
+        _compiled: compiled,
     })
 }
 
-fn extra_tensor(model: &LoadedModel, port: &PortSpec, extra: &ExtraInput) -> Result<Tensor> {
+fn extra_tensor(model: &ModelInfo, port: &PortSpec, extra: &ExtraInput) -> Result<Tensor> {
     let ctx = || {
         format!(
             "model {}: extra input '{}' shape {:?}",
@@ -615,7 +598,7 @@ fn f16_to_f32(h: u16) -> f32 {
     }
 }
 
-fn read_output(model: &LoadedModel, tensor: &Tensor, spec: &PortSpec) -> Result<NamedOutput> {
+fn read_output(model: &ModelInfo, tensor: &Tensor, spec: &PortSpec) -> Result<NamedOutput> {
     let ctx = || {
         format!(
             "model {} on {}: output '{}'",
@@ -663,7 +646,7 @@ fn read_output(model: &LoadedModel, tensor: &Tensor, spec: &PortSpec) -> Result<
 }
 
 pub fn run_inference(
-    model: &LoadedModel,
+    model: &ModelInfo,
     request: &mut openvino::InferRequest,
     input_tensor: &mut openvino::Tensor,
     chw: &[f32],
@@ -729,28 +712,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selection_rules() {
-        let req = LoadRequest {
-            path: "m.xml".into(),
-            device: "GPU".into(),
-            gpu_precision: None,
-            allow_cpu_fallback: true,
-        };
-        let s = DeviceSelection::from_request(&req, &["CPU".into(), "GPU".into()]);
-        assert_eq!(s.primary, "GPU");
-        assert_eq!(s.fallback.as_deref(), Some("CPU"));
-        let s = DeviceSelection::from_request(&req, &["CPU".into()]);
-        assert_eq!(s.primary, "CPU");
-        assert!(s.fallback.is_none());
-        let info = DeviceInfo {
+    fn execution_provider_strings() {
+        let mut info = DeviceInfo {
             requested: "GPU".into(),
             actual: "GPU".into(),
             full_name: "Intel(R) UHD Graphics 630".into(),
             fell_back: false,
+            runtime: Runtime::OpenVino,
+            spec: "openvino:gpu".into(),
         };
+        assert!(info.is_gpu());
         assert_eq!(
             info.execution_provider(),
             "OpenVINO GPU (Intel(R) UHD Graphics 630)"
+        );
+        info.actual = "GPU.1".into();
+        assert_eq!(
+            info.execution_provider(),
+            "OpenVINO GPU (Intel(R) UHD Graphics 630)"
+        );
+        info.actual = "CPU".into();
+        info.full_name = "Apple M1".into();
+        info.fell_back = true;
+        info.spec = "openvino:cpu".into();
+        assert!(!info.is_gpu());
+        assert_eq!(
+            info.execution_provider(),
+            "OpenVINO CPU (Apple M1, fallback)"
+        );
+        info.full_name.clear();
+        assert_eq!(info.execution_provider(), "OpenVINO CPU, fallback");
+        info.fell_back = false;
+        assert_eq!(info.execution_provider(), "OpenVINO CPU");
+
+        let ort = DeviceInfo {
+            requested: "ort:cuda".into(),
+            actual: "cuda:0".into(),
+            full_name: "NVIDIA GeForce RTX 3060".into(),
+            fell_back: false,
+            runtime: Runtime::Ort,
+            spec: "ort:cuda:0".into(),
+        };
+        assert!(ort.is_gpu());
+        assert_eq!(
+            ort.execution_provider(),
+            "ONNX Runtime CUDA (NVIDIA GeForce RTX 3060)"
         );
     }
 

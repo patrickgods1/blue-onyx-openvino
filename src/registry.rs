@@ -1,10 +1,11 @@
-//! Loads every enabled model on one shared OpenVINO `Core` and owns their worker threads.
+//! Loads every enabled model through the shared [`Runtimes`] (one OpenVINO `Core`) and owns
+//! their worker threads.
 //! Disabled models (`enabled: false`) stay in the config but get no worker and are not served.
 //!
 //! Workers are spawned in config order; each waits for its predecessor's [`LoadGate`] before
 //! locking the core, so compile order is deterministic and only one model compiles at a time.
 
-use crate::backend::{CoreOptions, LoadRequest, OvCore};
+use crate::backend::{CoreOptions, DeviceSpec, LoadRequest, Runtimes};
 use crate::config::{Config, ModelConfig};
 use crate::metrics::{Metrics, ModelGauges, ModelMetrics};
 use crate::worker::{LoadGate, WorkerConfig, WorkerHandle, spawn_worker_after};
@@ -15,20 +16,14 @@ use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-/// Facts about the OpenVINO runtime, captured once at startup.
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct CoreInfo {
-    pub openvino_version: String,
-    pub available_devices: Vec<String>,
-    pub has_gpu: bool,
-}
+pub use crate::backend::RuntimeInfo;
 
 pub struct ModelRegistry {
     workers: Vec<WorkerHandle>,
     /// Lowercase name -> index into `workers`.
     by_name: HashMap<String, usize>,
     default_idx: Option<usize>,
-    pub core_info: CoreInfo,
+    pub runtime_info: RuntimeInfo,
 }
 
 /// Lowercase and strip a trailing `.onnx` / `.xml` (Blue Iris sends file stems, users may not).
@@ -58,15 +53,12 @@ pub fn resolve_class_names(model_path: &Path, classes: Option<&Path>) -> Result<
     Ok(crate::model::classes::coco80())
 }
 
-/// Build the per-model `LoadRequest` from the global config.
+/// Build the per-model `LoadRequest` (the device spec comes from `Config::device_spec_for`).
 pub fn load_request(config: &Config, m: &ModelConfig, path: PathBuf) -> LoadRequest {
-    let device = config.device_for(m);
-    let allow_cpu_fallback = !device.eq_ignore_ascii_case("CPU");
     LoadRequest {
         path,
-        device,
+        requested: config.device_for(m),
         gpu_precision: m.gpu_precision.clone(),
-        allow_cpu_fallback,
     }
 }
 
@@ -138,19 +130,16 @@ impl ModelRegistry {
             intra_threads: config.intra_threads,
             openvino_dir: config.openvino_dir.as_deref().map(crate::resolve_path),
         };
-        let core = OvCore::new(&opts).context("initializing OpenVINO")?;
-        let core_info = CoreInfo {
-            openvino_version: core.openvino_version(),
-            available_devices: core.available_devices().to_vec(),
-            has_gpu: core.has_gpu(),
-        };
+        let runtimes = Runtimes::new(&opts);
+        runtimes.require_any()?;
+        let runtime_info = runtimes.info();
         info!(
-            version = %core_info.openvino_version,
-            devices = ?core_info.available_devices,
+            version = %runtime_info.openvino_version,
+            devices = ?runtime_info.available_devices,
             cache_dir = ?opts.cache_dir,
             "OpenVINO core ready"
         );
-        let core = Arc::new(Mutex::new(core));
+        let runtimes = Arc::new(Mutex::new(runtimes));
 
         let mut workers = Vec::with_capacity(enabled.len());
         let mut prev: Option<LoadGate> = None;
@@ -160,14 +149,15 @@ impl ModelRegistry {
             let load = load_request(config, m, path.clone());
             let mm = Arc::new(ModelMetrics::new(
                 name.clone(),
-                load.device.clone(),
+                load.requested.clone(),
                 String::new(),
             ));
             if let Ok(mut g) = metrics.models.write() {
                 g.push(mm.clone());
             }
 
-            let setup = (|| -> Result<Vec<String>> {
+            let setup = (|| -> Result<(DeviceSpec, Vec<String>)> {
+                let device = config.device_spec_for(m)?;
                 if !path.is_file() {
                     bail!(
                         "model file not found: {} (download it with `download-models` or fix `path`)",
@@ -175,9 +165,9 @@ impl ModelRegistry {
                     );
                 }
                 let classes_path = m.classes.as_deref().map(crate::resolve_path);
-                resolve_class_names(&path, classes_path.as_deref())
+                Ok((device, resolve_class_names(&path, classes_path.as_deref())?))
             })();
-            let classes = match setup {
+            let (device, classes) = match setup {
                 Ok(c) => c,
                 Err(e) => {
                     let msg = format!("{e:#}");
@@ -194,6 +184,7 @@ impl ModelRegistry {
             };
             let cfg = WorkerConfig {
                 name: name.clone(),
+                device,
                 load,
                 classes,
                 object_filter: m
@@ -209,10 +200,11 @@ impl ModelRegistry {
                 save_image_path: config.save_image_path.as_deref().map(crate::resolve_path),
                 save_ref_image: config.save_ref_image,
                 lazy: m.lazy,
-                can_use_gpu: core_info.has_gpu,
+                can_use_gpu: runtime_info.has_gpu,
                 model: resolved,
             };
-            let handle = spawn_worker_after(core.clone(), cfg, mm, shutdown.clone(), prev.take());
+            let handle =
+                spawn_worker_after(runtimes.clone(), cfg, mm, shutdown.clone(), prev.take());
             prev = Some(handle.load_gate());
             workers.push(handle);
         }
@@ -226,7 +218,7 @@ impl ModelRegistry {
             workers,
             by_name,
             default_idx,
-            core_info,
+            runtime_info,
         })
     }
 
@@ -235,7 +227,7 @@ impl ModelRegistry {
     pub fn from_handles(
         workers: Vec<WorkerHandle>,
         default_idx: Option<usize>,
-        core_info: CoreInfo,
+        runtime_info: RuntimeInfo,
     ) -> Self {
         let by_name = workers
             .iter()
@@ -247,7 +239,7 @@ impl ModelRegistry {
             workers,
             by_name,
             default_idx,
-            core_info,
+            runtime_info,
         }
     }
 
@@ -302,15 +294,23 @@ mod tests {
 
     #[test]
     fn load_request_fallback_rules() {
+        use crate::backend::plan_candidates;
+        let gpu = ["CPU".to_string(), "GPU".to_string()];
+        let plan = |c: &Config, m: &ModelConfig| -> Vec<String> {
+            plan_candidates(&c.device_spec_for(m).unwrap(), &gpu)
+                .iter()
+                .map(|c| c.device.to_string())
+                .collect()
+        };
         let mut c = Config::default();
         let m = ModelConfig::default();
         let r = load_request(&c, &m, "m.xml".into());
-        assert_eq!(r.device, "GPU");
-        assert!(r.allow_cpu_fallback);
+        assert_eq!(r.requested, "GPU");
+        assert_eq!(plan(&c, &m), ["openvino:gpu", "openvino:cpu"]);
         c.force_cpu = true;
         let r = load_request(&c, &m, "m.xml".into());
-        assert_eq!(r.device, "CPU");
-        assert!(!r.allow_cpu_fallback);
+        assert_eq!(r.requested, "CPU");
+        assert_eq!(plan(&c, &m), ["openvino:cpu"]);
     }
 
     #[test]

@@ -59,7 +59,8 @@ pub struct ModelConfig {
     pub family: ModelFamilyKind,
     /// YAML with a `NAMES:` list. Defaults to `<stem>.yaml` next to the model, then COCO-80.
     pub classes: Option<PathBuf>,
-    /// Per-model device override ("GPU", "GPU.1", "CPU"). None = global setting.
+    /// Per-model device override, same syntax as the global `device` ("GPU", "openvino:cpu",
+    /// ...). None = global setting.
     pub device: Option<String>,
     pub confidence_threshold: Option<f32>,
     pub object_filter: Option<Vec<String>>,
@@ -108,7 +109,8 @@ pub struct Config {
     pub request_timeout_secs: u64,
     /// 0 = auto-size from timeout and measured inference time.
     pub worker_queue_size: usize,
-    /// Global inference device: "GPU", "GPU.N" or "CPU".
+    /// Global inference device spec (`backend::spec`): "GPU", "GPU.N", "CPU", "auto",
+    /// "openvino:gpu.1", "ort:cuda", ...
     pub device: String,
     pub gpu_index: u32,
     pub force_cpu: bool,
@@ -223,7 +225,12 @@ impl Config {
         std::time::Duration::from_secs(self.request_timeout_secs.max(1))
     }
 
-    /// Effective device string for a model, honoring `force_cpu`, per-model override, `gpu_index`.
+    /// Effective device string for a model, honoring `force_cpu`, per-model override and
+    /// `gpu_index`. This is the string reported as the requested device; see
+    /// [`Self::device_spec_for`] for the parsed form.
+    ///
+    /// `gpu_index > 0` fills in the index of a global GPU-like spec without one (legacy `GPU`
+    /// becomes `GPU.N`, `ort:cuda` becomes `ort:cuda:N`); a per-model override is used verbatim.
     pub fn device_for(&self, m: &ModelConfig) -> String {
         if self.force_cpu {
             return "CPU".to_string();
@@ -231,10 +238,32 @@ impl Config {
         if let Some(d) = &m.device {
             return d.clone();
         }
-        if self.device.eq_ignore_ascii_case("gpu") && self.gpu_index > 0 {
-            return format!("GPU.{}", self.gpu_index);
+        if self.gpu_index > 0 {
+            if self.device.trim().eq_ignore_ascii_case("gpu") {
+                return format!("GPU.{}", self.gpu_index);
+            }
+            if let Ok(spec) = crate::backend::spec::parse(&self.device) {
+                let indexed = spec.with_default_index(self.gpu_index);
+                if indexed != spec {
+                    return indexed.to_string();
+                }
+            }
         }
         self.device.clone()
+    }
+
+    /// Parsed device for a model: `force_cpu` -> `openvino:cpu`, else the per-model override,
+    /// else the global device with `gpu_index` applied (see [`Self::device_for`]).
+    pub fn device_spec_for(&self, m: &ModelConfig) -> Result<crate::backend::DeviceSpec> {
+        if self.force_cpu {
+            return Ok(crate::backend::DeviceSpec::OPENVINO_CPU);
+        }
+        let field = if m.device.is_some() {
+            format!("model '{}': device", m.effective_name())
+        } else {
+            "device".to_string()
+        };
+        crate::backend::spec::parse(&self.device_for(m)).with_context(|| field)
     }
 
     /// Cache directory resolved against the exe dir, or None when disabled.
@@ -306,9 +335,7 @@ pub fn apply_config_form(
         c.worker_queue_size = num("worker_queue_size", v)?;
     }
     if let Some(v) = get("device") {
-        if v.is_empty() || v.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
-            bail!("device: expected GPU, GPU.N or CPU, got '{v}'");
-        }
+        crate::backend::spec::parse(v).map_err(|e| anyhow::anyhow!("device: {e}"))?;
         c.device = v.to_string();
     }
     if let Some(v) = get("gpu_index") {
@@ -372,6 +399,10 @@ pub fn apply_config_form(
         let key = crate::registry::normalize_name(&m.effective_name());
         if !seen.insert(key.clone()) {
             bail!("models: duplicate model name '{key}'; set a distinct `name` for each entry");
+        }
+        if let Some(d) = &m.device {
+            crate::backend::spec::parse(d)
+                .map_err(|e| anyhow::anyhow!("models: '{key}' device: {e}"))?;
         }
     }
     if let Some(name) = &c.default_model
@@ -688,5 +719,62 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(c.device_for(&m2), "CPU");
+    }
+
+    #[test]
+    fn device_spec_resolution() {
+        use crate::backend::spec::parse;
+        let spec = |c: &Config, m: &ModelConfig| c.device_spec_for(m).unwrap().to_string();
+        let mut c = Config::default();
+        let m = ModelConfig::default();
+        assert_eq!(spec(&c, &m), "openvino:gpu");
+        c.gpu_index = 2;
+        assert_eq!(c.device_for(&m), "GPU.2");
+        assert_eq!(spec(&c, &m), "openvino:gpu.2");
+        for (global, want) in [
+            ("openvino:gpu", "openvino:gpu.2"),
+            ("openvino:gpu.1", "openvino:gpu.1"),
+            ("ort:cuda", "ort:cuda:2"),
+            ("ort:directml", "ort:directml:2"),
+            ("ORT:TensorRT", "ort:tensorrt:2"),
+            ("ort:cuda:0", "ort:cuda:0"),
+            ("ort:coreml", "ort:coreml"),
+            ("CPU", "openvino:cpu"),
+            ("auto", "auto"),
+        ] {
+            c.device = global.into();
+            assert_eq!(spec(&c, &m), want, "{global}");
+            assert_eq!(parse(&c.device_for(&m)).unwrap().to_string(), want);
+        }
+        // Per-model overrides are used verbatim (gpu_index only applies to the global device).
+        let over = |d: &str| ModelConfig {
+            device: Some(d.into()),
+            ..Default::default()
+        };
+        assert_eq!(spec(&c, &over("GPU")), "openvino:gpu");
+        assert_eq!(spec(&c, &over("ort:cpu")), "ort:cpu");
+        // force_cpu wins over everything.
+        c.force_cpu = true;
+        assert_eq!(spec(&c, &over("ort:cuda")), "openvino:cpu");
+        c.force_cpu = false;
+        let err = c.device_spec_for(&over("G P U")).unwrap_err();
+        assert!(format!("{err:#}").contains("device"), "{err:#}");
+        c.device = "nonsense".into();
+        assert!(c.device_spec_for(&m).is_err());
+    }
+
+    #[test]
+    fn config_form_device_specs() {
+        for ok in ["auto", "openvino:gpu.1", "ort:cuda:0", "cpu", "NPU"] {
+            let mut c = with_model();
+            apply_config_form(&mut c, &form(&[("device", ok)])).unwrap();
+            assert_eq!(c.device, ok);
+        }
+        let mut c = with_model();
+        let err = apply_config_form(&mut c, &form(&[("device", "ort:gpu")])).unwrap_err();
+        assert!(format!("{err:#}").starts_with("device:"), "{err:#}");
+        let models = r#"[{"path":"a.onnx","device":"XPU"}]"#;
+        let err = apply_config_form(&mut c, &form(&[("models_json", models)])).unwrap_err();
+        assert!(format!("{err:#}").contains("device"), "{err:#}");
     }
 }
