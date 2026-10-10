@@ -82,12 +82,13 @@ against the executable directory. The Windows service reads `blue_onyx_openvino_
 | `save_ref_image` | `false` | Also save the unannotated image |
 | `intra_threads` | `0` | CPU inference threads (0 = OpenVINO default; try 4 of 6 cores) |
 | `models_dir` | `"models"` | Where `download-models` puts files |
-| `default_model` | `null` | Model serving `/v1/vision/detection`; default = first entry |
+| `default_model` | `null` | Model serving `/v1/vision/detection`; default = first enabled entry |
 | `models` | `[]` | Model list, see [Multiple models](#multiple-models) |
 
 Model entry fields: `name`, `path` (`.onnx` or IR `.xml`), `family` (`auto`, `yolo26`, `yolo5`, `yolo8`,
 `rtdetr`), `classes` (YAML with `NAMES:`; default `<stem>.yaml`, then COCO-80), `device`,
-`confidence_threshold`, `object_filter`, `lazy`, `gpu_precision`.
+`confidence_threshold`, `object_filter`, `lazy`, `gpu_precision`, `enabled` (default `true`; disabled
+models stay in the config but are not loaded or served).
 
 ## Blue Iris setup
 
@@ -187,20 +188,28 @@ List any number of models in `models[]` of the config file:
     { "name": "yolo26s", "path": "models/yolo26s.xml", "family": "yolo26" },
     { "path": "models/IPcam-general.onnx", "family": "yolo5", "device": "CPU",
       "confidence_threshold": 0.4, "object_filter": ["person", "car"] },
-    { "path": "models/rt-detrv2-s.onnx", "family": "rtdetr", "lazy": true, "gpu_precision": "f32" }
+    { "path": "models/rt-detrv2-s.onnx", "family": "rtdetr", "lazy": true, "gpu_precision": "f32" },
+    { "path": "models/ipcam-animal.onnx", "family": "yolo5", "enabled": false }
   ]
 }
 ```
 
 - Names: `name`, else the file stem. Matching is case-insensitive and a `.onnx`/`.xml` suffix is ignored,
   so `/v1/vision/custom/IPcam-General.onnx` reaches `IPcam-general`.
-- `default_model` (or `--default-model <name>`) serves `/v1/vision/detection`; default is the first entry.
-- `GET`/`POST /v1/vision/custom/list` returns the loaded model names.
+- Only models with `enabled: true` (the default) are compiled and served. Pick them on the Config
+  page: the **Models** card has a *Load* checkbox and a *Default* radio per model; **Save and restart**
+  applies the selection. Disabled models stay listed so switching is a click plus a restart.
+- `default_model` (or `--default-model <name>`) serves `/v1/vision/detection`; default is the first
+  enabled entry (also used when `default_model` names a disabled model).
+- `GET`/`POST /v1/vision/custom/list` returns the loaded (enabled) model names.
 - An unknown model name returns HTTP 200 with `success: false` and an error message.
 - Per-model overrides: `device` (`GPU`, `GPU.1`, `CPU`), `confidence_threshold`, `object_filter`,
   `lazy` (compile on first request instead of at startup) and `gpu_precision` (`f16` default, `f32`).
 - `blue-onyx-openvino download-models --name IPcam-general --add-to-config` downloads and appends the
   model (family and classes file filled in) to the config, skipping names or paths already present.
+  New entries are added disabled when the config already has an enabled model (otherwise the first
+  one is enabled), so `download-models --all --add-to-config` does not load every model.
+- `--model <path>` always enables that model.
 
 Each model gets its own worker thread and compiled copy in memory. Expect a few hundred MB per model
 on the iGPU (shared system RAM); use `lazy` for rarely used models and `device: "CPU"` to keep the GPU
@@ -215,7 +224,7 @@ Open `http://<host>:32168/` in a browser:
 | `/` | Models (state, device, requests, queue), OpenVINO version and devices, uptime, API usage; shows a hint when a newer release exists |
 | `/stats` | Per-model state, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; refreshes every 5 s. JSON at `/stats.json` |
 | `/test` | Upload an image, pick a model and `min_confidence`; shows the annotated image and the JSON response (same code path and metrics as the API) |
-| `/config` | Edit the main settings and the `models` list (JSON) and save them to the config file; **Restart server** reloads the file, recompiles the models and rebinds the port without restarting the process. The log level applies immediately (`POST /config/loglevel` with `level=debug`, form or query) |
+| `/config` | Choose which models load and the default model (Models card, with **Save and restart**), edit the main settings and the `models` list (JSON) and save them to the config file; **Restart server** reloads the file, recompiles the enabled models and rebinds the port without restarting the process. The log level applies immediately (`POST /config/loglevel` with `level=debug`, form or query) |
 | `/prometheus` | Prometheus metrics (`blue_onyx_openvino_*{model="..."}`) |
 
 `log_path` changes need a full process restart. The UI has no authentication: do not expose the port
@@ -283,7 +292,7 @@ blue-onyx-openvino-benchmark --model models/yolo26s.xml --family yolo26 --device
 
 Flags: `--model`, `--family`, `--device`, `--force-cpu`, `--image`, `--repeat`, `--warmup`,
 `--compare-cpu` (also runs on CPU and diffs detections), `--cache-dir` (`""` disables), `--threads`,
-`--classes`, `--min-confidence`, `--config` (models from the config when no `--model`), `--json`, `-v`.
+`--classes`, `--min-confidence`, `--config` (enabled models from the config when no `--model`), `--json`, `-v`.
 If GPU latency is not clearly below CPU latency, the GPU was probably not used (check the log) or
 the FP32 path is active.
 

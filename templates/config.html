@@ -17,12 +17,36 @@
   </form>
 </section>
 
+<form method="post" action="/config/models" class="card">
+  <h2>Models</h2>
+  <p class="muted">Only checked models are compiled and served (after a restart). The default model serves <code>/v1/vision/detection</code>.</p>
+  <div class="scroll">
+  <table>
+  <thead><tr><th>Load</th><th>Default</th><th>Name</th><th>Family</th><th>File</th></tr></thead>
+  <tbody>
+  {% for m in models %}
+  <tr>
+    <td><input type="checkbox" name="enabled" value="{{ m.name }}" aria-label="Load {{ m.name }}"{% if m.enabled %} checked{% endif %}></td>
+    <td><input type="radio" name="default_model" value="{{ m.name }}" aria-label="Default {{ m.name }}"{% if m.is_default %} checked{% endif %}></td>
+    <td>{{ m.name }}</td>
+    <td>{{ m.family }}</td>
+    <td><code>{{ m.path }}</code>{% if !m.exists %} <span class="muted">(missing)</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+  </div>
+  <div class="actions">
+    <button type="submit" name="action" value="save">Save</button>
+    <button type="submit" name="action" value="restart" class="danger">Save and restart</button>
+  </div>
+</form>
+
 <form method="post" action="/config" class="card grid">
   <h2>Server</h2>
   <label>Port <input type="number" name="port" min="1" max="65535" value="{{ c.port }}" required></label>
   <label>Request timeout (s) <input type="number" name="request_timeout_secs" min="1" value="{{ c.request_timeout_secs }}" required></label>
   <label>Worker queue size (0 = auto) <input type="number" name="worker_queue_size" min="0" value="{{ c.worker_queue_size }}" required></label>
-  <label>Default model <input type="text" name="default_model" value="{{ c.default_model }}" placeholder="first model"></label>
 
   <h2>Inference</h2>
   <label>Device <input type="text" name="device" value="{{ c.device }}" placeholder="GPU, GPU.1 or CPU" required></label>
@@ -47,13 +71,14 @@
   <h2>Models (JSON)</h2>
   <textarea name="models_json" rows="14" spellcheck="false">{{ c.models_json }}</textarea>
   <p class="muted">Each entry: <code>path</code> (required), <code>family</code>, <code>name</code>, <code>classes</code>, <code>device</code>,
-  <code>confidence_threshold</code>, <code>object_filter</code>, <code>lazy</code>, <code>gpu_precision</code>.</p>
+  <code>confidence_threshold</code>, <code>object_filter</code>, <code>lazy</code>, <code>gpu_precision</code>, <code>enabled</code>
+  (load at startup; also set by the Models card above).</p>
 
   <div class="actions"><button type="submit">Save</button></div>
 </form>
 
 <form method="post" action="/config/restart" class="card inline">
   <button type="submit" class="danger">Restart server</button>
-  <span class="muted">Reloads the config file, recompiles all models and rebinds the port.</span>
+  <span class="muted">Reloads the config file, recompiles the enabled models and rebinds the port.</span>
 </form>
 {% endblock %}

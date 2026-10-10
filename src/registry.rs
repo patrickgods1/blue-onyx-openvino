@@ -1,4 +1,5 @@
-//! Loads every configured model on one shared OpenVINO `Core` and owns their worker threads.
+//! Loads every enabled model on one shared OpenVINO `Core` and owns their worker threads.
+//! Disabled models (`enabled: false`) stay in the config but get no worker and are not served.
 //!
 //! Workers are spawned in config order; each waits for its predecessor's [`LoadGate`] before
 //! locking the core, so compile order is deterministic and only one model compiles at a time.
@@ -69,28 +70,34 @@ pub fn load_request(config: &Config, m: &ModelConfig, path: PathBuf) -> LoadRequ
     }
 }
 
-/// Index of the model serving `/v1/vision/detection`: `default_model` matched with the same
-/// normalization as `/v1/vision/custom/{model}` (case-insensitive, `.onnx`/`.xml` ignored), else
-/// the first model.
-fn resolve_default(config: &Config, by_name: &HashMap<String, usize>) -> Option<usize> {
-    if config.models.is_empty() {
-        return None;
-    }
-    match &config.default_model {
-        Some(name) if !name.trim().is_empty() => match by_name.get(&normalize_name(name)) {
-            Some(&i) => Some(i),
+/// Index into the enabled models of the model serving `/v1/vision/detection`: `default_model`
+/// matched with the same normalization as `/v1/vision/custom/{model}` (case-insensitive,
+/// `.onnx`/`.xml` ignored), else the first enabled model. None when no model is enabled.
+fn resolve_default(config: &Config) -> Option<usize> {
+    let idx = config.effective_default_index()?;
+    if let Some(name) = config
+        .default_model
+        .as_deref()
+        .filter(|n| !n.trim().is_empty())
+    {
+        match config.default_model_index() {
             None => {
-                warn!("default_model '{name}' is not configured; using the first model");
-                Some(0)
+                warn!("default_model '{name}' is not configured; using the first enabled model")
             }
-        },
-        _ => Some(0),
+            Some(i) if !config.models[i].enabled => {
+                warn!("default_model '{name}' is disabled; using the first enabled model")
+            }
+            Some(_) => {}
+        }
     }
+    Some(config.models[..idx].iter().filter(|m| m.enabled).count())
 }
 
 impl ModelRegistry {
-    /// Create the `Core` and spawn one worker per configured model. Returns as soon as the
+    /// Create the `Core` and spawn one worker per enabled model. Returns as soon as the
     /// workers are spawned; models compile in the background (see `WorkerHandle::state`).
+    /// An empty `models` list is an error; models that are all disabled give an empty registry
+    /// (the web UI stays up so a model can be enabled).
     pub fn start(config: &Config, metrics: &Metrics, shutdown: CancellationToken) -> Result<Self> {
         if config.models.is_empty() {
             bail!(
@@ -100,15 +107,30 @@ impl ModelRegistry {
             );
         }
 
-        // Validate names before touching OpenVINO.
-        let mut by_name = HashMap::new();
-        for (i, m) in config.models.iter().enumerate() {
+        // Validate names (of all entries, enabled or not) before touching OpenVINO.
+        let mut seen = std::collections::HashSet::new();
+        for m in &config.models {
             let key = normalize_name(&m.effective_name());
-            if by_name.insert(key.clone(), i).is_some() {
+            if !seen.insert(key.clone()) {
                 bail!(
                     "duplicate model name '{key}' in config; set a distinct `name` for each entry"
                 );
             }
+        }
+        let enabled: Vec<&ModelConfig> = config.enabled_models().collect();
+        let by_name: HashMap<String, usize> = enabled
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (normalize_name(&m.effective_name()), i))
+            .collect();
+        let disabled = config.models.len() - enabled.len();
+        if enabled.is_empty() {
+            warn!(
+                "all {disabled} configured models are disabled; nothing will be served until one \
+                 is enabled on the Config page (or with `\"enabled\": true` in the config file)"
+            );
+        } else if disabled > 0 {
+            info!(disabled, "skipping disabled models");
         }
 
         let opts = CoreOptions {
@@ -130,9 +152,9 @@ impl ModelRegistry {
         );
         let core = Arc::new(Mutex::new(core));
 
-        let mut workers = Vec::with_capacity(config.models.len());
+        let mut workers = Vec::with_capacity(enabled.len());
         let mut prev: Option<LoadGate> = None;
-        for m in &config.models {
+        for &m in &enabled {
             let name = m.effective_name();
             let path = crate::resolve_path(&m.path);
             let load = load_request(config, m, path.clone());
@@ -195,7 +217,7 @@ impl ModelRegistry {
             workers.push(handle);
         }
 
-        let default_idx = resolve_default(config, &by_name);
+        let default_idx = resolve_default(config);
         if let Some(i) = default_idx {
             info!(model = %workers[i].name, "default model for /v1/vision/detection");
         }
@@ -245,7 +267,7 @@ impl ModelRegistry {
             .and_then(|&i| self.workers.get(i))
     }
 
-    /// Model names in config order.
+    /// Names of the served (enabled) models in config order.
     pub fn names(&self) -> Vec<String> {
         self.workers.iter().map(|w| w.name.clone()).collect()
     }
@@ -326,25 +348,59 @@ mod tests {
                 ..Default::default()
             });
         }
-        let by_name: HashMap<String, usize> = c
-            .models
-            .iter()
-            .enumerate()
-            .map(|(i, m)| (normalize_name(&m.effective_name()), i))
-            .collect();
-        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        assert_eq!(resolve_default(&c), Some(0));
         for name in ["IPcam-general", "ipcam-GENERAL.onnx", " ipcam-general "] {
             c.default_model = Some(name.into());
-            assert_eq!(resolve_default(&c, &by_name), Some(1), "{name}");
+            assert_eq!(resolve_default(&c), Some(1), "{name}");
         }
         c.default_model = Some("yolo26s.XML".into());
-        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        assert_eq!(resolve_default(&c), Some(0));
         c.default_model = Some("nope".into());
-        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        assert_eq!(resolve_default(&c), Some(0));
         c.default_model = Some(String::new());
-        assert_eq!(resolve_default(&c, &by_name), Some(0));
+        assert_eq!(resolve_default(&c), Some(0));
         c.models.clear();
-        assert_eq!(resolve_default(&c, &HashMap::new()), None);
+        assert_eq!(resolve_default(&c), None);
+    }
+
+    #[test]
+    fn default_model_resolution_over_enabled_models() {
+        let mut c = Config::default();
+        for (p, enabled) in [("a.onnx", false), ("b.onnx", true), ("c.onnx", true)] {
+            c.models.push(ModelConfig {
+                path: p.into(),
+                enabled,
+                ..Default::default()
+            });
+        }
+        // Indices are into the enabled models (= the workers): b -> 0, c -> 1.
+        assert_eq!(resolve_default(&c), Some(0));
+        c.default_model = Some("c".into());
+        assert_eq!(resolve_default(&c), Some(1));
+        // Default names a disabled model: first enabled one.
+        c.default_model = Some("a".into());
+        assert_eq!(resolve_default(&c), Some(0));
+        for m in &mut c.models {
+            m.enabled = false;
+        }
+        assert_eq!(resolve_default(&c), None);
+    }
+
+    #[test]
+    fn all_disabled_still_validates_names() {
+        let mut c = Config::default();
+        for p in ["a/x.onnx", "b/X.xml"] {
+            c.models.push(ModelConfig {
+                path: p.into(),
+                enabled: false,
+                ..Default::default()
+            });
+        }
+        let m = Metrics::new("0");
+        let err = ModelRegistry::start(&c, &m, CancellationToken::new())
+            .err()
+            .expect("must fail");
+        assert!(format!("{err:#}").contains("duplicate"));
     }
 
     #[test]

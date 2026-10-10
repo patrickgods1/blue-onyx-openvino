@@ -67,6 +67,9 @@ pub struct ModelConfig {
     pub lazy: bool,
     /// Per-model inference precision hint on GPU ("f16" default, "f32" escape hatch).
     pub gpu_precision: Option<String>,
+    /// Load this model at startup. Disabled models stay in the config but are not loaded or
+    /// served.
+    pub enabled: bool,
 }
 
 impl Default for ModelConfig {
@@ -81,6 +84,7 @@ impl Default for ModelConfig {
             object_filter: None,
             lazy: false,
             gpu_precision: None,
+            enabled: true,
         }
     }
 }
@@ -124,7 +128,7 @@ pub struct Config {
     /// CPU inference threads (0 = OpenVINO default).
     pub intra_threads: usize,
     pub models_dir: PathBuf,
-    /// Name of the model that serves `/v1/vision/detection`. None = first entry.
+    /// Name of the model that serves `/v1/vision/detection`. None = first enabled entry.
     pub default_model: Option<String>,
     pub models: Vec<ModelConfig>,
 }
@@ -186,6 +190,19 @@ impl Config {
         }
     }
 
+    /// Models that are loaded at startup (`enabled`), in config order.
+    pub fn enabled_models(&self) -> impl Iterator<Item = &ModelConfig> {
+        self.models.iter().filter(|m| m.enabled)
+    }
+
+    /// Index into `models` of the model that will actually serve `/v1/vision/detection`:
+    /// `default_model` when it names an enabled model, else the first enabled model.
+    pub fn effective_default_index(&self) -> Option<usize> {
+        self.default_model_index()
+            .filter(|&i| self.models[i].enabled)
+            .or_else(|| self.models.iter().position(|m| m.enabled))
+    }
+
     /// Append `model` unless an entry with the same normalized name or the same path already
     /// exists. Returns whether it was added.
     pub fn add_model_if_absent(&mut self, model: ModelConfig) -> bool {
@@ -230,7 +247,10 @@ impl Config {
     }
 }
 
-/// Fields edited by the `/config` web form, besides `models_json` (the `models` array as JSON).
+/// Fields edited by the main `/config` web form, besides `models_json` (the `models` array as
+/// JSON). `default_model` and the per-model `enabled` flags are owned by the Models card
+/// (`POST /config/models`, see [`apply_models_selection`]); `apply_config_form` still accepts a
+/// `default_model` field for API clients.
 /// Checkboxes (`force_cpu`, `save_ref_image`) are true when present with any value but
 /// `false`/`off`/`0`, and false when absent (browsers omit unchecked boxes).
 pub const FORM_FIELDS: &[&str] = &[
@@ -249,7 +269,6 @@ pub const FORM_FIELDS: &[&str] = &[
     "save_image_path",
     "save_ref_image",
     "intra_threads",
-    "default_model",
 ];
 
 /// Apply a submitted `/config` form to `config`. All fields are validated first; on any error
@@ -342,6 +361,9 @@ pub fn apply_config_form(
     if c.models.is_empty() {
         bail!("models: at least one model is required");
     }
+    if !c.models.iter().any(|m| m.enabled) {
+        bail!("models: at least one model must be enabled");
+    }
     let mut seen = std::collections::HashSet::new();
     for m in &c.models {
         if m.path.as_os_str().is_empty() {
@@ -357,6 +379,54 @@ pub fn apply_config_form(
     {
         bail!("default_model: '{name}' is not one of the configured models");
     }
+    *config = c;
+    Ok(())
+}
+
+/// Apply the Models card of the `/config` page: exactly the models named in `enabled` (effective
+/// names, matched like `/v1/vision/custom/{model}`) are enabled, the rest disabled, and
+/// `default_model` becomes `default` (an empty/absent `default` clears it). A chosen default that
+/// is not checked is enabled too. Fails without modifying `config` when a name is unknown or no
+/// model ends up enabled.
+pub fn apply_models_selection(
+    config: &mut Config,
+    enabled: &[String],
+    default: Option<&str>,
+) -> Result<()> {
+    use crate::registry::normalize_name;
+    use anyhow::bail;
+    let mut c = config.clone();
+    let index_of = |name: &str| {
+        let key = normalize_name(name);
+        c.models
+            .iter()
+            .position(|m| normalize_name(&m.effective_name()) == key)
+    };
+    let mut on = vec![false; c.models.len()];
+    for name in enabled {
+        match index_of(name) {
+            Some(i) => on[i] = true,
+            None => bail!("'{name}' is not one of the configured models"),
+        }
+    }
+    let default = default.map(str::trim).filter(|d| !d.is_empty());
+    let default_idx = match default {
+        Some(d) => match index_of(d) {
+            Some(i) => Some(i),
+            None => bail!("default model '{d}' is not one of the configured models"),
+        },
+        None => None,
+    };
+    if let Some(i) = default_idx {
+        on[i] = true;
+    }
+    if !on.iter().any(|&b| b) {
+        bail!("select at least one model to load");
+    }
+    for (m, e) in c.models.iter_mut().zip(on) {
+        m.enabled = e;
+    }
+    c.default_model = default_idx.map(|i| c.models[i].effective_name());
     *config = c;
     Ok(())
 }
@@ -458,6 +528,11 @@ mod tests {
                 "duplicate",
             ),
             ("models_json", r#"[{"name":"x"}]"#, "path"),
+            (
+                "models_json",
+                r#"[{"path":"a.xml","enabled":false}]"#,
+                "must be enabled",
+            ),
             ("default_model", "nope", "default_model"),
         ];
         for (field, value, needle) in cases {
@@ -499,6 +574,85 @@ mod tests {
         assert_eq!(named.default_model_index(), Some(0));
         let empty: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.port, crate::DEFAULT_PORT);
+    }
+
+    #[test]
+    fn enabled_defaults_to_true_and_round_trips() {
+        let m: ModelConfig = serde_json::from_str(r#"{"path":"models/a.onnx"}"#).unwrap();
+        assert!(m.enabled);
+        let c: Config =
+            serde_json::from_str(r#"{"models":[{"path":"a.onnx"},{"path":"b.onnx"}]}"#).unwrap();
+        assert!(c.models.iter().all(|m| m.enabled));
+
+        let m: ModelConfig =
+            serde_json::from_str(r#"{"path":"models/a.onnx","enabled":false}"#).unwrap();
+        assert!(!m.enabled);
+        let text = serde_json::to_string(&m).unwrap();
+        assert!(text.contains(r#""enabled":false"#), "{text}");
+        let back: ModelConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, m);
+    }
+
+    fn three_models() -> Config {
+        Config {
+            models: ["a", "b", "c"]
+                .iter()
+                .map(|n| ModelConfig {
+                    path: format!("models/{n}.onnx").into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn effective_default_skips_disabled_models() {
+        let mut c = three_models();
+        assert_eq!(c.effective_default_index(), Some(0));
+        c.models[0].enabled = false;
+        assert_eq!(c.effective_default_index(), Some(1));
+        c.default_model = Some("C".into());
+        assert_eq!(c.effective_default_index(), Some(2));
+        c.models[2].enabled = false;
+        assert_eq!(c.effective_default_index(), Some(1));
+        c.default_model = Some("nope".into());
+        assert_eq!(c.effective_default_index(), Some(1));
+        c.models[1].enabled = false;
+        assert_eq!(c.effective_default_index(), None);
+        assert_eq!(c.enabled_models().count(), 0);
+    }
+
+    #[test]
+    fn models_selection() {
+        let mut c = three_models();
+        apply_models_selection(&mut c, &["B".into(), "c.onnx".into()], Some("c")).unwrap();
+        let on: Vec<bool> = c.models.iter().map(|m| m.enabled).collect();
+        assert_eq!(on, [false, true, true]);
+        assert_eq!(c.default_model.as_deref(), Some("c"));
+
+        // A default that is not checked gets enabled.
+        apply_models_selection(&mut c, &["b".into()], Some("a")).unwrap();
+        let on: Vec<bool> = c.models.iter().map(|m| m.enabled).collect();
+        assert_eq!(on, [true, true, false]);
+        assert_eq!(c.default_model.as_deref(), Some("a"));
+
+        // No default chosen clears it.
+        apply_models_selection(&mut c, &["c".into()], None).unwrap();
+        assert_eq!(c.default_model, None);
+        assert_eq!(c.effective_default_index(), Some(2));
+
+        let before = c.clone();
+        for (enabled, default, needle) in [
+            (vec![], None, "at least one"),
+            (vec![], Some(" "), "at least one"),
+            (vec!["zzz".to_string()], None, "zzz"),
+            (vec!["a".to_string()], Some("zzz"), "zzz"),
+        ] {
+            let err = apply_models_selection(&mut c, &enabled, default).unwrap_err();
+            assert!(format!("{err:#}").contains(needle), "{err:#}");
+            assert_eq!(c, before);
+        }
     }
 
     #[test]

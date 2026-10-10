@@ -4,7 +4,7 @@
 //! ```text
 //! blue-onyx-openvino-benchmark --model models/IPcam-general.onnx --family yolo5 --device CPU --repeat 20
 //! blue-onyx-openvino-benchmark --model models/yolo26s.xml --compare-cpu      # GPU vs CPU + confidence diff
-//! blue-onyx-openvino-benchmark --json                                         # every model in the config
+//! blue-onyx-openvino-benchmark --json                                         # every enabled model in the config
 //! ```
 
 use anyhow::{Context, Result, bail};
@@ -34,7 +34,7 @@ const MATCH_IOU: f32 = 0.5;
     about = "Benchmark Blue Onyx OpenVINO models with the production pre/post-processing pipeline"
 )]
 struct Args {
-    /// Model file (.xml or .onnx), repeatable. Default: every model in the config file.
+    /// Model file (.xml or .onnx), repeatable. Default: every enabled model in the config file.
     #[arg(long)]
     model: Vec<PathBuf>,
     /// Model family for --model (default: auto-detect).
@@ -249,6 +249,18 @@ fn load_config(path: Option<&Path>) -> Result<Config> {
     }
 }
 
+/// Models to benchmark when no `--model` is given: every enabled config entry, in order.
+fn config_models(config: &Config) -> Result<Vec<&ModelConfig>> {
+    if config.models.is_empty() {
+        bail!("no --model given and no models in the config file");
+    }
+    let models: Vec<&ModelConfig> = config.enabled_models().collect();
+    if models.is_empty() {
+        bail!("no --model given and every model in the config file is disabled");
+    }
+    Ok(models)
+}
+
 fn jobs(args: &Args, config: &Config) -> Result<Vec<Job>> {
     let device_override = if args.force_cpu {
         Some("CPU".to_string())
@@ -276,12 +288,8 @@ fn jobs(args: &Args, config: &Config) -> Result<Vec<Job>> {
             })
             .collect();
     }
-    if config.models.is_empty() {
-        bail!("no --model given and no models in the config file");
-    }
-    config
-        .models
-        .iter()
+    config_models(config)?
+        .into_iter()
         .map(|m| {
             let path = blue_onyx_openvino::resolve_path(&m.path);
             let classes_path = m.classes.as_deref().map(blue_onyx_openvino::resolve_path);
@@ -748,6 +756,33 @@ mod tests {
             x_max: b[2],
             y_max: b[3],
         }
+    }
+
+    #[test]
+    fn config_models_are_the_enabled_entries() {
+        let m = |n: &str, enabled: bool| ModelConfig {
+            path: format!("models/{n}.onnx").into(),
+            enabled,
+            ..Default::default()
+        };
+        let mut config = Config {
+            models: vec![m("a", false), m("b", true), m("c", false), m("d", true)],
+            ..Default::default()
+        };
+        let names: Vec<String> = config_models(&config)
+            .unwrap()
+            .iter()
+            .map(|m| m.effective_name())
+            .collect();
+        assert_eq!(names, ["b", "d"]);
+
+        for model in &mut config.models {
+            model.enabled = false;
+        }
+        let err = config_models(&config).unwrap_err();
+        assert!(format!("{err:#}").contains("disabled"), "{err:#}");
+        let err = config_models(&Config::default()).unwrap_err();
+        assert!(format!("{err:#}").contains("no models"), "{err:#}");
     }
 
     #[test]

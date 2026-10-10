@@ -4,7 +4,7 @@
 
 use crate::api::{VisionCustomListResponse, VisionDetectionRequest, VisionDetectionResponse};
 use crate::cli::LogReloadHandle;
-use crate::config::{Config, FORM_FIELDS, LogLevel, apply_config_form};
+use crate::config::{Config, FORM_FIELDS, LogLevel, apply_config_form, apply_models_selection};
 use crate::metrics::{Metrics, Stat};
 use crate::registry::ModelRegistry;
 use crate::startup::ModelState;
@@ -92,6 +92,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/prometheus", get(prometheus))
         .route("/test", get(test_page).post(test_submit))
         .route("/config", get(config_page).post(config_submit))
+        .route("/config/models", post(config_models))
         .route("/config/restart", post(config_restart))
         .route("/config/loglevel", post(config_loglevel))
         .route("/static/style.css", get(style_css))
@@ -309,7 +310,7 @@ async fn detection_default(
     let start = Instant::now();
     let Some(handle) = state.registry.default_model() else {
         return Json(VisionDetectionResponse::error(
-            "No default model configured",
+            "No default model: enable a model on the Config page",
         ));
     };
     let req = parse_detection_body(multipart).await.map(|(r, _)| r);
@@ -662,7 +663,7 @@ async fn test_submit(
     };
     let Some(handle) = handle else {
         let e = if model.is_empty() {
-            "No default model configured".to_string()
+            "No default model: enable a model on the Config page".to_string()
         } else {
             format!("Unknown model '{model}'")
         };
@@ -738,7 +739,6 @@ struct ConfigView {
     save_image_path: String,
     save_ref_image: bool,
     intra_threads: String,
-    default_model: String,
     models_json: String,
 }
 
@@ -765,7 +765,6 @@ impl ConfigView {
             save_image_path: path(&c.save_image_path),
             save_ref_image: c.save_ref_image,
             intra_threads: c.intra_threads.to_string(),
-            default_model: c.default_model.clone().unwrap_or_default(),
             models_json: serde_json::to_string_pretty(&c.models).unwrap_or_default(),
         }
     }
@@ -793,7 +792,6 @@ impl ConfigView {
                         "log_path" => &mut self.log_path,
                         "save_image_path" => &mut self.save_image_path,
                         "intra_threads" => &mut self.intra_threads,
-                        "default_model" => &mut self.default_model,
                         _ => continue,
                     };
                     *slot = v;
@@ -804,6 +802,33 @@ impl ConfigView {
             self.models_json = v.clone();
         }
     }
+}
+
+/// One row of the Models card.
+struct ModelSelectRow {
+    name: String,
+    family: String,
+    path: String,
+    /// The model file exists (resolved against the exe dir).
+    exists: bool,
+    enabled: bool,
+    is_default: bool,
+}
+
+fn model_choices(c: &Config) -> Vec<ModelSelectRow> {
+    let default = c.effective_default_index();
+    c.models
+        .iter()
+        .enumerate()
+        .map(|(i, m)| ModelSelectRow {
+            name: m.effective_name(),
+            family: m.family.to_string(),
+            path: m.path.display().to_string(),
+            exists: crate::resolve_path(&m.path).is_file(),
+            enabled: m.enabled,
+            is_default: default == Some(i),
+        })
+        .collect()
 }
 
 struct LevelChoice {
@@ -818,6 +843,7 @@ struct ConfigTemplate {
     version: &'static str,
     config_path: String,
     c: ConfigView,
+    models: Vec<ModelSelectRow>,
     log_levels: Vec<LevelChoice>,
     message: Option<String>,
     error: Option<String>,
@@ -829,7 +855,10 @@ fn config_template(
     error: Option<String>,
     submitted: Option<&HashMap<String, String>>,
 ) -> ConfigTemplate {
-    let mut c = ConfigView::from_config(&state.config_read());
+    let (mut c, models) = {
+        let cfg = state.config_read();
+        (ConfigView::from_config(&cfg), model_choices(&cfg))
+    };
     if let Some(form) = submitted {
         c.overlay(form);
     }
@@ -851,6 +880,7 @@ fn config_template(
         version: crate::VERSION,
         config_path: state.config_path.display().to_string(),
         c,
+        models,
         log_levels,
         message,
         error,
@@ -861,7 +891,42 @@ async fn config_page(State(state): State<Arc<AppState>>) -> Response {
     render(&config_template(&state, None, None, None))
 }
 
+/// Apply `edit` to a copy of the config, write it to the config file and, on success, make it
+/// the in-memory config. Returns the success message for the config page ("restart to apply",
+/// plus the outcome of applying a changed log level immediately).
+fn save_config(
+    state: &AppState,
+    edit: impl FnOnce(&mut Config) -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    let level = {
+        let mut cfg = state.config_write();
+        let mut new = cfg.clone();
+        edit(&mut new)?;
+        new.save(&state.config_path)?;
+        let level_changed = new.log_level != cfg.log_level;
+        *cfg = new;
+        level_changed.then_some(cfg.log_level)
+    };
+    info!(path = %state.config_path.display(), "config saved from the web UI");
+    let mut msg = format!(
+        "Saved to {}. Restart the server to apply the changes.",
+        state.config_path.display()
+    );
+    if let Some(level) = level {
+        match apply_log_level(state, level) {
+            Ok(()) => msg.push_str(&format!(
+                " The log level ({}) was applied immediately.",
+                level.as_str()
+            )),
+            Err(e) => msg.push_str(&format!(" Log level not applied: {e:#}.")),
+        }
+    }
+    Ok(msg)
+}
+
 /// Validate and save the form. Changes apply on restart, except the log level (immediately).
+/// `default_model` and the `enabled` flags are only changed when the form carries them (the
+/// page's main form does not; the Models card posts to `/config/models`).
 async fn config_submit(
     State(state): State<Arc<AppState>>,
     form: Result<Form<HashMap<String, String>>, FormRejection>,
@@ -877,35 +942,8 @@ async fn config_submit(
             ));
         }
     };
-    let result = {
-        let mut cfg = state.config_write();
-        let mut new = cfg.clone();
-        apply_config_form(&mut new, &form)
-            .and_then(|()| new.save(&state.config_path))
-            .map(|()| {
-                let level_changed = new.log_level != cfg.log_level;
-                *cfg = new;
-                level_changed.then_some(cfg.log_level)
-            })
-    };
-    match result {
-        Ok(level) => {
-            info!(path = %state.config_path.display(), "config saved from the web UI");
-            let mut msg = format!(
-                "Saved to {}. Restart the server to apply the changes.",
-                state.config_path.display()
-            );
-            if let Some(level) = level {
-                match apply_log_level(&state, level) {
-                    Ok(()) => msg.push_str(&format!(
-                        " The log level ({}) was applied immediately.",
-                        level.as_str()
-                    )),
-                    Err(e) => msg.push_str(&format!(" Log level not applied: {e:#}.")),
-                }
-            }
-            render(&config_template(&state, Some(msg), None, None))
-        }
+    match save_config(&state, |c| apply_config_form(c, &form)) {
+        Ok(msg) => render(&config_template(&state, Some(msg), None, None)),
         Err(e) => {
             warn!("rejected config form: {e:#}");
             render(&config_template(
@@ -913,6 +951,47 @@ async fn config_submit(
                 None,
                 Some(format!("Not saved: {e:#}")),
                 Some(&form),
+            ))
+        }
+    }
+}
+
+/// The Models card: `enabled` (repeated, one per checked model), `default_model` (radio) and
+/// `action` (`save` or `restart`). Saves like `config_submit`; `restart` then restarts like
+/// `POST /config/restart`.
+async fn config_models(
+    State(state): State<Arc<AppState>>,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
+) -> Response {
+    let form = match form {
+        Ok(Form(f)) => f,
+        Err(e) => {
+            return render(&config_template(
+                &state,
+                None,
+                Some(format!("Invalid form submission: {e}")),
+                None,
+            ));
+        }
+    };
+    fn field<'a>(form: &'a [(String, String)], k: &'a str) -> impl Iterator<Item = &'a str> {
+        form.iter()
+            .filter(move |(key, _)| key == k)
+            .map(|(_, v)| v.as_str())
+    }
+    let enabled: Vec<String> = field(&form, "enabled").map(str::to_string).collect();
+    let default = field(&form, "default_model").next();
+    let restart = field(&form, "action").any(|a| a == "restart");
+    match save_config(&state, |c| apply_models_selection(c, &enabled, default)) {
+        Ok(_) if restart => restart_response(&state),
+        Ok(msg) => render(&config_template(&state, Some(msg), None, None)),
+        Err(e) => {
+            warn!("rejected models selection: {e:#}");
+            render(&config_template(
+                &state,
+                None,
+                Some(format!("Models not saved: {e:#}")),
+                None,
             ))
         }
     }
@@ -939,6 +1018,12 @@ struct MessageTemplate {
 /// Stops the HTTP server and the workers of this generation; the main binary then reloads the
 /// config file and starts again.
 async fn config_restart(State(state): State<Arc<AppState>>) -> Response {
+    restart_response(&state)
+}
+
+/// Cancel this generation's restart token shortly (so the reply gets out) and render the
+/// "Restarting" page.
+fn restart_response(state: &AppState) -> Response {
     info!("restart requested from the web UI");
     let token = state.restart.clone();
     tokio::spawn(async move {
@@ -949,8 +1034,8 @@ async fn config_restart(State(state): State<Arc<AppState>>) -> Response {
         nav: "config",
         version: crate::VERSION,
         heading: "Restarting".into(),
-        message: "The server is reloading its config and recompiling the models. This page \
-                  returns to the home page in a few seconds."
+        message: "The server is reloading its config and recompiling the enabled models. This \
+                  page returns to the home page in a few seconds."
             .into(),
         refresh_secs: 5,
         refresh_url: "/".into(),
@@ -1313,6 +1398,111 @@ mod tests {
         assert_eq!(saved.object_filter, vec!["person", "car"]);
         assert_eq!(saved.models.len(), 1);
         assert_eq!(*state.config_read(), saved);
+
+        // A models list with every entry disabled is rejected; file and memory unchanged.
+        let off =
+            r#"[{"name":"ipcam-general","path":"models/ipcam-general.onnx","enabled":false}]"#;
+        let body = format!("port=4002&models_json={}", urlencode(off));
+        let (s, _, b) = call(&state, post_form("/config", &body, true)).await;
+        let page = String::from_utf8(b).unwrap();
+        assert_eq!(s, StatusCode::OK);
+        assert!(
+            page.contains("Not saved: models: at least one model must be enabled"),
+            "{page}"
+        );
+        assert_eq!(Config::load(&path).unwrap(), saved);
+        assert_eq!(*state.config_read(), saved);
+    }
+
+    #[tokio::test]
+    async fn config_models_selection() {
+        let state = test_state();
+        let path = state.config_path.clone();
+        let evil = urlencode("<b>evil</b>");
+
+        let (_, cfg) = get_text(&state, "/config").await;
+        assert!(cfg.contains("action=\"/config/models\""), "{cfg}");
+        assert!(cfg.contains(
+            "name=\"enabled\" value=\"ipcam-general\" aria-label=\"Load ipcam-general\" checked"
+        ));
+        assert!(cfg.contains(
+            "name=\"default_model\" value=\"ipcam-general\" aria-label=\"Default ipcam-general\" checked"
+        ));
+        assert!(cfg.contains("(missing)"));
+        assert!(!cfg.contains("<b>evil</b>"));
+        // The main form no longer carries default_model.
+        assert!(!cfg.contains("name=\"default_model\" value=\"\""));
+
+        // Enable a subset with an explicit default.
+        let body = format!("enabled={evil}&default_model={evil}&action=save");
+        let (s, _, b) = call(&state, post_form("/config/models", &body, true)).await;
+        let page = String::from_utf8(b).unwrap();
+        assert_eq!(s, StatusCode::OK);
+        assert!(page.contains("Restart the server to apply"), "{page}");
+        let saved = Config::load(&path).unwrap();
+        let on: Vec<bool> = saved.models.iter().map(|m| m.enabled).collect();
+        assert_eq!(on, [false, true]);
+        assert_eq!(saved.default_model.as_deref(), Some("<b>evil</b>"));
+        assert_eq!(*state.config_read(), saved);
+        assert!(page.contains(
+            "name=\"enabled\" value=\"ipcam-general\" aria-label=\"Load ipcam-general\">"
+        ));
+
+        // A default that is not checked gets enabled.
+        let body = format!("enabled={evil}&default_model=ipcam-general&action=save");
+        call(&state, post_form("/config/models", &body, true)).await;
+        let saved = Config::load(&path).unwrap();
+        assert!(saved.models.iter().all(|m| m.enabled));
+        assert_eq!(saved.default_model.as_deref(), Some("ipcam-general"));
+
+        // The main form keeps default_model and the enabled flags.
+        let body = "enabled=ipcam-general&default_model=ipcam-general&action=save";
+        call(&state, post_form("/config/models", body, true)).await;
+        let models_json = serde_json::to_string(&state.config_read().models).unwrap();
+        let main = format!("port=4001&models_json={}", urlencode(&models_json));
+        call(&state, post_form("/config", &main, true)).await;
+        let saved = Config::load(&path).unwrap();
+        assert_eq!(saved.port, 4001);
+        assert_eq!(saved.default_model.as_deref(), Some("ipcam-general"));
+        let on: Vec<bool> = saved.models.iter().map(|m| m.enabled).collect();
+        assert_eq!(on, [true, false]);
+
+        // Zero enabled models are rejected and nothing changes.
+        let (s, _, b) = call(&state, post_form("/config/models", "action=save", true)).await;
+        let page = String::from_utf8(b).unwrap();
+        assert_eq!(s, StatusCode::OK);
+        assert!(
+            page.contains("class=\"error\">Models not saved: select at least one model"),
+            "{page}"
+        );
+        assert_eq!(Config::load(&path).unwrap(), saved);
+        assert_eq!(*state.config_read(), saved);
+        let (_, _, b) = call(
+            &state,
+            post_form("/config/models", "enabled=zzz&action=save", true),
+        )
+        .await;
+        assert!(String::from_utf8(b).unwrap().contains("Models not saved"));
+        assert!(!state.restart.is_cancelled());
+
+        // Save and restart.
+        let (s, _, b) = call(
+            &state,
+            post_form(
+                "/config/models",
+                &format!("enabled=ipcam-general&enabled={evil}&action=restart"),
+                true,
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(String::from_utf8(b).unwrap().contains("Restarting"));
+        let saved = Config::load(&path).unwrap();
+        assert!(saved.models.iter().all(|m| m.enabled));
+        assert_eq!(saved.default_model, None);
+        tokio::time::timeout(Duration::from_secs(5), state.restart.cancelled())
+            .await
+            .expect("restart token cancelled");
     }
 
     #[tokio::test]

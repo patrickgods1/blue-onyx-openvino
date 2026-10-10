@@ -17,6 +17,7 @@
 {% endfor %}
 </tbody>
 </table>
+{% if models.is_empty() %}<p class="error">No models are enabled. Enable one on the <a href="/config">Config</a> page and restart.</p>{% endif %}
 <h2>Usage</h2>
 <p>Point Blue Iris (Settings &rarr; AI) at this server's address and port {{ port }}.</p>
 <ul>
