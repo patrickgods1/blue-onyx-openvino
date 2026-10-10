@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block head %}{% if refresh_secs > 0 %}<meta http-equiv="refresh" content="{{ refresh_secs }};url={{ refresh_url }}">{% endif %}{% endblock %}
+{% block title %}{{ heading }}{% endblock %}
+{% block content %}
+<h1>{{ heading }}</h1>
+<p>{{ message }}</p>
+{% endblock %}

@@ -78,6 +78,8 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dx
 
 [dev-dependencies]
 approx = "0.5"
+# Router tests (`ServiceExt::oneshot`); already a transitive dependency of axum.
+tower = { version = "0.5", default-features = false, features = ["util"] }
 
 [profile.release]
 opt-level = 3

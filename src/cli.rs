@@ -5,6 +5,7 @@ use crate::model::ModelFamilyKind;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing_subscriber::{
     EnvFilter, Registry, layer::SubscriberExt, reload, util::SubscriberInitExt,
 };
@@ -269,12 +270,21 @@ pub fn for_service() -> Result<(Config, PathBuf)> {
 type FilterHandle = reload::Handle<EnvFilter, Registry>;
 
 /// Lets the log level be changed at runtime; also keeps the file-appender flush guard alive.
+/// Cheap to clone (the HTTP layer keeps one); the file log is flushed when the last clone drops.
+#[derive(Clone)]
 pub struct LogReloadHandle {
     handle: FilterHandle,
-    _guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    _guard: Option<Arc<tracing_appender::non_blocking::WorkerGuard>>,
+}
+
+impl std::fmt::Debug for LogReloadHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogReloadHandle").finish_non_exhaustive()
+    }
 }
 
 impl LogReloadHandle {
+    /// Replace the global level filter; takes effect immediately for every thread.
     pub fn set_level(&self, level: LogLevel) -> Result<()> {
         self.handle
             .reload(filter_for(level))
@@ -317,7 +327,7 @@ pub fn init_logging(level: LogLevel, log_path: Option<&Path>) -> Result<LogReloa
     };
     Ok(LogReloadHandle {
         handle,
-        _guard: guard,
+        _guard: guard.map(Arc::new),
     })
 }
 

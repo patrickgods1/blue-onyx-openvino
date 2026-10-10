@@ -123,6 +123,21 @@ Each model gets its own worker thread and compiled copy in memory. Expect a few 
 on the iGPU (shared system RAM); use `lazy` for rarely used models and `device: "CPU"` to keep the GPU
 free for the primary model.
 
+## Web UI
+
+Open `http://<host>:32168/` in a browser:
+
+| Page | What it does |
+|---|---|
+| `/` | Models (state, device, requests, queue), OpenVINO version and devices, uptime, API usage; shows a hint when a newer release exists |
+| `/stats` | Per-model state, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; refreshes every 5 s. JSON at `/stats.json` |
+| `/test` | Upload an image, pick a model and `min_confidence`; shows the annotated image and the JSON response (same code path and metrics as the API) |
+| `/config` | Edit the main settings and the `models` list (JSON) and save them to the config file; **Restart server** reloads the file, recompiles the models and rebinds the port without restarting the process. The log level applies immediately (`POST /config/loglevel` with `level=debug`, form or query) |
+| `/prometheus` | Prometheus metrics (`blue_onyx_openvino_*{model="..."}`) |
+
+`log_path` changes need a full process restart. The UI has no authentication: do not expose the port
+beyond your LAN.
+
 ## License
 
 MIT. Portions derived from blue-onyx (MIT, Marcus Asteborg). See `LICENSE`.

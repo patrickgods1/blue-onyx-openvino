@@ -208,6 +208,27 @@ impl ModelRegistry {
         })
     }
 
+    /// Registry over already constructed handles (no OpenVINO involved). Used by tests that
+    /// exercise the HTTP layer with e.g. [`WorkerHandle::failed`] handles.
+    pub fn from_handles(
+        workers: Vec<WorkerHandle>,
+        default_idx: Option<usize>,
+        core_info: CoreInfo,
+    ) -> Self {
+        let by_name = workers
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (normalize_name(&w.name), i))
+            .collect();
+        let default_idx = default_idx.filter(|&i| i < workers.len());
+        Self {
+            workers,
+            by_name,
+            default_idx,
+            core_info,
+        }
+    }
+
     /// Live per-model gauges (state, device, queue) for `/prometheus`, in config order.
     pub fn gauges(&self) -> Vec<ModelGauges> {
         self.workers.iter().map(WorkerHandle::gauges).collect()

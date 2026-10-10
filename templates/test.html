@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Test{% endblock %}
+{% block content %}
+<h1>Test detection</h1>
+<form method="post" action="/test" enctype="multipart/form-data" class="card">
+  <label>Image <input type="file" name="image" accept="image/*" required></label>
+  <label>Model
+    <select name="model">
+    {% for m in models %}
+      <option value="{{ m.value }}"{% if m.selected %} selected{% endif %}>{{ m.value }}{% if m.is_default %} (default){% endif %}</option>
+    {% endfor %}
+    </select>
+  </label>
+  <label>Min confidence <input type="number" name="min_confidence" min="0" max="1" step="0.01" value="{{ min_confidence }}" placeholder="model default"></label>
+  <button type="submit">Detect</button>
+</form>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+{% if let Some(r) = result %}
+<h2>Result</h2>
+<p>{{ r.summary }}</p>
+{% if !r.image_data_uri.is_empty() %}<img class="result" src="{{ r.image_data_uri }}" alt="annotated result">{% endif %}
+<h2>Response JSON</h2>
+<pre>{{ r.json }}</pre>
+{% endif %}
+{% endblock %}

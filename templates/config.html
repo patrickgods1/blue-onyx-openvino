@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Config{% endblock %}
+{% block content %}
+<h1>Configuration</h1>
+<p class="muted">File: <code>{{ config_path }}</code></p>
+{% if let Some(m) = message %}<p class="notice">{{ m }}</p>{% endif %}
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+
+<section class="card">
+  <h2>Log level</h2>
+  <form method="post" action="/config/loglevel" class="inline">
+    <select name="level">
+    {% for l in log_levels %}<option value="{{ l.value }}"{% if l.selected %} selected{% endif %}>{{ l.value }}</option>{% endfor %}
+    </select>
+    <button type="submit">Apply now</button>
+    <span class="muted">Takes effect immediately and is saved to the config file.</span>
+  </form>
+</section>
+
+<form method="post" action="/config" class="card grid">
+  <h2>Server</h2>
+  <label>Port <input type="number" name="port" min="1" max="65535" value="{{ c.port }}" required></label>
+  <label>Request timeout (s) <input type="number" name="request_timeout_secs" min="1" value="{{ c.request_timeout_secs }}" required></label>
+  <label>Worker queue size (0 = auto) <input type="number" name="worker_queue_size" min="0" value="{{ c.worker_queue_size }}" required></label>
+  <label>Default model <input type="text" name="default_model" value="{{ c.default_model }}" placeholder="first model"></label>
+
+  <h2>Inference</h2>
+  <label>Device <input type="text" name="device" value="{{ c.device }}" placeholder="GPU, GPU.1 or CPU" required></label>
+  <label>GPU index <input type="number" name="gpu_index" min="0" value="{{ c.gpu_index }}" required></label>
+  <label class="check"><input type="checkbox" name="force_cpu"{% if c.force_cpu %} checked{% endif %}> Force CPU</label>
+  <label>Cache dir (empty disables) <input type="text" name="cache_dir" value="{{ c.cache_dir }}"></label>
+  <label>CPU threads (0 = default) <input type="number" name="intra_threads" min="0" value="{{ c.intra_threads }}" required></label>
+  <label>Confidence threshold <input type="number" name="confidence_threshold" min="0" max="1" step="0.01" value="{{ c.confidence_threshold }}" required></label>
+  <label>NMS IoU <input type="number" name="nms_iou" min="0" max="1" step="0.01" value="{{ c.nms_iou }}" required></label>
+  <label>Object filter (comma separated, empty = all) <input type="text" name="object_filter" value="{{ c.object_filter }}"></label>
+
+  <h2>Logging and images</h2>
+  <label>Log level
+    <select name="log_level">
+    {% for l in log_levels %}<option value="{{ l.value }}"{% if l.selected %} selected{% endif %}>{{ l.value }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Log directory (empty = stdout; needs a process restart) <input type="text" name="log_path" value="{{ c.log_path }}"></label>
+  <label>Save annotated images to <input type="text" name="save_image_path" value="{{ c.save_image_path }}" placeholder="disabled"></label>
+  <label class="check"><input type="checkbox" name="save_ref_image"{% if c.save_ref_image %} checked{% endif %}> Also save the unannotated image</label>
+
+  <h2>Models (JSON)</h2>
+  <textarea name="models_json" rows="14" spellcheck="false">{{ c.models_json }}</textarea>
+  <p class="muted">Each entry: <code>path</code> (required), <code>family</code>, <code>name</code>, <code>classes</code>, <code>device</code>,
+  <code>confidence_threshold</code>, <code>object_filter</code>, <code>lazy</code>, <code>gpu_precision</code>.</p>
+
+  <div class="actions"><button type="submit">Save</button></div>
+</form>
+
+<form method="post" action="/config/restart" class="card inline">
+  <button type="submit" class="danger">Restart server</button>
+  <span class="muted">Reloads the config file, recompiles all models and rebinds the port.</span>
+</form>
+{% endblock %}
