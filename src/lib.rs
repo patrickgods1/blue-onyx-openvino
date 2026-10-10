@@ -12,6 +12,7 @@
 //! - [`server`]    axum HTTP server
 //! - [`runner`]    server run loop (generations, restart) shared by the CLI and the service
 //! - [`metrics`]   request/latency counters and Prometheus rendering
+//! - [`resources`] downloadable runtimes/models: pinned catalog and the needs resolver
 
 pub mod api;
 pub mod backend;
@@ -22,6 +23,7 @@ pub mod image;
 pub mod metrics;
 pub mod model;
 pub mod registry;
+pub mod resources;
 pub mod runner;
 pub mod server;
 pub mod setup_onnxruntime;

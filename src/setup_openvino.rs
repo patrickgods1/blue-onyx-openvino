@@ -11,43 +11,30 @@ use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Pinned OpenVINO runtime version.
-pub const OPENVINO_VERSION: &str = "2026.4.0";
-
-/// Archive container format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveKind {
-    Zip,
-    TarGz,
-}
+/// Pinned OpenVINO runtime version (the catalog in `resources::catalog` owns the pin).
+pub use crate::resources::catalog::{ArchiveKind, OPENVINO_VERSION};
 
 /// Where to get the runtime for one platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
     pub url: &'static str,
     pub kind: ArchiveKind,
+    /// Pinned SHA-256 and size (from the resource catalog).
+    pub sha256: &'static str,
+    pub size: u64,
 }
 
-/// Download URL and archive kind for `(std::env::consts::OS, std::env::consts::ARCH)`.
+/// Download URL and archive kind for `(std::env::consts::OS, std::env::consts::ARCH)`, from the
+/// `openvino-runtime` entries of the resource catalog.
 pub fn package_for(os: &str, arch: &str) -> Option<Package> {
-    Some(match (os, arch) {
-        ("windows", "x86_64") => Package {
-            url: "https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.4/windows_vc_mt/openvino_toolkit_windows_vc_mt_2026.4.0.22959.99c81491cc3_x86_64.zip",
-            kind: ArchiveKind::Zip,
-        },
-        ("linux", "x86_64") => Package {
-            url: "https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.4/linux/openvino_toolkit_ubuntu24_2026.4.0.22959.99c81491cc3_x86_64.tgz",
-            kind: ArchiveKind::TarGz,
-        },
-        ("linux", "aarch64") => Package {
-            url: "https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.4/linux/openvino_toolkit_ubuntu22_2026.4.0.22959.99c81491cc3_arm64.tgz",
-            kind: ArchiveKind::TarGz,
-        },
-        ("macos", "aarch64") => Package {
-            url: "https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.4/macos/openvino_toolkit_macos_12_6_2026.4.0.22959.99c81491cc3_arm64.tgz",
-            kind: ArchiveKind::TarGz,
-        },
-        _ => return None,
+    let part = crate::resources::catalog::openvino_runtime(os, arch)?
+        .parts
+        .first()?;
+    Some(Package {
+        url: part.url,
+        kind: part.archive?,
+        sha256: part.sha256,
+        size: part.size,
     })
 }
 

@@ -14,46 +14,12 @@ use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Pinned ONNX Runtime version. The `ort` crate is built without `api-NN` features, so any ONNX
-/// Runtime 1.17+ library loads; 1.24.4 is the newest release that ships every package we use
-/// (the DirectML NuGet package stops at 1.24.x, and 1.25+ renamed the GPU archives).
-pub const ONNXRUNTIME_VERSION: &str = "1.24.4";
-/// Pinned DirectML redistributable (NuGet `Microsoft.AI.DirectML`).
-pub const DIRECTML_VERSION: &str = "1.15.4";
+/// Pinned versions and the flavor type live in the resource catalog.
+pub use crate::resources::catalog::{DIRECTML_VERSION, Flavor, Layout, ONNXRUNTIME_VERSION};
 /// Default folder name next to the executable.
 pub const DIR_NAME: &str = "onnxruntime";
 /// File recording the installed flavor.
 pub const FLAVOR_FILE: &str = "flavor.txt";
-
-/// Installed ONNX Runtime flavor (written to `flavor.txt`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Flavor {
-    Cpu,
-    Cuda,
-    DirectMl,
-    CoreMl,
-}
-
-impl Flavor {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Flavor::Cpu => "cpu",
-            Flavor::Cuda => "cuda",
-            Flavor::DirectMl => "directml",
-            Flavor::CoreMl => "coreml",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Flavor> {
-        Some(match s.trim().to_ascii_lowercase().as_str() {
-            "cpu" => Flavor::Cpu,
-            "cuda" => Flavor::Cuda,
-            "directml" => Flavor::DirectMl,
-            "coreml" => Flavor::CoreMl,
-            _ => return None,
-        })
-    }
-}
 
 /// `--flavor` value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -66,55 +32,15 @@ pub enum FlavorChoice {
     Directml,
 }
 
-/// Which files of one downloaded package we take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Layout {
-    /// GitHub release archive: `<top>/lib/<libs>`.
-    Release,
-    /// `Microsoft.ML.OnnxRuntime.DirectML` NuGet package: `runtimes/win-x64/native/<dlls>`.
-    NugetOrt,
-    /// `Microsoft.AI.DirectML` NuGet package: `bin/x64-win/DirectML.dll`.
-    NugetDirectMl,
-}
-
 /// One archive to download.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Part {
     pub url: String,
     pub kind: ArchiveKind,
     pub layout: Layout,
-}
-
-fn release(name: &str, kind: ArchiveKind) -> Part {
-    Part {
-        url: format!(
-            "https://github.com/microsoft/onnxruntime/releases/download/v{ONNXRUNTIME_VERSION}/{name}"
-        ),
-        kind,
-        layout: Layout::Release,
-    }
-}
-
-fn tgz(base: &str) -> Part {
-    release(
-        &format!("{base}-{ONNXRUNTIME_VERSION}.tgz"),
-        ArchiveKind::TarGz,
-    )
-}
-
-fn zip(base: &str) -> Part {
-    release(
-        &format!("{base}-{ONNXRUNTIME_VERSION}.zip"),
-        ArchiveKind::Zip,
-    )
-}
-
-fn nuget(id: &str, version: &str, layout: Layout) -> Part {
-    Part {
-        url: format!("https://www.nuget.org/api/v2/package/{id}/{version}"),
-        kind: ArchiveKind::Zip,
-        layout,
-    }
+    /// Pinned SHA-256 and size (from the resource catalog).
+    pub sha256: &'static str,
+    pub size: u64,
 }
 
 /// Flavor `--flavor auto` installs on this hardware.
@@ -144,33 +70,29 @@ pub fn resolve_flavor(
     Ok(flavor)
 }
 
-/// Archives to download for `(os, arch, flavor)`; an error when the combination is not shipped.
+/// Archives to download for `(os, arch, flavor)` (the `onnxruntime-<flavor>` catalog entry); an
+/// error when the combination is not shipped.
 pub fn packages_for(os: &str, arch: &str, flavor: Flavor) -> Result<Vec<Part>> {
-    let parts = match (os, arch, flavor) {
-        ("windows", "x86_64", Flavor::Cuda) => vec![zip("onnxruntime-win-x64-gpu")],
-        ("windows", "x86_64", Flavor::DirectMl) => vec![
-            nuget(
-                "Microsoft.ML.OnnxRuntime.DirectML",
-                ONNXRUNTIME_VERSION,
-                Layout::NugetOrt,
-            ),
-            nuget(
-                "Microsoft.AI.DirectML",
-                DIRECTML_VERSION,
-                Layout::NugetDirectMl,
-            ),
-        ],
-        ("windows", "x86_64", Flavor::Cpu) => vec![zip("onnxruntime-win-x64")],
-        ("linux", "x86_64", Flavor::Cuda) => vec![tgz("onnxruntime-linux-x64-gpu")],
-        ("linux", "x86_64", Flavor::Cpu) => vec![tgz("onnxruntime-linux-x64")],
-        ("linux", "aarch64", Flavor::Cpu) => vec![tgz("onnxruntime-linux-aarch64")],
-        ("macos", "aarch64", Flavor::CoreMl | Flavor::Cpu) => vec![tgz("onnxruntime-osx-arm64")],
-        _ => anyhow::bail!(
+    let res = crate::resources::catalog::onnxruntime(os, arch, flavor).with_context(|| {
+        format!(
             "no ONNX Runtime '{}' package for {os}/{arch}",
             flavor.as_str()
-        ),
-    };
-    Ok(parts)
+        )
+    })?;
+    res.parts
+        .iter()
+        .map(|p| {
+            Ok(Part {
+                url: p.url.to_string(),
+                kind: p
+                    .archive
+                    .with_context(|| format!("catalog part {} is not an archive", p.url))?,
+                layout: p.layout,
+                sha256: p.sha256,
+                size: p.size,
+            })
+        })
+        .collect()
 }
 
 /// Library stem of a file name (`onnxruntime.dll` -> `onnxruntime`,
@@ -220,7 +142,7 @@ pub fn wanted(layout: Layout, flavor: Flavor, windows: bool, entry: &str) -> Opt
     let (name, dirs) = parts.split_last()?;
     let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
     match layout {
-        Layout::Release => {
+        Layout::OrtRelease => {
             // `<top>/lib/<file>` (some Windows packages use `bin`).
             if dirs.len() != 2 || !matches!(dirs[1], "lib" | "bin") {
                 return None;
@@ -238,6 +160,7 @@ pub fn wanted(layout: Layout, flavor: Flavor, windows: bool, entry: &str) -> Opt
         Layout::NugetDirectMl => {
             (dirs == ["bin", "x64-win"] && name == DIRECTML_DLL).then(|| name.clone())
         }
+        Layout::OpenVino | Layout::NvidiaWheel | Layout::File => None,
     }
 }
 
@@ -567,8 +490,12 @@ mod tests {
         );
         let dml = packages_for("windows", "x86_64", Flavor::DirectMl).unwrap();
         assert_eq!(dml.len(), 2);
-        assert!(dml[0].url.contains("Microsoft.ML.OnnxRuntime.DirectML"));
-        assert!(dml[1].url.contains("Microsoft.AI.DirectML"));
+        assert!(
+            dml[0]
+                .url
+                .contains("microsoft.ml.onnxruntime.directml.1.24.4.nupkg")
+        );
+        assert!(dml[1].url.contains("microsoft.ai.directml.1.15.4.nupkg"));
         assert_eq!(dml[1].layout, Layout::NugetDirectMl);
         assert!(packages_for("macos", "aarch64", Flavor::Cuda).is_err());
         assert!(packages_for("linux", "aarch64", Flavor::Cuda).is_err());
@@ -601,7 +528,7 @@ mod tests {
 
     #[test]
     fn release_whitelist_unix() {
-        let w = |f, e: &str| wanted(Layout::Release, f, false, e);
+        let w = |f, e: &str| wanted(Layout::OrtRelease, f, false, e);
         let top = "onnxruntime-linux-x64-gpu-1.24.4";
         assert_eq!(
             w(Flavor::Cuda, &format!("{top}/lib/libonnxruntime.so.1.24.4")).as_deref(),
@@ -664,7 +591,7 @@ mod tests {
     #[test]
     fn release_whitelist_mac_and_windows() {
         let top = "onnxruntime-osx-arm64-1.24.4";
-        let m = |e: &str| wanted(Layout::Release, Flavor::CoreMl, false, e);
+        let m = |e: &str| wanted(Layout::OrtRelease, Flavor::CoreMl, false, e);
         assert!(m(&format!("{top}/lib/libonnxruntime.1.24.4.dylib")).is_some());
         assert!(m(&format!("{top}/lib/libonnxruntime.dylib")).is_some());
         assert!(
@@ -673,7 +600,7 @@ mod tests {
             ))
             .is_none()
         );
-        let w = |f, e: &str| wanted(Layout::Release, f, true, e);
+        let w = |f, e: &str| wanted(Layout::OrtRelease, f, true, e);
         let top = "onnxruntime-win-x64-gpu-1.24.4";
         assert_eq!(
             w(Flavor::Cuda, &format!("{top}\\lib\\onnxruntime.dll")).as_deref(),

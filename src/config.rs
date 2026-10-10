@@ -157,6 +157,15 @@ pub struct Config {
     /// CPU inference threads (0 = OpenVINO default).
     pub intra_threads: usize,
     pub models_dir: PathBuf,
+    /// Download missing resources (runtimes, models) in the background at startup. `false`
+    /// (air-gapped, Docker) only reports what is missing and the command to fetch it.
+    pub auto_download: bool,
+    /// Allow downloads over 500 MB (`resources::LARGE_DOWNLOAD_BYTES`), in practice the NVIDIA
+    /// CUDA/cuDNN libraries. Off by default.
+    pub allow_large_downloads: bool,
+    /// Root for downloaded runtimes (`openvino/`, `onnxruntime/<flavor>/`, ...), relative to the
+    /// exe dir. None = the exe dir. Model files go where each model's `path` points.
+    pub download_dir: Option<PathBuf>,
     /// Name of the model that serves `/v1/vision/detection`. None = first enabled entry.
     pub default_model: Option<String>,
     pub models: Vec<ModelConfig>,
@@ -183,6 +192,9 @@ impl Default for Config {
             save_ref_image: false,
             intra_threads: 0,
             models_dir: PathBuf::from("models"),
+            auto_download: true,
+            allow_large_downloads: false,
+            download_dir: None,
             default_model: None,
             models: Vec::new(),
         }
