@@ -210,8 +210,10 @@
     var t = sortable(table("", ["#", "Model", "Device", "Overall", "Accuracy", "Speed", "p50 ms", "AP50"]));
     rows.forEach(function (r) {
       var tr = el("tr"); cell(tr, r.rank, r.rank); cell(tr, r.model); cell(tr, r.device);
-      var o = cell(tr, ""); o.appendChild(gradeEl(r.overall)); o.dataset.v = 4 - r.overall_points;
-      var a = cell(tr, ""); a.appendChild(gradeEl(r.accuracy, r.relative));
+      var unscored = r.accuracy === null || r.accuracy === undefined;
+      var o = cell(tr, ""); o.appendChild(gradeEl(r.overall)); o.dataset.v = (unscored ? 10 : 0) + 4 - r.overall_points;
+      if (unscored) { o.append(" "); o.appendChild(el("span", "muted", "speed only")); }
+      var a = cell(tr, ""); if (unscored) { a.appendChild(el("span", "muted", "not scored")); a.title = "None of this model's classes are in the selected datasets"; } else a.appendChild(gradeEl(r.accuracy, r.relative));
       var s = cell(tr, ""); s.appendChild(gradeEl(r.speed));
       cell(tr, ms(r.p50_ms), r.p50_ms); cell(tr, pct(r.ap50), r.ap50 === null ? null : -r.ap50);
       t.tBodies[0].appendChild(tr);

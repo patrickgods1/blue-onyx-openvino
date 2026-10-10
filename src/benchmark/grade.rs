@@ -162,8 +162,12 @@ impl Grades {
 
     /// Ranking order: overall points, then accuracy score, then speed (best first).
     pub fn rank_cmp(a: &Grades, b: &Grades) -> std::cmp::Ordering {
-        b.overall_points
-            .total_cmp(&a.overall_points)
+        // Unscored (no class of the model in the datasets) ranks after every scored entry: its
+        // overall grade is speed alone.
+        a.accuracy
+            .is_none()
+            .cmp(&b.accuracy.is_none())
+            .then_with(|| b.overall_points.total_cmp(&a.overall_points))
             .then_with(|| {
                 b.accuracy_score
                     .unwrap_or(-1.0)
@@ -249,5 +253,12 @@ mod tests {
         v.sort_by(Grades::rank_cmp);
         assert_eq!(v[0].p50_ms, 30.0);
         assert_eq!(v[2].accuracy_score, Some(0.5));
+        // An unscored model (speed-only A) ranks after a scored D.
+        let mut v = [
+            Grades::new(None, 30.0, w, false),
+            Grades::new(Some(0.42), 380.0, w, false),
+        ];
+        v.sort_by(Grades::rank_cmp);
+        assert!(v[0].accuracy.is_some() && v[1].accuracy.is_none());
     }
 }

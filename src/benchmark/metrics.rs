@@ -36,6 +36,65 @@ pub const CCTV_CLASSES: [&str; 10] = [
 /// Model labels that stand for several ground-truth classes.
 pub const CLASS_GROUPS: [(&str, &[&str]); 1] = [("vehicle", &["car", "truck", "bus"])];
 
+/// Fine-grained model labels that stand for one scored class: a label any of whose words
+/// (split on spaces and hyphens) is listed counts as that class. ipcam-bird labels bird
+/// species ("Blue Jay", "Eastern Screech-Owl", ...); "Purple Squirrel" matches nothing.
+pub const SPECIES: [(&str, &[&str]); 1] = [(
+    "bird",
+    &[
+        "bird",
+        "blackbird",
+        "bluebird",
+        "bunting",
+        "cardinal",
+        "chickadee",
+        "crow",
+        "dove",
+        "duck",
+        "eagle",
+        "falcon",
+        "finch",
+        "flicker",
+        "goldfinch",
+        "goose",
+        "grackle",
+        "gull",
+        "hawk",
+        "heron",
+        "hummingbird",
+        "jay",
+        "junco",
+        "kestrel",
+        "magpie",
+        "mockingbird",
+        "nuthatch",
+        "oriole",
+        "owl",
+        "parrot",
+        "pigeon",
+        "robin",
+        "sparrow",
+        "starling",
+        "swallow",
+        "tanager",
+        "thrush",
+        "towhee",
+        "warbler",
+        "woodpecker",
+        "wren",
+    ],
+)];
+
+/// The scored class a fine-grained label belongs to ([`SPECIES`]), if any.
+pub fn species_class(label: &str) -> Option<&'static str> {
+    let l = canonical_label(label);
+    let words: Vec<&str> = l.split([' ', '-']).filter(|w| !w.is_empty()).collect();
+    SPECIES
+        .iter()
+        .find(|(_, names)| words.iter().any(|w| names.contains(w)))
+        .map(|(class, _)| *class)
+}
+
 /// IoU thresholds of AP@[0.5:0.95].
 pub const IOU_THRESHOLDS: [f32; 10] = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95];
 /// Detections kept per image and class for AP (COCO `maxDets`).
@@ -128,6 +187,18 @@ impl ClassMap {
                 m.classes.push(c.to_string());
                 m.gt.insert(c.to_string(), c.to_string());
                 m.pred.insert(c.to_string(), c.to_string());
+            }
+        }
+        for l in &labels {
+            if m.pred.contains_key(l) {
+                continue;
+            }
+            if let Some(class) = species_class(l) {
+                if !m.classes.iter().any(|c| c == class) {
+                    m.classes.push(class.to_string());
+                    m.gt.insert(class.to_string(), class.to_string());
+                }
+                m.pred.insert(l.clone(), class.to_string());
             }
         }
         for (group, members) in CLASS_GROUPS {
@@ -576,6 +647,18 @@ mod tests {
         assert_eq!(both.gt_class("bus"), Some("vehicle"));
         // No scored classes (package model).
         assert!(ClassMap::for_model(&["package".into()]).is_empty());
+        // ipcam-bird: species labels count as bird; a squirrel does not.
+        let birds = ClassMap::for_model(&[
+            "Blue Jay".into(),
+            "Eastern Screech-Owl".into(),
+            "House Finch Female".into(),
+            "Purple Squirrel".into(),
+        ]);
+        assert_eq!(birds.classes, ["bird"]);
+        assert_eq!(birds.pred_class("Blue Jay"), Some("bird"));
+        assert_eq!(birds.pred_class("Eastern Screech-Owl"), Some("bird"));
+        assert_eq!(birds.pred_class("Purple Squirrel"), None);
+        assert_eq!(birds.gt_class("bird"), Some("bird"));
     }
 
     #[test]

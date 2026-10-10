@@ -201,7 +201,8 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
             level: 2,
             paragraphs: vec![format!(
                 "Each model on its recommended device, ranked by overall grade, then accuracy, then \
-                 speed. Best: {} on {}.",
+                 speed. Models with no class in the datasets are not scored for accuracy and \
+                 rank last. Best: {} on {}.",
                 ranking[0].model, ranking[0].device
             )],
             tables: vec![Table {
@@ -216,8 +217,12 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                             k.rank.to_string(),
                             k.model.clone(),
                             k.device.clone(),
-                            k.overall.to_string(),
-                            k.accuracy.map_or("-".into(), |a| {
+                            if k.accuracy.is_none() {
+                                format!("{} (speed only)", k.overall)
+                            } else {
+                                k.overall.to_string()
+                            },
+                            k.accuracy.map_or("not scored".into(), |a| {
                                 if k.relative {
                                     format!("{a}*")
                                 } else {
