@@ -1,16 +1,20 @@
 //! Load plan: the ordered devices a model is tried on, and the loop that tries them.
 //!
-//! Pure (no runtime libraries): [`plan_candidates`] turns a [`DeviceSpec`] plus the devices
-//! OpenVINO lists into candidates, and [`try_candidates`] runs a caller-supplied attempt
+//! Pure (no runtime libraries): [`plan_for`] turns a [`DeviceSpec`] plus the machine's
+//! [`Selection`] into candidates, and [`try_candidates`] runs a caller-supplied attempt
 //! (compile + create request + warm-up in the worker) on each until one succeeds.
 //!
-//! Phase 6.1 semantics (unchanged from the old `DeviceSelection`):
+//! Semantics:
+//! - `auto` -> the `select` ranking ([`auto_candidates`]): the first candidate is not a
+//!   fallback, every later one (down to CPU) is. A machine whose ranking is CPU only loads CPU as
+//!   a regular pick, with a note when a GPU was found but nothing GPU-class can run.
 //! - `openvino:gpu[.N]` -> GPU, then CPU as a fallback. When OpenVINO lists no GPU at all, only
-//!   CPU is tried and it counts as a fallback.
+//!   CPU is tried and it counts as a fallback (unchanged from the old `DeviceSelection`).
 //! - `openvino:cpu` / `openvino:npu` -> just that device.
-//! - `auto` -> same as `openvino:gpu` (phase 6.2 replaces this with the hardware ranking).
 //! - `ort:*` -> that device, then OpenVINO CPU as a fallback.
 
+use super::detect::HardwareInfo;
+use super::select::{RuntimeProbe, Selection, select};
 use super::spec::{Device, DeviceSpec, Runtime, Target};
 use anyhow::Result;
 use tracing::warn;
@@ -36,12 +40,71 @@ impl Candidate {
     }
 }
 
-/// Ordered candidates for `spec`, given the device names OpenVINO lists (`["CPU", "GPU.0", ..]`).
+/// Ordered candidates for `spec` on a machine described by `sel` (from [`select`]).
+pub fn plan_for(
+    spec: &DeviceSpec,
+    sel: &Selection,
+    available_ov_devices: &[String],
+) -> Vec<Candidate> {
+    match spec {
+        DeviceSpec::Auto => auto_candidates(sel),
+        DeviceSpec::Device(d) => explicit_candidates(*d, available_ov_devices),
+    }
+}
+
+/// Ordered candidates for `spec` knowing only the device names OpenVINO lists
+/// (`["CPU", "GPU.0", ..]`): `auto` is ranked as if no other runtime or GPU were present, which
+/// for OpenVINO with an Intel GPU is `openvino:gpu`, then `openvino:cpu`.
 pub fn plan_candidates(spec: &DeviceSpec, available_ov_devices: &[String]) -> Vec<Candidate> {
-    let device = match spec {
-        DeviceSpec::Auto => Device::OPENVINO_GPU,
-        DeviceSpec::Device(d) => *d,
-    };
+    let sel = select(
+        &HardwareInfo::default(),
+        &RuntimeProbe::openvino_only(available_ov_devices),
+        true,
+    );
+    plan_for(spec, &sel, available_ov_devices)
+}
+
+/// The `auto` ranking as candidates. Without anything runnable, OpenVINO CPU is still tried so
+/// the error names the missing runtime.
+pub fn auto_candidates(sel: &Selection) -> Vec<Candidate> {
+    if sel.auto.is_empty() {
+        return vec![Candidate {
+            note: Some("no runnable device found; trying OpenVINO CPU".to_string()),
+            ..Candidate::new(Device::OPENVINO_CPU, false)
+        }];
+    }
+    let mut out: Vec<Candidate> = sel
+        .auto
+        .iter()
+        .enumerate()
+        .map(|(i, d)| Candidate::new(*d, i > 0))
+        .collect();
+    if out.len() == 1 && out[0].device.is_cpu() {
+        let blocked: Vec<String> = sel
+            .options
+            .iter()
+            .filter(|o| !o.runnable && o.spec.is_gpu_like())
+            .map(|o| {
+                format!(
+                    "{}: {}",
+                    o.spec,
+                    o.reason.as_deref().unwrap_or("not runnable")
+                )
+            })
+            .collect();
+        if !blocked.is_empty() {
+            out[0].note = Some(format!(
+                "no GPU option can run ({}); using {}",
+                blocked.join("; "),
+                out[0].device
+            ));
+        }
+    }
+    out
+}
+
+/// An explicit device, then its fallback.
+fn explicit_candidates(device: Device, available_ov_devices: &[String]) -> Vec<Candidate> {
     let cpu_fallback = Candidate::new(Device::OPENVINO_CPU, true);
     match (device.runtime, device.target) {
         (Runtime::OpenVino, Target::Gpu) => {
@@ -153,7 +216,16 @@ mod tests {
             plan("auto", &["CPU", "GPU"]),
             plan("openvino:gpu", &["CPU", "GPU"])
         );
-        assert_eq!(plan("auto", &["CPU"]), s(&[("openvino:cpu", true)]));
+        // CPU-only machine: CPU is auto's regular pick, not a fallback, and there is no GPU to
+        // complain about.
+        assert_eq!(plan("auto", &["CPU"]), s(&[("openvino:cpu", false)]));
+        let c = plan_candidates(&parse("auto").unwrap(), &devs(&["CPU"]));
+        assert!(c[0].note.is_none());
+        // Without OpenVINO devices nothing is runnable; CPU is still tried, with a note.
+        let c = plan_candidates(&parse("auto").unwrap(), &[]);
+        assert_eq!(c.len(), 1);
+        assert_eq!((c[0].device, c[0].fell_back), (Device::OPENVINO_CPU, false));
+        assert!(c[0].note.is_some());
         assert_eq!(
             plan("ort:cuda:1", &["CPU"]),
             s(&[("ort:cuda:1", false), ("openvino:cpu", true)])
@@ -165,6 +237,58 @@ mod tests {
         for c in plan_candidates(&parse("ort:coreml").unwrap(), &devs(&["CPU"])) {
             assert!(c.note.is_none());
         }
+    }
+
+    #[test]
+    fn auto_follows_the_selection() {
+        use crate::backend::detect::{GpuAdapter, GpuVendor};
+        use crate::backend::select::{EpStatus, OrtProbe};
+        let nvidia = GpuAdapter {
+            vendor: GpuVendor::Nvidia,
+            name: "NVIDIA GeForce RTX 3060".into(),
+            vram_mb: 12288,
+            index: 0,
+            discrete: true,
+        };
+        let hw = HardwareInfo::new("linux", "x86_64", vec![nvidia]);
+        let ov = devs(&["CPU", "GPU"]);
+        let mut probe = RuntimeProbe::openvino_only(&ov);
+        probe.ort = OrtProbe::installed(
+            "gpu",
+            vec![
+                EpStatus::usable(Target::Cuda),
+                EpStatus::usable(Target::Cpu),
+            ],
+        );
+        let sel = select(&hw, &probe, true);
+        let got: Vec<(String, bool)> = plan_for(&DeviceSpec::Auto, &sel, &ov)
+            .into_iter()
+            .map(|c| (c.device.to_string(), c.fell_back))
+            .collect();
+        assert_eq!(
+            got,
+            s(&[
+                ("ort:cuda:0", false),
+                ("openvino:gpu", true),
+                ("openvino:cpu", true)
+            ])
+        );
+        // Explicit specs ignore the ranking.
+        assert_eq!(
+            plan_for(&parse("GPU").unwrap(), &sel, &ov),
+            plan_candidates(&parse("GPU").unwrap(), &ov)
+        );
+
+        // NVIDIA found but CUDA unusable and no OpenVINO GPU: CPU with a note naming CUDA.
+        probe.ort =
+            OrtProbe::installed("gpu", vec![EpStatus::broken(Target::Cuda, "cudnn missing")]);
+        let cpu_only = devs(&["CPU"]);
+        probe.openvino = crate::backend::select::OpenVinoProbe::with_device_names(&cpu_only);
+        let c = auto_candidates(&select(&hw, &probe, true));
+        assert_eq!(c.len(), 1);
+        assert!(!c[0].fell_back);
+        let note = c[0].note.as_deref().unwrap();
+        assert!(note.contains("ort:cuda:0: cudnn missing"), "{note}");
     }
 
     #[test]
