@@ -271,6 +271,32 @@ The device options from phase 6.2 gain a third state, "downloadable", alongside 
   - Extraction is whitelist-only and nothing downloaded is executed.
   - On Windows the service runs as LocalSystem, so files go under the install dir, never `%TEMP%`.
 
+### As built (phase 7, 2026-10)
+
+Phase 7 is implemented as planned, with these deviations:
+- **`nvidia-cuda-libs`** is larger than "around 1 GB": ONNX Runtime 1.24's CUDA provider links cudart,
+  cuBLAS/cuBLASLt, cuDNN 9, cuFFT and cuRAND, and cuFFT needs nvJitLink, so the set is seven CUDA 12.8 /
+  cuDNN 9.8 wheels (about 1.9 GB on Windows, 1.7 GB on Linux). The libraries are preloaded by absolute
+  path before the CUDA provider is used (no `LD_LIBRARY_PATH` re-exec); an existing CUDA 12 + cuDNN 9
+  install on the library path skips the download.
+- **CPU first, then switch:** the resolver also fetches the plan's CPU-fallback runtime (it blocks
+  nothing). A model whose file is present and that can run on something already installed loads there
+  while its preferred runtime downloads; each installed runtime that a waiting or interim model can use
+  starts a new registry generation (the `/config/restart` path, keeping the in-memory config). A fresh
+  macOS install therefore goes through two generations: OpenVINO CPU (about 11 s after start), then
+  CoreML.
+- **ONNX Runtime layout:** flavors install to `onnxruntime/<flavor>/` and `onnxruntime/active.txt` names
+  the active one; the old flat `onnxruntime/` still loads. A flavor other than the loaded one is used after
+  the process restarts.
+- **Downloads** go to `<root>/.downloads/` (archives) or next to the model (`<file>.partial`), with
+  `.installed.json` manifests in runtime dirs and `.<model>.installed.json` in the models dir. The lock is
+  an OS file lock (`File::try_lock`) rather than a pid file.
+- **Web UI:** choosing a "will download" device option and saving queues the download and restarts; the
+  generation then provisions as at startup. With `auto_download: false`, downloads started from the UI
+  still count (models wait for them instead of failing).
+- A weekly CI job (`.github/workflows/check-urls.yml`, `list-resources --check-urls`) checks that every
+  pinned URL still answers with its size.
+
 ## Model acquisition
 
 - `blue-onyx-prism download-models [--all|--yolo5|--rtdetr|--name X] [--dir models]`: hf-hub catalogs copied from upstream (`xnorpx/rt-detr2-onnx`: rt-detrv2-{s,ms,m,l,x}.{onnx,yaml}; `xnorpx/blue-onyx-yolo5`: delivery, IPcam-animal, ipcam-bird, IPcam-combined, IPcam-dark, IPcam-general, package .{onnx,yaml}); `--add-to-config` appends entries with family inferred. `list-models` shows catalog + local presence.

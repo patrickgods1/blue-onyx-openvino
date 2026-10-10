@@ -240,3 +240,62 @@ fn state_of(res: &Resource, r: &Resolution, installed: &Installed, models_dir: &
 pub fn model_files(res: &Resource, dir: &Path) -> Vec<PathBuf> {
     res.parts.iter().map(|p| dir.join(p.file_name)).collect()
 }
+
+/// Total size a server reports for `url`: `Content-Range: bytes 0-0/<total>` of a one-byte
+/// range request, else `Content-Length` when the range is ignored.
+async fn remote_size(client: &reqwest::Client, url: &str) -> Result<u64> {
+    let resp = client
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-0")
+        .send()
+        .await?
+        .error_for_status()?;
+    let total = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit('/').next())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    match total.or(resp.content_length()) {
+        Some(n) => Ok(n),
+        None => bail!("no size in the response"),
+    }
+}
+
+/// `list-resources --check-urls`: every distinct catalog URL (all platforms) must answer with
+/// exactly the pinned size. Prints one line per URL; an error lists the failures.
+pub fn check_urls() -> Result<()> {
+    let mut parts: Vec<(&'static str, u64)> = catalog::all()
+        .flat_map(|r| r.parts.iter().map(|p| (p.url, p.size)))
+        .collect();
+    parts.sort();
+    parts.dedup();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("blue-onyx-prism/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let mut failures = Vec::new();
+    for (url, size) in &parts {
+        let got = rt.block_on(remote_size(&client, url));
+        match got {
+            Ok(n) if n == *size => println!("ok    {size:>11}  {url}"),
+            Ok(n) => {
+                println!("FAIL  {size:>11}  {url} (server says {n} bytes)");
+                failures.push(format!("{url}: size {n}, pinned {size}"));
+            }
+            Err(e) => {
+                println!("FAIL  {size:>11}  {url} ({e:#})");
+                failures.push(format!("{url}: {e:#}"));
+            }
+        }
+    }
+    println!("{} URLs checked, {} failed", parts.len(), failures.len());
+    if !failures.is_empty() {
+        bail!("catalog URLs failed: {}", failures.join("; "));
+    }
+    Ok(())
+}

@@ -79,8 +79,9 @@ pub fn run_server_with(
     config_path: PathBuf,
     log: LogReloadHandle,
     shutdown: CancellationToken,
-    mut provisioner: Provisioner,
+    provisioner: Provisioner,
 ) -> Result<()> {
+    let provisioner = Arc::new(provisioner);
     ensure_models(&config, &config_path)?;
     let started = Instant::now();
     // Config to fall back to when a restart with the edited config fails to start.
@@ -135,6 +136,17 @@ pub fn run_server_with(
             config_path: config_path.clone(),
             log_reload: Some(log.clone()),
             restart: generation.clone(),
+            resources: Some(crate::resources::status::ResourcesCtx {
+                provisioner: provisioner.clone(),
+                provision: provision.clone(),
+                openvino_loaded: registry.runtimes().is_some_and(|rt| {
+                    rt.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .openvino()
+                        .is_some()
+                }),
+                ort_loaded: loaded_ort,
+            }),
         });
         let served = rt.block_on(server::serve(state, port, shutdown.clone()));
         // The server has drained its requests; stop this generation's workers and watcher.

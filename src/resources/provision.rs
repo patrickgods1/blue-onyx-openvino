@@ -41,7 +41,7 @@ pub struct ProvisionOptions {
 
 /// Owns the download manager across registry generations.
 pub struct Provisioner {
-    manager: Option<Arc<Manager>>,
+    manager: std::sync::Mutex<Option<Arc<Manager>>>,
     opts: ProvisionOptions,
 }
 
@@ -58,18 +58,29 @@ impl Provisioner {
 
     pub fn with_options(opts: ProvisionOptions) -> Self {
         Self {
-            manager: None,
+            manager: std::sync::Mutex::new(None),
             opts,
         }
     }
 
     /// The manager, once something was queued.
-    pub fn manager(&self) -> Option<&Arc<Manager>> {
-        self.manager.as_ref()
+    pub fn manager(&self) -> Option<Arc<Manager>> {
+        self.manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
-    fn manager_for(&mut self, config: &Config) -> Arc<Manager> {
-        if let Some(m) = &self.manager {
+    /// Extra downloadable models (test hook, see [`ProvisionOptions`]).
+    pub fn extra_models(&self) -> &[&'static Resource] {
+        &self.opts.extra_models
+    }
+
+    /// The download manager, started on first use (also used by the web UI's Download
+    /// buttons).
+    pub fn manager_for(&self, config: &Config) -> Arc<Manager> {
+        let mut slot = self.manager.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(m) = slot.as_ref() {
             return m.clone();
         }
         let mut mo = ManagerOptions::new(config.data_root());
@@ -79,7 +90,7 @@ impl Provisioner {
             mo.backoff = b;
         }
         let m = Arc::new(Manager::start(mo));
-        self.manager = Some(m.clone());
+        *slot = Some(m.clone());
         m
     }
 
@@ -87,7 +98,7 @@ impl Provisioner {
     /// Runtime flavor active when it is installed and none is loaded yet, and (with
     /// `auto_download`) queue the downloads. `loaded_ort` is the flavor this process already
     /// loaded in an earlier generation (it cannot change before the process restarts).
-    pub fn prepare(&mut self, config: &Config, loaded_ort: Option<Flavor>) -> Provision {
+    pub fn prepare(&self, config: &Config, loaded_ort: Option<Flavor>) -> Provision {
         let root = config.data_root();
         let hw = crate::backend::detect::hardware();
         let mut installed = resolve::detect_installed(config, &root, None);
@@ -123,8 +134,9 @@ impl Provisioner {
         }
 
         let mut jobs = Vec::new();
+        let mut in_flight: Vec<(&'static str, String)> = Vec::new();
         let manager = if resolution.needs.is_empty() {
-            self.manager.clone()
+            self.manager()
         } else if config.auto_download {
             let list: Vec<String> = resolution
                 .needs
@@ -142,17 +154,30 @@ impl Provisioner {
             }
             Some(m)
         } else {
+            // Nothing is queued automatically, but a download started by hand (web UI, `fetch`
+            // in this process) still counts.
+            if let Some(m) = self.manager() {
+                for st in m.statuses() {
+                    let wanted = resolution.needs.iter().any(|n| n.id() == st.id);
+                    if wanted && !matches!(st.state, State::Failed { retry_at: None, .. }) {
+                        in_flight.push((st.id, st.key.clone()));
+                    }
+                }
+            }
             if let Some(msg) = resolution.manual_message() {
                 warn!("{msg}");
             }
-            self.manager.clone()
+            self.manager()
         };
 
         // Jobs per need, in resolution order (keys as the manager knows them).
         let keys: HashMap<&str, String> = jobs
             .iter()
             .map(|(k, j)| (j.resource.id, k.clone()))
+            .chain(in_flight.iter().map(|(id, k)| (*id, k.clone())))
             .collect();
+        let in_flight: std::collections::HashSet<String> =
+            in_flight.into_iter().map(|(_, k)| k).collect();
         let mut blocks: HashMap<String, Vec<Block>> = HashMap::new();
         for n in &resolution.needs {
             let key = keys
@@ -175,6 +200,7 @@ impl Provisioner {
             blocks,
             auto_download: config.auto_download,
             loaded_ort,
+            in_flight,
         }
     }
 }
@@ -213,6 +239,8 @@ pub struct Provision {
     pub auto_download: bool,
     /// ONNX Runtime flavor loaded by an earlier generation of this process.
     pub loaded_ort: Option<Flavor>,
+    /// With `auto_download: false`: keys of downloads started by hand that models may wait for.
+    in_flight: std::collections::HashSet<String>,
 }
 
 impl std::fmt::Debug for Provision {
@@ -332,6 +360,7 @@ impl Provision {
             blocks: HashMap::new(),
             auto_download: config.auto_download,
             loaded_ort: None,
+            in_flight: Default::default(),
         }
     }
 
@@ -350,7 +379,7 @@ impl Provision {
     /// The wait handle for a blocked model (None when it is not blocked or nothing downloads).
     pub fn wait_for(&self, model: &str) -> Option<Wait> {
         let blocks = self.blocks(model);
-        if blocks.is_empty() || !self.auto_download {
+        if blocks.is_empty() || !self.downloading_all(model) {
             return None;
         }
         Some(Wait {
@@ -361,10 +390,19 @@ impl Provision {
 
     /// `Failed` message for a blocked model when `auto_download` is off.
     pub fn manual_failure(&self, model: &str) -> Option<String> {
-        if self.auto_download || self.blocks(model).is_empty() {
+        if self.blocks(model).is_empty() || self.downloading_all(model) {
             return None;
         }
         self.resolution.manual_message()
+    }
+
+    /// Every resource `model` waits for is being downloaded (always with `auto_download`).
+    fn downloading_all(&self, model: &str) -> bool {
+        self.auto_download
+            || self
+                .blocks(model)
+                .iter()
+                .all(|b| self.in_flight.contains(&b.key))
     }
 
     pub fn manager(&self) -> Option<&Arc<Manager>> {

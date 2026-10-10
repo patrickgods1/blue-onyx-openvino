@@ -250,7 +250,11 @@ fn run(cli: Cli) -> Result<()> {
             };
             return resources::commands::fetch(&read_config(&cli), &req);
         }
-        Some(Command::ListResources) => {
+        Some(Command::ListResources { check_urls: true }) => {
+            let _log = cli::init_logging(LogLevel::Warn, None)?;
+            return resources::commands::check_urls();
+        }
+        Some(Command::ListResources { check_urls: false }) => {
             let _log = cli::init_logging(LogLevel::Warn, None)?;
             let cfg = read_config(&cli);
             let root = resources::download_root(&cfg);

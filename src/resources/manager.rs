@@ -498,6 +498,19 @@ impl Manager {
         map.get(key).cloned()
     }
 
+    /// Drop the remembered status of `key` (after its files were removed), so it can be
+    /// queued again. Queued or running jobs are kept.
+    pub fn forget(&self, key: &str) {
+        let mut map = self
+            .shared
+            .statuses
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if map.get(key).is_some_and(|s| s.state.is_final()) {
+            map.remove(key);
+        }
+    }
+
     /// Every job seen so far.
     pub fn statuses(&self) -> Vec<Status> {
         let map = self
@@ -1034,6 +1047,16 @@ fn merge_dir(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Lowercase hex SHA-256 of `data` (test fixtures).
+#[doc(hidden)]
+pub fn tests_sha256(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Lowercase hex SHA-256 of a file.

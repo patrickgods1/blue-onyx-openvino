@@ -393,6 +393,8 @@ pub const FORM_FIELDS: &[&str] = &[
     "save_image_path",
     "save_ref_image",
     "intra_threads",
+    "auto_download",
+    "allow_large_downloads",
 ];
 
 /// Apply a submitted `/config` form to `config`. All fields are validated first; on any error
@@ -470,6 +472,12 @@ pub fn apply_config_form(
         c.save_image_path = opt_path(v);
     }
     c.save_ref_image = checkbox("save_ref_image");
+    // Download settings are checkboxes too, but only forms that show them (marked with the
+    // hidden `download_settings` field) change them, so older form posts keep their values.
+    if form.contains_key("download_settings") {
+        c.auto_download = checkbox("auto_download");
+        c.allow_large_downloads = checkbox("allow_large_downloads");
+    }
     if let Some(v) = get("intra_threads") {
         c.intra_threads = num("intra_threads", v)?;
     }

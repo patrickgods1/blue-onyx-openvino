@@ -726,6 +726,14 @@ pub struct CudaPreload {
 /// Directory preloaded so far (once per process).
 static CUDA_PRELOADED: Mutex<Option<(PathBuf, CudaPreload)>> = Mutex::new(None);
 
+/// The `cuda-libs` directory this process preloaded, if any (its files must not be removed).
+pub fn cuda_libs_preloaded() -> Option<PathBuf> {
+    let slot = CUDA_PRELOADED.lock().unwrap_or_else(|e| e.into_inner());
+    slot.as_ref()
+        .filter(|(_, r)| !r.loaded.is_empty())
+        .map(|(d, _)| d.clone())
+}
+
 /// Preload every CUDA library in `dir` by absolute path (see the section comment), in
 /// [`cuda_preload_order`], retrying failures until no pass makes progress. Runs once per
 /// process; later calls return the first result. The libraries stay loaded for the process.

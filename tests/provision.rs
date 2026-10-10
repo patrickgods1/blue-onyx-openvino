@@ -160,7 +160,7 @@ fn model_download_goes_initializing_to_ready_without_restart() {
     let root = tmp("ready");
     let cfg = config(&root, Some(ov));
 
-    let mut prov = Provisioner::with_options(ProvisionOptions {
+    let prov = Provisioner::with_options(ProvisionOptions {
         extra_models: vec![res],
         ..ProvisionOptions::default()
     });
@@ -219,7 +219,7 @@ fn auto_download_off_fails_with_the_command() {
     let root = tmp("manual");
     let mut cfg = config(&root, None);
     cfg.auto_download = false;
-    let mut prov = Provisioner::with_options(ProvisionOptions {
+    let prov = Provisioner::with_options(ProvisionOptions {
         extra_models: vec![res],
         ..ProvisionOptions::default()
     });

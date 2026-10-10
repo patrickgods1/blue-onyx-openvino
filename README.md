@@ -77,6 +77,62 @@ Measured on an Apple M1 (`inferenceMs`):
 On Apple silicon `auto` currently picks CoreML, which measured slower than OpenVINO CPU for these models
 (CoreML splits the graph into many pieces). To use the faster option set `"device": "openvino:cpu"`.
 
+## First run
+
+A fresh install can be just the binary and a config that names a model. On start the service works
+out what the config and the hardware need, downloads only what is missing in the background, and
+serves HTTP right away (models answer `Model initializing` with the download progress, e.g.
+`downloading OpenVINO runtime 42% (18/44 MB)`, until they are ready):
+
+```json
+{ "device": "auto", "models": [ { "path": "models/IPcam-general.onnx" } ] }
+```
+
+- **What gets downloaded:** the model files (if the name matches the catalog, `list-models`), the
+  runtime of the best device for this machine (`auto`: CUDA on NVIDIA, OpenVINO GPU on Intel,
+  DirectML on other Windows GPUs, CoreML on Apple silicon, else CPU) and the runtime of its CPU
+  fallback. On a Mac that is the model (29 MB), ONNX Runtime CoreML (31 MB) and OpenVINO (44 MB).
+- **When:** models load on a CPU option as soon as one is installed, then the server restarts its
+  registry (in the same process, a few seconds) to switch to the better runtime when that arrives.
+  A second ONNX Runtime flavor (a process can load only one) is downloaded next to the first and
+  used after the process restarts.
+- **Where:** next to the executable (`openvino/`, `onnxruntime/<flavor>/` with `active.txt` naming
+  the active flavor, `onnxruntime/cuda-libs/`, `models/`), or under `download_dir`. Every file is
+  pinned by URL, size and SHA-256 in the binary (`src/resources/catalog.rs`), downloads resume after
+  an interruption, and only whitelisted libraries are extracted; nothing downloaded is executed.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `auto_download` | `true` | Download what the config needs at startup. `false` (air-gapped, Docker): only report it; affected models are `Failed` with the command to run |
+| `allow_large_downloads` | `false` | Allow downloads over 500 MB, in practice the NVIDIA CUDA libraries |
+| `download_dir` | `null` | Root for runtimes and relative model paths (default: the executable's directory) |
+
+Commands (the same code the service uses):
+
+```sh
+blue-onyx-prism list-resources          # what is installed, needed by the config, or available, with sizes
+blue-onyx-prism fetch --for-config      # download everything the config needs now (default without flags)
+blue-onyx-prism fetch --resource model:ipcam-bird --resource onnxruntime-cpu
+blue-onyx-prism fetch --all-for-platform  # everything for this OS/arch (large ones need --allow-large)
+```
+
+- **Offline / air-gapped:** set `"auto_download": false`, run `fetch --for-config` on a machine with
+  network (same OS/arch and config), then copy the whole directory. `list-resources` on the target
+  shows anything still missing.
+- **Web UI:** the Config page has a *Resources* card (state, size, Download / Remove, live
+  progress, *Add to config* for downloaded models) and `GET /v1/resources` returns the same as JSON.
+  Device options that need a download show "will download ... (size)" in the Device dropdown;
+  choosing one and saving starts the download and switches when it is installed.
+- **NVIDIA CUDA libraries (opt-in):** `ort:cuda` needs CUDA 12 and cuDNN 9. If they are not
+  installed, the `nvidia-cuda-libs` resource (about 1.9 GB on Windows, 1.7 GB on Linux: cudart,
+  cuBLAS, cuDNN, cuFFT, cuRAND, nvJitLink, NVRTC from NVIDIA's PyPI wheels) provides them. It is
+  only downloaded with `allow_large_downloads`, `fetch --allow-large` or
+  `fetch --resource nvidia-cuda-libs`, and the libraries are covered by the
+  [NVIDIA Software License Agreement](https://docs.nvidia.com/cuda/eula/) (CUDA, cuDNN
+  redistributables). TensorRT is never downloaded.
+- **YOLO26** weights are AGPL-3.0 and cannot be downloaded: export them with
+  `scripts/export_yolo26.py` (see [Exporting YOLO26 models](#exporting-yolo26-models)).
+
 ## Quick start
 
 Download the archive for your OS from the [releases page](https://github.com/patrickgods1/blue-onyx-prism/releases)
@@ -128,7 +184,10 @@ against the executable directory. The Windows service reads `blue_onyx_prism_con
 | `force_cpu` | `false` | Always use the CPU |
 | `cache_dir` | `"cache"` | Compiled-model cache; empty disables it |
 | `openvino_dir` | `null` | OpenVINO runtime dir; default `<exe_dir>/openvino`, else the system install |
-| `onnxruntime_dir` | `null` | ONNX Runtime dir; lookup order: this field, `ORT_DYLIB_PATH`, `<exe_dir>/onnxruntime` |
+| `onnxruntime_dir` | `null` | ONNX Runtime dir (user-managed, never replaced); lookup order: this field, `ORT_DYLIB_PATH`, `onnxruntime/<flavor>/` named by `onnxruntime/active.txt`, `onnxruntime/` itself (older installs), any `onnxruntime/<flavor>/` |
+| `auto_download` | `true` | Download missing runtimes and models at startup; see [First run](#first-run) |
+| `allow_large_downloads` | `false` | Allow downloads over 500 MB (NVIDIA CUDA libraries) |
+| `download_dir` | `null` | Root for downloaded runtimes and relative model paths (default: the executable's directory) |
 | `confidence_threshold` | `0.5` | Default minimum confidence (a request's `min_confidence` > 0 overrides it) |
 | `nms_iou` | `0.5` | IoU threshold for NMS-based families |
 | `object_filter` | `[]` | Only report these labels (case-insensitive); empty = all |
@@ -338,6 +397,11 @@ Put models in `deploy/models` and a `blue_onyx_prism_config.json` in `deploy/con
 | GET | `/`, `/stats`, `/stats.json`, `/prometheus` | UI and metrics |
 | GET, POST | `/test`, `/config` | test page, config editor |
 | POST | `/config/restart`, `/config/loglevel` | reload config, change log level |
+| GET | `/v1/devices` | device options (runnable, downloadable with size, unavailable with reason) and the `auto` pick |
+| GET | `/v1/resources` | downloadable resources for this platform: state (installed, downloading with %, queued, needed, optional, available, failed with error and retry), size, what they provide, which models wait for them |
+| POST | `/v1/resources/download` | form `id` (e.g. `model:ipcam-bird`); large resources also need `confirm_large=1` unless `allow_large_downloads` |
+| POST | `/v1/resources/remove` | form `id`; refused (409) while downloading, while the runtime is loaded ("restart required") or while an enabled model uses the files |
+| POST | `/v1/resources/add-to-config` | form `id` of a downloaded model: append it to `models` |
 
 The detection response is byte-compatible with CodeProject.AI: `success, message, error, predictions
 [{x_min, y_min, x_max, y_max, confidence, label}], count, command, moduleId, executionProvider,

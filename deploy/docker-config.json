@@ -1,0 +1,13 @@
+{
+  "port": 32168,
+  "device": "auto",
+  "auto_download": false,
+  "allow_large_downloads": false,
+  "openvino_dir": "/opt/intel/openvino",
+  "onnxruntime_dir": "/app/onnxruntime",
+  "models_dir": "/app/models",
+  "cache_dir": "/app/cache",
+  "models": [
+    { "path": "/app/models/IPcam-general.onnx", "family": "yolo5" }
+  ]
+}

@@ -76,7 +76,12 @@ pub enum Command {
     },
     /// Show the downloadable resources for this platform: installed, needed by the config, or
     /// available, with sizes.
-    ListResources,
+    ListResources {
+        /// Instead, check that every pinned URL of every platform answers with its catalogued
+        /// size (no full download; used by the weekly CI job). Exits non-zero on failure.
+        #[arg(long)]
+        check_urls: bool,
+    },
     /// Show detected GPUs, every device option (runnable or why not) and what `auto` picks.
     ListDevices {
         /// Also show the load plan for this model file (repeatable; default: the enabled models
@@ -233,7 +238,7 @@ impl Cli {
                 add_to_config,
             },
             Command::ListModels { dir } => Command::ListModels { dir: abs(&dir) },
-            Command::Fetch { .. } | Command::ListResources => cmd,
+            Command::Fetch { .. } | Command::ListResources { .. } => cmd,
             Command::ListDevices { model } => Command::ListDevices {
                 model: model.iter().map(|p| absolutize(p, base)).collect(),
             },

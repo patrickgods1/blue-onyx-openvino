@@ -54,6 +54,9 @@ pub struct AppState {
     /// Cancelled by `POST /config/restart`. [`serve`] stops when it fires; the main binary
     /// uses a child of the shutdown token so it also stops the workers of this generation.
     pub restart: CancellationToken,
+    /// Download manager and this generation's provisioning plan (None in tests that do not
+    /// exercise resources).
+    pub resources: Option<crate::resources::status::ResourcesCtx>,
 }
 
 impl AppState {
@@ -72,6 +75,7 @@ impl AppState {
             config_path,
             log_reload: None,
             restart: CancellationToken::new(),
+            resources: None,
         }
     }
 
@@ -92,6 +96,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/vision/custom/{model}", post(detection_custom))
         .route("/v1/status/updateavailable", get(update_available))
         .route("/v1/devices", get(devices_json))
+        .route("/v1/resources", get(resources_json))
+        .route("/v1/resources/download", post(resources_download))
+        .route("/v1/resources/remove", post(resources_remove))
+        .route("/v1/resources/add-to-config", post(resources_add_to_config))
         .route("/stats", get(stats_page))
         .route("/stats.json", get(stats_json))
         .route("/prometheus", get(prometheus))
@@ -701,6 +709,138 @@ async fn prometheus(State(state): State<Arc<AppState>>) -> Response {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Resources (phase 7.5)
+
+/// `GET /v1/resources`: every downloadable resource for this platform with its state, size,
+/// what it provides and which models wait for it.
+async fn resources_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = state.config_read().clone();
+    let rows = crate::resources::status::rows(state.resources.as_ref(), &cfg);
+    let hw = crate::backend::detect::hardware();
+    let manual = state
+        .resources
+        .as_ref()
+        .and_then(|r| r.provision.resolution.manual_message());
+    Json(serde_json::json!({
+        "success": true,
+        "platform": format!("{}-{}", hw.os, hw.arch),
+        "autoDownload": cfg.auto_download,
+        "allowLargeDownloads": cfg.allow_large_downloads,
+        "downloadRoot": cfg.data_root().display().to_string(),
+        "manualMessage": manual,
+        "resources": rows,
+    }))
+}
+
+/// Form (or urlencoded API) fields of the resource actions: `id`, optional `confirm_large`.
+fn action_fields(form: &HashMap<String, String>) -> (String, bool) {
+    let id = form
+        .get("id")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let confirm = form.get("confirm_large").is_some_and(|v| {
+        !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off"
+        )
+    });
+    (id, confirm)
+}
+
+/// Answer a resource action: the config page (browsers) or `{success, message}` JSON with
+/// 200 / 404 / 409 / 500 / 503.
+fn action_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    result: Result<String, crate::resources::status::ActionError>,
+) -> Response {
+    if let Err(e) = &result {
+        warn!("resource action refused: {e}");
+    }
+    if wants_html(headers) {
+        let (msg, err) = match result {
+            Ok(m) => (Some(m), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        return render(&config_template(state, msg, err, None));
+    }
+    match result {
+        Ok(m) => Json(serde_json::json!({"success": true, "message": m})).into_response(),
+        Err(e) => (
+            StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(serde_json::json!({"success": false, "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+fn no_manager() -> crate::resources::status::ActionError {
+    crate::resources::status::ActionError::Failed(
+        "this server has no download manager (run the service, or use `blue-onyx-prism fetch`)"
+            .into(),
+    )
+}
+
+/// `POST /v1/resources/download` (`id`, `confirm_large` for large resources).
+async fn resources_download(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    form: Result<Form<HashMap<String, String>>, FormRejection>,
+) -> Response {
+    let form = form.map(|Form(f)| f).unwrap_or_default();
+    let (id, confirm) = action_fields(&form);
+    let cfg = state.config_read().clone();
+    let result = match &state.resources {
+        Some(ctx) => crate::resources::status::download(ctx, &cfg, &id, confirm),
+        None => Err(no_manager()),
+    };
+    action_response(&state, &headers, result)
+}
+
+/// `POST /v1/resources/remove` (`id`).
+async fn resources_remove(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    form: Result<Form<HashMap<String, String>>, FormRejection>,
+) -> Response {
+    let form = form.map(|Form(f)| f).unwrap_or_default();
+    let (id, _) = action_fields(&form);
+    let cfg = state.config_read().clone();
+    let result = crate::resources::status::remove(state.resources.as_ref(), &cfg, &id);
+    action_response(&state, &headers, result)
+}
+
+/// `POST /v1/resources/add-to-config` (`id` of an installed model): appends it to `models` and
+/// saves the config file (restart to load it).
+async fn resources_add_to_config(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    form: Result<Form<HashMap<String, String>>, FormRejection>,
+) -> Response {
+    let form = form.map(|Form(f)| f).unwrap_or_default();
+    let (id, _) = action_fields(&form);
+    let mut outcome = String::new();
+    let saved = save_config(&state, |c| {
+        outcome = crate::resources::status::add_to_config(state.resources.as_ref(), c, &id)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(())
+    });
+    let result = match saved {
+        Ok(_) => Ok(format!(
+            "{outcome}. Saved to {}.",
+            state.config_path.display()
+        )),
+        Err(e) => match e.downcast::<crate::resources::status::ActionError>() {
+            Ok(a) => Err(a),
+            Err(e) => Err(crate::resources::status::ActionError::Failed(format!(
+                "{e:#}"
+            ))),
+        },
+    };
+    action_response(&state, &headers, result)
+}
+
+// ---------------------------------------------------------------------------------------------
 // Test page
 
 struct ModelChoice {
@@ -862,6 +1002,8 @@ struct ConfigView {
     save_ref_image: bool,
     intra_threads: String,
     models_json: String,
+    auto_download: bool,
+    allow_large_downloads: bool,
 }
 
 impl ConfigView {
@@ -888,6 +1030,8 @@ impl ConfigView {
             save_ref_image: c.save_ref_image,
             intra_threads: c.intra_threads.to_string(),
             models_json: serde_json::to_string_pretty(&c.models).unwrap_or_default(),
+            auto_download: c.auto_download,
+            allow_large_downloads: c.allow_large_downloads,
         }
     }
 
@@ -898,6 +1042,10 @@ impl ConfigView {
             match key {
                 "force_cpu" => self.force_cpu = v.is_some(),
                 "save_ref_image" => self.save_ref_image = v.is_some(),
+                "auto_download" | "allow_large_downloads"
+                    if !form.contains_key("download_settings") => {}
+                "auto_download" => self.auto_download = v.is_some(),
+                "allow_large_downloads" => self.allow_large_downloads = v.is_some(),
                 _ => {
                     let Some(v) = v else { continue };
                     let slot = match key {
@@ -970,6 +1118,9 @@ struct ConfigTemplate {
     device_choices: Vec<DeviceChoice>,
     message: Option<String>,
     error: Option<String>,
+    /// Resources card rows (empty when the server runs without a download manager).
+    resources: Vec<crate::resources::status::ResourceRow>,
+    resources_enabled: bool,
 }
 
 /// One `<option>` of the Device select.
@@ -1068,7 +1219,13 @@ fn config_template(
     })
     .collect();
     let device_choices = device_choices(&devices_snapshot(state), &c.device, &c.gpu_index);
+    let resources = {
+        let cfg = state.config_read();
+        crate::resources::status::rows(state.resources.as_ref(), &cfg)
+    };
     ConfigTemplate {
+        resources,
+        resources_enabled: state.resources.is_some(),
         nav: "config",
         version: crate::VERSION,
         config_path: state.config_path.display().to_string(),
@@ -1136,8 +1293,44 @@ async fn config_submit(
             ));
         }
     };
+    let devices = |c: &Config| {
+        (
+            c.device.clone(),
+            c.force_cpu,
+            c.gpu_index,
+            c.models
+                .iter()
+                .map(|m| m.device.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let before = devices(&state.config_read());
     match save_config(&state, |c| apply_config_form(c, &form)) {
-        Ok(msg) => render(&config_template(&state, Some(msg), None, None)),
+        Ok(msg) => {
+            // A device change to an option that needs a download (the dropdown's
+            // "will download ..." entries, or a per-model `device`): queue it and restart. The
+            // new generation waits for the download (or runs on CPU meanwhile) and switches
+            // once it is installed, through the usual provisioning restart.
+            let cfg = state.config_read().clone();
+            if devices(&cfg) != before
+                && let Some(ctx) = &state.resources
+            {
+                let queued = crate::resources::status::queue_needs(ctx, &cfg);
+                if !queued.is_empty() {
+                    info!("device change needs downloads: {}", queued.join(", "));
+                    return restart_response_with(
+                        &state,
+                        format!(
+                            "Saved. Downloading {} for the new device setting; the server \
+                             restarts now, serves on what it can meanwhile, and switches when \
+                             the download is installed (progress on the home and Config pages).",
+                            queued.join(", ")
+                        ),
+                    );
+                }
+            }
+            render(&config_template(&state, Some(msg), None, None))
+        }
         Err(e) => {
             warn!("rejected config form: {e:#}");
             render(&config_template(
@@ -1218,6 +1411,16 @@ async fn config_restart(State(state): State<Arc<AppState>>) -> Response {
 /// Cancel this generation's restart token shortly (so the reply gets out) and render the
 /// "Restarting" page.
 fn restart_response(state: &AppState) -> Response {
+    restart_response_with(
+        state,
+        "The server is reloading its config and recompiling the enabled models. This page \
+         returns to the home page in a few seconds."
+            .into(),
+    )
+}
+
+/// Restart like `POST /config/restart`, showing `message`.
+fn restart_response_with(state: &AppState, message: String) -> Response {
     info!("restart requested from the web UI");
     let token = state.restart.clone();
     tokio::spawn(async move {
@@ -1228,9 +1431,7 @@ fn restart_response(state: &AppState) -> Response {
         nav: "config",
         version: crate::VERSION,
         heading: "Restarting".into(),
-        message: "The server is reloading its config and recompiling the enabled models. This \
-                  page returns to the home page in a few seconds."
-            .into(),
+        message,
         refresh_secs: 5,
         refresh_url: "/".into(),
     })
@@ -1849,5 +2050,314 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), state.restart.cancelled())
             .await
             .expect("restart token cancelled");
+    }
+
+    // ---- resources (phase 7.5) ----
+
+    use crate::resources::catalog::{Layout, Part, Provides, Resource, ResourceKind};
+    use crate::resources::provision::{Provision, ProvisionOptions, Provisioner};
+    use crate::resources::status::ResourcesCtx;
+
+    fn leak(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+
+    /// Serve `files` (name -> bytes) on 127.0.0.1; returns the base URL.
+    fn serve_files(files: Vec<(&'static str, Vec<u8>)>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut head = Vec::new();
+                let mut b = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if s.read(&mut b).map_or(true, |n| n == 0) {
+                        break;
+                    }
+                    head.push(b[0]);
+                }
+                let head = String::from_utf8_lossy(&head).to_string();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                match files.iter().find(|(n, _)| path == format!("/{n}")) {
+                    Some((_, body)) => {
+                        let _ = write!(
+                            s,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = s.write_all(body);
+                    }
+                    None => {
+                        let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                    }
+                }
+            }
+        });
+        base
+    }
+
+    fn model_res(
+        id: &'static str,
+        name: &'static str,
+        base: &str,
+        files: &[(&str, &[u8])],
+        size: Option<u64>,
+    ) -> &'static Resource {
+        let parts: Vec<Part> = files
+            .iter()
+            .map(|(f, data)| Part {
+                url: leak(format!("{base}/{f}")),
+                sha256: leak(crate::resources::manager::tests_sha256(data)),
+                size: size.unwrap_or(data.len() as u64),
+                file_name: leak(f.to_string()),
+                archive: None,
+                layout: Layout::File,
+            })
+            .collect();
+        Box::leak(Box::new(Resource {
+            id,
+            kind: ResourceKind::Model,
+            version: "1",
+            platform: None,
+            parts: Box::leak(parts.into_boxed_slice()),
+            dest: "models",
+            provides: Provides::Model {
+                name,
+                family: crate::model::ModelFamilyKind::Yolo5,
+            },
+            title: leak(format!("Model {name}")),
+            description: "fixture",
+            license: "MIT",
+        }))
+    }
+
+    /// State with a download manager over a temp data root, a fixture model served locally and
+    /// a fake large model that is never fetched; OpenVINO counts as loaded.
+    fn resources_state() -> (Arc<AppState>, PathBuf) {
+        let root = std::env::temp_dir().join(format!("bo_res_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let base = serve_files(vec![
+            ("fixture-model.onnx", b"onnx bytes".to_vec()),
+            ("fixture-model.yaml", b"NAMES:\n- person\n".to_vec()),
+        ]);
+        let fixture = model_res(
+            "model:fixture-model",
+            "fixture-model",
+            &base,
+            &[
+                ("fixture-model.onnx", b"onnx bytes"),
+                ("fixture-model.yaml", b"NAMES:\n- person\n"),
+            ],
+            None,
+        );
+        let big = model_res(
+            "model:big-model",
+            "big-model",
+            "http://127.0.0.1:9",
+            &[("big-model.onnx", b"x")],
+            Some(600 * 1024 * 1024),
+        );
+        let config = Config {
+            download_dir: Some(root.clone()),
+            models: vec![ModelConfig {
+                path: "models/other.onnx".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let provisioner = Arc::new(Provisioner::with_options(ProvisionOptions {
+            extra_models: vec![fixture, big],
+            ..ProvisionOptions::default()
+        }));
+        let registry = ModelRegistry::from_handles(
+            vec![],
+            None,
+            RuntimeInfo {
+                openvino_version: "2026.0.0-test".into(),
+                available_devices: vec!["CPU".into()],
+                has_gpu: false,
+            },
+        );
+        let mut state = AppState::new(
+            Arc::new(registry),
+            Arc::new(Metrics::new("0.0.0")),
+            config.clone(),
+            root.join("cfg.json"),
+        );
+        state.resources = Some(ResourcesCtx {
+            provisioner,
+            provision: Arc::new(Provision::none(&config)),
+            openvino_loaded: true,
+            ort_loaded: None,
+        });
+        (Arc::new(state), root)
+    }
+
+    async fn resources(state: &Arc<AppState>) -> serde_json::Value {
+        let (s, body) = get_text(state, "/v1/resources").await;
+        assert_eq!(s, StatusCode::OK);
+        serde_json::from_str(&body).unwrap()
+    }
+
+    fn row<'a>(j: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+        j["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("{id} not listed"))
+    }
+
+    async fn post_action(
+        state: &Arc<AppState>,
+        uri: &str,
+        body: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let (s, _, b) = call(state, post_form(uri, body, false)).await;
+        (s, serde_json::from_slice(&b).unwrap())
+    }
+
+    #[tokio::test]
+    async fn resources_download_add_and_remove() {
+        let (state, root) = resources_state();
+        let j = resources(&state).await;
+        assert_eq!(j["success"], true);
+        assert_eq!(j["autoDownload"], true);
+        let fx = row(&j, "model:fixture-model");
+        assert_eq!(fx["state"], "available");
+        assert_eq!(fx["kind"], "model");
+        assert_eq!(fx["provides"][0], "model:fixture-model");
+        assert_eq!(fx["large"], false);
+        // The platform's catalog is listed too.
+        let ov = row(&j, "openvino-runtime");
+        assert!(ov["size"].as_u64().unwrap() > 0);
+        assert!(ov["provides"][0].as_str().unwrap().starts_with("openvino:"));
+
+        // Unknown ids and large downloads without confirmation are refused.
+        let (s, b) = post_action(&state, "/v1/resources/download", "id=nope").await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{b}");
+        let (s, b) = post_action(&state, "/v1/resources/download", "id=model%3Abig-model").await;
+        assert_eq!(s, StatusCode::CONFLICT, "{b}");
+        assert!(b["message"].as_str().unwrap().contains("confirm"), "{b}");
+        assert_eq!(
+            row(&resources(&state).await, "model:big-model")["large"],
+            true
+        );
+
+        // Download the fixture and wait until it is installed.
+        let (s, b) =
+            post_action(&state, "/v1/resources/download", "id=model%3Afixture-model").await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        let started = Instant::now();
+        loop {
+            let j = resources(&state).await;
+            let st = row(&j, "model:fixture-model")["state"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            if st == "installed" {
+                break;
+            }
+            assert!(st != "failed", "{j}");
+            assert!(started.elapsed() < Duration::from_secs(20), "stuck in {st}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(root.join("models/fixture-model.onnx").is_file());
+        let fx = row(&resources(&state).await, "model:fixture-model").clone();
+        assert_eq!(fx["removable"], true);
+        assert_eq!(fx["can_add_to_config"], true);
+
+        // Add to config: saved, and the row no longer offers it.
+        let (s, b) = post_action(
+            &state,
+            "/v1/resources/add-to-config",
+            "id=model%3Afixture-model",
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        assert!(
+            b["message"]
+                .as_str()
+                .unwrap()
+                .contains("added 'fixture-model'"),
+            "{b}"
+        );
+        assert!(
+            state
+                .config_read()
+                .models
+                .iter()
+                .any(|m| m.effective_name() == "fixture-model")
+        );
+        let saved = Config::load(&state.config_path).unwrap();
+        assert_eq!(saved.models.len(), 2);
+        assert_eq!(
+            row(&resources(&state).await, "model:fixture-model")["can_add_to_config"],
+            false
+        );
+
+        // The new entry is disabled (another model was enabled), so it can be removed.
+        let (s, b) = post_action(&state, "/v1/resources/remove", "id=model%3Afixture-model").await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        assert!(!root.join("models/fixture-model.onnx").exists());
+        assert_eq!(
+            row(&resources(&state).await, "model:fixture-model")["state"],
+            "available"
+        );
+
+        // A loaded runtime is not removed: restart required.
+        std::fs::create_dir_all(root.join("openvino")).unwrap();
+        std::fs::write(
+            root.join("openvino/.installed.json"),
+            r#"{"id":"openvino-runtime","version":"x","sha256":[],"files":[]}"#,
+        )
+        .unwrap();
+        let (s, b) = post_action(&state, "/v1/resources/remove", "id=openvino-runtime").await;
+        assert_eq!(s, StatusCode::CONFLICT, "{b}");
+        assert!(
+            b["message"].as_str().unwrap().contains("restart required"),
+            "{b}"
+        );
+        assert!(root.join("openvino/.installed.json").exists());
+        let ov = row(&resources(&state).await, "openvino-runtime").clone();
+        assert_eq!(ov["state"], "installed");
+        assert_eq!(ov["loaded"], true);
+        assert_eq!(ov["removable"], false);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn config_page_renders_the_resources_card() {
+        let (state, root) = resources_state();
+        let (s, html) = get_text(&state, "/config").await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(html.contains("<h2>Resources</h2>"), "{html}");
+        assert!(html.contains("model:fixture-model"));
+        assert!(html.contains("action=\"/v1/resources/download\""));
+        assert!(
+            html.contains("Download 629 MB (large)"),
+            "large button shows the size"
+        );
+        assert!(html.contains("export_yolo26.py"));
+        assert!(html.contains("name=\"auto_download\" checked"));
+        assert!(html.contains("name=\"allow_large_downloads\">"));
+        // A browser download goes back to the page with a notice.
+        let (s, _, b) = call(
+            &state,
+            post_form("/v1/resources/download", "id=model%3Abig-model", true),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let b = String::from_utf8(b).unwrap();
+        assert!(b.contains("confirm the large download"), "{b}");
+        // Without a manager (plain test state) the card says so and downloads are refused.
+        let plain = test_state();
+        let (_, html) = get_text(&plain, "/config").await;
+        assert!(html.contains("has no download manager"));
+        let (s, _) = post_action(&plain, "/v1/resources/download", "id=openvino-runtime").await;
+        assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
