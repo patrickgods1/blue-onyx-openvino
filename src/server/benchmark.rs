@@ -4,6 +4,10 @@
 //!   datasets and the config's per-model devices;
 //! - `POST /v1/benchmark`: start a run; `POST /v1/benchmark/cancel`;
 //! - `POST /v1/benchmark/apply`: write per-model devices into the config;
+//! - `POST /v1/benchmark/apply-threshold`: write per-model confidence thresholds into the config;
+//! - `GET /v1/benchmark/threshold-search`: what can be searched (models, devices, datasets,
+//!   tags, classes); `POST /v1/benchmark/threshold-search`: the exact confidence-threshold
+//!   search over the stored predictions (no inference; [`crate::benchmark::search`]);
 //! - `POST /v1/benchmark/settings`: save the form as the `benchmark` config defaults;
 //! - `GET /v1/benchmark/images?model=&device=`: per-image drill-down (ground truth and
 //!   predictions); `GET /v1/benchmark/image?set=&file=`: the image file itself (only files
@@ -18,7 +22,9 @@ use super::{
 use crate::benchmark::images::{self, ImageSet};
 use crate::benchmark::service::{RunContext, RunRequest, default_models};
 use crate::benchmark::{BenchmarkResults, configured_device, results_path};
-use crate::config::{Config, DatasetRef, DeviceChange, apply_model_devices};
+use crate::config::{
+    Config, DatasetRef, DeviceChange, ThresholdChange, apply_model_devices, apply_model_thresholds,
+};
 use askama::Template;
 use axum::Json;
 use axum::extract::rejection::{FormRejection, QueryRejection};
@@ -86,6 +92,39 @@ struct BenchmarkTemplate {
     results_file: String,
     speed_thresholds: String,
     accuracy_thresholds: String,
+    /// (value, label, selected) of the threshold objective select.
+    objectives: Vec<(String, String, bool)>,
+    blue_iris_note: &'static str,
+}
+
+/// Threshold objective choices; the configured one is added when it is not among them.
+fn objective_options(
+    current: crate::benchmark::threshold::Objective,
+) -> Vec<(String, String, bool)> {
+    use crate::benchmark::threshold::Objective;
+    let mut list = vec![
+        (Objective::F1, "F1: balance precision and recall"),
+        (Objective::F2, "F2: favor recall (fewer missed objects)"),
+        (
+            Objective::Precision(0.8),
+            "Precision \u{2265} 80%, highest recall",
+        ),
+        (
+            Objective::Precision(0.9),
+            "Precision \u{2265} 90%, highest recall (fewer false alerts)",
+        ),
+        (
+            Objective::Precision(0.95),
+            "Precision \u{2265} 95%, highest recall",
+        ),
+    ]
+    .into_iter()
+    .map(|(o, l)| (o.to_string(), l.to_string(), o == current))
+    .collect::<Vec<_>>();
+    if !list.iter().any(|o| o.2) {
+        list.push((current.to_string(), current.describe(), true));
+    }
+    list
 }
 
 fn model_options(c: &Config) -> Vec<ModelOption> {
@@ -270,6 +309,8 @@ pub(super) async fn page(State(state): State<Arc<AppState>>) -> Response {
             "A \u{2265} {:.2}, B \u{2265} {:.2}, C \u{2265} {:.2}, D \u{2265} {:.2}",
             A[0], A[1], A[2], A[3]
         ),
+        objectives: objective_options(b.threshold_objective),
+        blue_iris_note: BLUE_IRIS_THRESHOLD_NOTE,
     })
 }
 
@@ -310,6 +351,8 @@ fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
             serde_json::json!({
                 "name": name,
                 "enabled": m.enabled,
+                "confidenceThreshold": m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+                "ownThreshold": m.confidence_threshold.is_some(),
                 "device": m.device,
                 "effective": effective,
                 "provider": provider,
@@ -320,6 +363,7 @@ fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
         "forceCpu": cfg.force_cpu,
         "globalDevice": cfg.device,
         "globalLabel": global_device_label(&cfg, snap),
+        "confidenceThreshold": cfg.confidence_threshold,
         "models": models,
         "benchmark": cfg.benchmark,
     })
@@ -686,6 +730,241 @@ pub(super) async fn apply(
     .into_response()
 }
 
+/// The saved results and stored predictions, or a 400 telling to run a benchmark first.
+#[allow(clippy::result_large_err)]
+fn search_data(
+    state: &AppState,
+) -> Result<(BenchmarkResults, crate::benchmark::search::StoredPreds), Response> {
+    use crate::benchmark::search::{StoredPreds, preds_path};
+    let none = || {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "no stored predictions: run a benchmark first (it stores the predictions the \
+             threshold search needs)"
+                .into(),
+        )
+    };
+    let results = match BenchmarkResults::load(&results_path(&state.config_path)) {
+        Ok(Some(r)) => r,
+        Ok(None) => return Err(none()),
+        Err(e) => {
+            return Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{e:#}"),
+            ));
+        }
+    };
+    match StoredPreds::load(&preds_path(&state.config_path)) {
+        Ok(Some(p)) if !p.runs.is_empty() => Ok((results, p)),
+        Ok(_) => Err(none()),
+        Err(e) => Err(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{e:#}"),
+        )),
+    }
+}
+
+/// Normalized model name -> its effective confidence threshold in the config.
+fn current_thresholds(cfg: &Config) -> HashMap<String, f32> {
+    cfg.models
+        .iter()
+        .map(|m| {
+            (
+                crate::registry::normalize_name(&m.effective_name()),
+                m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+            )
+        })
+        .collect()
+}
+
+/// `GET /v1/benchmark/threshold-search`: the searchable models (with their stored devices and
+/// recommended device), datasets, tags and classes, the configured objective and thresholds.
+pub(super) async fn search_options(State(state): State<Arc<AppState>>) -> Response {
+    let (results, preds) = match search_data(&state) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let cfg = state.config_read().clone();
+    Json(serde_json::json!({
+        "success": true,
+        "options": crate::benchmark::search::options(&results, &preds),
+        "objective": cfg.benchmark.threshold_objective,
+        "thresholds": current_thresholds(&cfg),
+    }))
+    .into_response()
+}
+
+/// `POST /v1/benchmark/threshold-search` (urlencoded): `model` (repeated or comma separated;
+/// `all` or none = every model), `device` (none = recommended), `dataset`, `tag`, `class`
+/// (repeated), `objective` (`f1`, `f2`, `precision:<p>`, `recall:<r>`; default the configured
+/// one), `iou` (0.5). Answers per model the best threshold, P/R/F1/F2/FP per image at the best
+/// and the configured thresholds, the exact curve and the 0.05 grid, per-dataset and per-class
+/// bests. 400 on bad input, when nothing is stored ("run a benchmark first") or nothing
+/// matches.
+pub(super) async fn threshold_search(
+    State(state): State<Arc<AppState>>,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
+) -> Response {
+    let form = match form {
+        Ok(Form(f)) => f,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, format!("invalid form: {e}")),
+    };
+    let cfg = state.config_read().clone();
+    let req = match crate::benchmark::search::SearchRequest::from_form(
+        &form,
+        cfg.benchmark.threshold_objective,
+    ) {
+        Ok(r) => r,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    };
+    let (results, preds) = match search_data(&state) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let current = current_thresholds(&cfg);
+    let lookup = |m: &str| current.get(&crate::registry::normalize_name(m)).copied();
+    match crate::benchmark::search::search(&results, &preds, &req, &lookup) {
+        Ok(out) if out.results.is_empty() => json_error(
+            StatusCode::BAD_REQUEST,
+            format!("nothing to search: {}", out.errors.join("; ")),
+        ),
+        Ok(out) => {
+            let csv = crate::benchmark::search::to_csv(&out);
+            Json(serde_json::json!({
+                "success": true,
+                "request": req,
+                "results": out.results,
+                "errors": out.errors,
+                "elapsedMs": out.elapsed_ms,
+                "csv": csv,
+                "note": BLUE_IRIS_THRESHOLD_NOTE,
+            }))
+            .into_response()
+        }
+        Err(e) => json_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
+}
+
+/// Shown with threshold changes: how the server threshold relates to Blue Iris's settings.
+pub(super) const BLUE_IRIS_THRESHOLD_NOTE: &str = "Blue Iris may send its own min_confidence \
+     with each request (it then replaces this threshold for that request), and each camera's \
+     minimum confidence filters the returned objects again.";
+
+/// `POST /v1/benchmark/apply-threshold`: set per-model `confidence_threshold` in the config.
+/// - `model=<name>&threshold=<0..1>`: one model (repeat the pair for several);
+/// - `all=1` (optionally limited by repeated `model`): every best threshold of the saved results.
+///
+/// `restart=1` restarts the server afterwards. Answers JSON with the changes; 400 on bad input,
+/// 404 when `all` finds no best threshold.
+pub(super) async fn apply_threshold(
+    State(state): State<Arc<AppState>>,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
+) -> Response {
+    let form = match form {
+        Ok(Form(f)) => f,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, format!("invalid form: {e}")),
+    };
+    let field = |k: &str| form.iter().find(|(key, _)| key == k).map(|(_, v)| v.trim());
+    let models: Vec<String> = form
+        .iter()
+        .filter(|(k, _)| k == "model")
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect();
+    let restart = field("restart").is_some_and(truthy);
+    let picks: Vec<(String, f32)> = if field("all").is_some_and(truthy) {
+        let results = match BenchmarkResults::load(&results_path(&state.config_path)) {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    "no benchmark results yet; run a benchmark first".into(),
+                );
+            }
+            Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+        };
+        let only = (!models.is_empty()).then_some(models.as_slice());
+        let cfg = state.config_read().clone();
+        let picks: Vec<(String, f32)> = results
+            .thresholds(only)
+            .into_iter()
+            .filter(|(m, _)| crate::benchmark::find_model(&cfg, m).is_some())
+            .collect();
+        if picks.is_empty() {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "the saved results have no best threshold for these models".into(),
+            );
+        }
+        picks
+    } else {
+        let values: Vec<&str> = form
+            .iter()
+            .filter(|(k, _)| k == "threshold")
+            .map(|(_, v)| v.trim())
+            .collect();
+        if models.is_empty() || models.len() != values.len() {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "give `model` and `threshold` (repeated in pairs), or `all=1` to apply every \
+                 best threshold"
+                    .into(),
+            );
+        }
+        let mut picks = Vec::new();
+        for (m, t) in models.iter().zip(values) {
+            match t.parse::<f32>() {
+                Ok(v) => picks.push((m.clone(), v)),
+                Err(_) => {
+                    return json_error(
+                        StatusCode::BAD_REQUEST,
+                        format!("threshold: '{t}' is not a number"),
+                    );
+                }
+            }
+        }
+        picks
+    };
+    let mut changes: Vec<ThresholdChange> = Vec::new();
+    if let Err(e) = save_config(&state, |c| {
+        changes = apply_model_thresholds(c, &picks)?;
+        Ok(())
+    }) {
+        warn!("benchmark threshold apply refused: {e:#}");
+        return json_error(StatusCode::BAD_REQUEST, format!("{e:#}"));
+    }
+    let mut message = if changes.is_empty() {
+        "No change: the models already use these thresholds.".to_string()
+    } else {
+        format!(
+            "Saved {}: {}.",
+            state.config_path.display(),
+            changes
+                .iter()
+                .map(ThresholdChange::describe)
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    };
+    let restarting = restart && !changes.is_empty();
+    if restarting {
+        message.push_str(" Restarting the server to use the new thresholds.");
+        schedule_restart(&state);
+    } else if !changes.is_empty() {
+        message.push_str(" Restart the server to apply.");
+    }
+    message.push(' ');
+    message.push_str(BLUE_IRIS_THRESHOLD_NOTE);
+    info!("benchmark threshold apply: {message}");
+    Json(serde_json::json!({
+        "success": true,
+        "message": message,
+        "changes": changes,
+        "restarting": restarting,
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::router;
@@ -788,6 +1067,16 @@ mod tests {
         assert!(html.contains("name=\"dataset\" value=\"sample\">"));
         assert!(html.contains("competes") || html.contains("same CPU/GPU"));
         assert!(html.contains("fetch(\"/v1/benchmark\""));
+        // Threshold objective (config default f1) and the threshold apply actions.
+        assert!(
+            html.contains("<select name=\"threshold_objective\">"),
+            "{html}"
+        );
+        assert!(html.contains("<option value=\"f1\" selected>"), "{html}");
+        assert!(html.contains("<option value=\"precision:0.9\">"), "{html}");
+        assert!(html.contains("id=\"apply-all-thr\""));
+        assert!(html.contains("/v1/benchmark/apply-threshold"));
+        assert!(html.contains("min_confidence"));
     }
 
     #[tokio::test]
@@ -950,6 +1239,208 @@ mod tests {
         assert!(html.contains("<option value=\"\">Global (auto"), "{html}");
         assert!(html.contains("benchmark: openvino:cpu (in use)"), "{html}");
         assert!(html.contains("benchmark: ort:coreml (in use)"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn apply_threshold_one_and_all() {
+        let st = state();
+        let cfg_path = st.config_path.clone();
+        let (s, _) = call(&st, post("/v1/benchmark/apply-threshold", "all=1")).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+
+        // One model.
+        let (s, v) = call(
+            &st,
+            post(
+                "/v1/benchmark/apply-threshold",
+                "model=DFINE-S&threshold=0.35",
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["changes"][0]["model"], "dfine-s");
+        assert_eq!(v["changes"][0]["to"].as_f64().unwrap() as f32, 0.35);
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains("0.50 (global) -> 0.35"), "{msg}");
+        assert!(msg.contains("min_confidence"), "{msg}");
+        let saved = Config::load(&cfg_path).unwrap();
+        assert_eq!(saved.models[1].confidence_threshold, Some(0.35));
+        assert_eq!(saved.models[0].confidence_threshold, None);
+        assert_eq!(*st.config_read(), saved);
+        // The status view shows the effective thresholds.
+        let (_, v) = call(&st, get("/v1/benchmark")).await;
+        assert_eq!(
+            v["config"]["models"][1]["confidenceThreshold"]
+                .as_f64()
+                .unwrap() as f32,
+            0.35
+        );
+        assert_eq!(v["config"]["models"][0]["ownThreshold"], false);
+
+        // Invalid input changes nothing.
+        for body in [
+            "model=dfine-s&threshold=0",
+            "model=dfine-s&threshold=1.5",
+            "model=dfine-s&threshold=abc",
+            "model=zzz&threshold=0.3",
+            "model=dfine-s",
+            "",
+        ] {
+            let (s, _) = call(&st, post("/v1/benchmark/apply-threshold", body)).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(Config::load(&cfg_path).unwrap(), saved, "{body}");
+        }
+
+        // Every best threshold of the saved results; unconfigured models are skipped, a model
+        // without advice is left alone.
+        let mk = |name: &str, t: Option<f32>| {
+            let mut m = crate::benchmark::ModelResult::failed(name, "", String::new());
+            m.error = None;
+            m.threshold = t.map(crate::benchmark::threshold::test_advice);
+            m
+        };
+        let results = BenchmarkResults::new(
+            Default::default(),
+            Default::default(),
+            vec![
+                mk("ipcam-general", Some(0.42)),
+                mk("dfine-s", Some(0.35)),
+                mk("removed", Some(0.3)),
+                mk("none", None),
+            ],
+        );
+        results.save(&results_path(&cfg_path)).unwrap();
+        let (s, v) = call(
+            &st,
+            post("/v1/benchmark/apply-threshold", "all=1&restart=1"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["changes"].as_array().unwrap().len(), 1, "{v}");
+        assert_eq!(v["changes"][0]["model"], "ipcam-general");
+        assert_eq!(v["restarting"], true);
+        let saved = Config::load(&cfg_path).unwrap();
+        assert_eq!(saved.models[0].confidence_threshold, Some(0.42));
+        // Devices are untouched by the threshold apply.
+        assert_eq!(saved.models[0].device, None);
+        tokio::time::timeout(Duration::from_secs(5), st.restart.cancelled())
+            .await
+            .expect("restart requested");
+        // Several pairs at once (the search page's Apply all).
+        let (s, v) = call(
+            &st,
+            post(
+                "/v1/benchmark/apply-threshold",
+                "model=ipcam-general&threshold=0.3&model=dfine-s&threshold=0.25",
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["changes"].as_array().unwrap().len(), 2);
+        let (s, _) = call(
+            &st,
+            post(
+                "/v1/benchmark/apply-threshold",
+                "model=ipcam-general&threshold=0.3&model=dfine-s",
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let saved = Config::load(&cfg_path).unwrap();
+        assert_eq!(saved.models[1].confidence_threshold, Some(0.25));
+        // Back to the results' values for the check below.
+        let (s, _) = call(&st, post("/v1/benchmark/apply-threshold", "all=1")).await;
+        assert_eq!(s, StatusCode::OK);
+        // Limited to one model: nothing left to change.
+        let (s, v) = call(
+            &st,
+            post("/v1/benchmark/apply-threshold", "all=1&model=dfine-s"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(v["changes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn threshold_search_endpoint() {
+        let st = state();
+        let cfg_path = st.config_path.clone();
+        // Nothing stored yet: 400 telling to run a benchmark.
+        for req in [
+            get("/v1/benchmark/threshold-search"),
+            post("/v1/benchmark/threshold-search", "model=all"),
+        ] {
+            let (s, v) = call(&st, req).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+            assert!(
+                v["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("run a benchmark first"),
+                "{v}"
+            );
+        }
+        let (results, preds) = crate::benchmark::search::tests::fixture();
+        results.save(&results_path(&cfg_path)).unwrap();
+        // Results but no stored predictions (an older version's results): still 400.
+        let (s, _) = call(&st, post("/v1/benchmark/threshold-search", "")).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        preds
+            .save(&crate::benchmark::search::preds_path(&cfg_path))
+            .unwrap();
+
+        let (s, v) = call(&st, get("/v1/benchmark/threshold-search")).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["options"]["models"][0]["model"], "m");
+        assert_eq!(
+            v["options"]["models"][0]["devices"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(v["options"]["models"][0]["recommended"], "ort:coreml");
+        assert_eq!(v["options"]["tags"], serde_json::json!(["day", "night"]));
+        assert_eq!(v["objective"], "f1");
+
+        // A valid search (default: every model, recommended device, f1).
+        let (s, v) = call(&st, post("/v1/benchmark/threshold-search", "")).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let r = &v["results"][0];
+        assert_eq!(r["device"], "ort:coreml");
+        assert_eq!(r["best"]["threshold"].as_f64().unwrap() as f32, 0.35);
+        assert_eq!(r["grid"].as_array().unwrap().len(), 19);
+        assert!(v["csv"].as_str().unwrap().starts_with("model,device"));
+        assert!(v["elapsedMs"].as_f64().unwrap() >= 0.0);
+
+        // Filters.
+        let (s, v) = call(
+            &st,
+            post(
+                "/v1/benchmark/threshold-search",
+                "model=m&device=openvino%3Acpu&tag=night&class=person&objective=recall%3A0.5&iou=0.5",
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let r = &v["results"][0];
+        assert_eq!(r["device"], "openvino:cpu");
+        assert_eq!((r["images"].as_u64(), r["gt"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(r["objective"], "recall:0.5");
+        assert_eq!(r["classes"], serde_json::json!(["person"]));
+
+        // Bad input / nothing matching: 400 with a message.
+        for body in [
+            "objective=f9",
+            "iou=2",
+            "model=zzz",
+            "tag=fog",
+            "device=ort%3Acpu",
+        ] {
+            let (s, v) = call(&st, post("/v1/benchmark/threshold-search", body)).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{body}: {v}");
+            assert!(v["message"].is_string());
+        }
     }
 
     #[tokio::test]

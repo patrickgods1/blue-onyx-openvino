@@ -5,6 +5,7 @@
 use super::grade::{Grade, Grades};
 use super::images::{GroundTruth, ImageSet, SetKind};
 use super::metrics::GtBox;
+use super::threshold::{Objective, ThresholdAdvice};
 use super::{Bench, Comparison, Detection, Job, MATCH_IOU, REFERENCE_DEVICES, RunResult, compare};
 use crate::backend::spec::Device;
 use anyhow::{Context, Result};
@@ -184,6 +185,10 @@ impl DeviceResult {
     }
 }
 
+/// Accuracy scores (0..1) this close to a model's best count as equally accurate when picking
+/// its device.
+pub const ACCURACY_TIE: f64 = 0.015;
+
 /// The recommended device of a model and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recommendation {
@@ -192,8 +197,8 @@ pub struct Recommendation {
 }
 
 /// The best device among those that ran and whose detections agree with the CPU reference:
-/// best overall grade ([`Grades::rank_cmp`]: grade points, then accuracy, then full-request
-/// p50). When the `configured` device is eligible, as accurate (accuracy score within 0.01) and
+/// the fastest full-request p50 among those as accurate as the best (within
+/// [`ACCURACY_TIE`]). When the `configured` device is eligible, as accurate (accuracy score within 0.01) and
 /// within `margin` (fraction, e.g. [`NOISE_MARGIN`]) of the best p50, it is kept: the difference
 /// is noise.
 pub fn recommend(
@@ -212,9 +217,27 @@ pub fn recommend(
             Some((d, g))
         })
         .collect();
+    // Devices of one model whose detections agree differ in accuracy only by numeric noise
+    // (OpenVINO's f16 CPU inference on ARM moves AP by ~1 point), so accuracy within
+    // ACCURACY_TIE of the best counts as equal and the fastest of those wins. Letter grades are
+    // too coarse here: 14 ms and 35 ms are both speed A.
+    let top_acc = eligible
+        .iter()
+        .filter_map(|(_, g)| g.accuracy_score)
+        .max_by(f64::total_cmp);
+    let as_accurate = |g: &Grades| match (top_acc, g.accuracy_score) {
+        (Some(top), Some(a)) => a >= top - ACCURACY_TIE,
+        (Some(_), None) => false,
+        (None, _) => true,
+    };
     let Some((best, bg)) = eligible
         .iter()
-        .min_by(|a, b| Grades::rank_cmp(&a.1, &b.1))
+        .filter(|(_, g)| as_accurate(g))
+        .min_by(|a, b| {
+            a.1.p50_ms
+                .total_cmp(&b.1.p50_ms)
+                .then_with(|| Grades::rank_cmp(&a.1, &b.1))
+        })
         .map(|(d, g)| (*d, *g))
     else {
         let reason = if devices.iter().any(DeviceResult::ok) {
@@ -266,15 +289,22 @@ pub fn recommend(
             ),
         };
     }
+    // Compared with the fastest other eligible device.
     let runner_up = eligible
         .iter()
         .filter(|(d, _)| d.device != best.device)
-        .min_by(|a, b| Grades::rank_cmp(&a.1, &b.1));
+        .min_by(|a, b| a.1.p50_ms.total_cmp(&b.1.p50_ms));
     let vs = match runner_up {
-        Some((d, g)) => format!(
+        Some((d, g)) if g.p50_ms >= bg.p50_ms => format!(
             ", {:.2}x faster than {} ({:.1} ms)",
             g.p50_ms / bg.p50_ms.max(1e-9),
             d.device,
+            g.p50_ms
+        ),
+        Some((d, g)) => format!(
+            "; {} is {:.2}x faster ({:.1} ms) but less accurate",
+            d.device,
+            bg.p50_ms / g.p50_ms.max(1e-9),
             g.p50_ms
         ),
         None => String::new(),
@@ -324,6 +354,12 @@ pub struct ModelResult {
     /// Why the model could not be benchmarked at all (e.g. the file is missing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// What the best confidence threshold optimizes (config `benchmark.threshold_objective`).
+    #[serde(default)]
+    pub threshold_objective: Objective,
+    /// Best confidence threshold (from the recommended device's curves).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<ThresholdAdvice>,
 }
 
 impl ModelResult {
@@ -346,6 +382,8 @@ impl ModelResult {
             recommended: None,
             recommendation: String::new(),
             error: None,
+            threshold_objective: Objective::default(),
+            threshold: None,
         }
     }
 
@@ -368,6 +406,8 @@ impl ModelResult {
             recommended: None,
             recommendation: String::new(),
             error: Some(error),
+            threshold_objective: Objective::default(),
+            threshold: None,
         }
     }
 
@@ -410,6 +450,17 @@ impl ModelResult {
             ),
             None => rec.reason,
         };
+        self.threshold = super::threshold::advise(
+            &self.devices,
+            self.recommended.as_deref(),
+            self.threshold_objective,
+        );
+        if self.recommended.is_some()
+            && let Some(t) = self.threshold.as_ref().and_then(ThresholdAdvice::summary)
+        {
+            self.recommendation.push_str("; ");
+            self.recommendation.push_str(&t);
+        }
     }
 
     /// Grades of the recommended device.
@@ -418,12 +469,17 @@ impl ModelResult {
         self.devices.iter().find(|d| d.device == rec)?.grades()
     }
 
-    /// A copy without per-image details (for polling).
+    /// A copy without per-image details and per-device threshold curves (for polling; the
+    /// threshold advice keeps the chosen device's curve).
     pub fn summary(&self) -> Self {
         let mut m = self.clone();
         for d in &mut m.devices {
             if let Some(r) = d.run.as_mut() {
                 r.per_image.clear();
+                r.eval_preds.clear();
+                if let Some(a) = r.accuracy.as_mut() {
+                    a.sweep = None;
+                }
             }
         }
         m
@@ -583,6 +639,14 @@ pub struct BenchmarkResults {
     pub image_sets: Vec<ImageSetInfo>,
 }
 
+/// `name` is in `only` (normalized names), or `only` is None.
+fn wanted(only: Option<&[String]>, name: &str) -> bool {
+    only.is_none_or(|o| {
+        o.iter()
+            .any(|n| crate::registry::normalize_name(n) == crate::registry::normalize_name(name))
+    })
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -739,6 +803,19 @@ impl BenchmarkResults {
             .find(|m| crate::registry::normalize_name(&m.model) == key)
     }
 
+    /// `(model, best confidence threshold)` of every model with threshold advice, optionally
+    /// limited to `only` (normalized names).
+    pub fn thresholds(&self, only: Option<&[String]>) -> Vec<(String, f32)> {
+        self.models
+            .iter()
+            .filter(|m| wanted(only, &m.model))
+            .filter_map(|m| {
+                let t = m.threshold.as_ref()?.apply_value()?;
+                Some((m.model.clone(), t))
+            })
+            .collect()
+    }
+
     /// `(model, recommended device)` of every model with a recommendation, optionally limited
     /// to `only` (normalized names).
     pub fn recommendations(&self, only: Option<&[String]>) -> Vec<(String, String)> {
@@ -820,6 +897,7 @@ mod tests {
             grades: Some(Grades::new(None, p50, Default::default(), false)),
             agreement: None,
             per_image: Vec::new(),
+            eval_preds: Vec::new(),
         }
     }
 
@@ -851,6 +929,8 @@ mod tests {
             recommended: None,
             recommendation: String::new(),
             error: None,
+            threshold_objective: Objective::default(),
+            threshold: None,
         };
         m.finish();
         m
@@ -1132,6 +1212,37 @@ mod tests {
         );
         assert_eq!(m.recommended.as_deref(), Some("ort:coreml"));
 
+        // Same letter grades and accuracy within noise (yolo26n: OpenVINO f16 on ARM is ~1 AP
+        // off): the clearly faster device wins, and the reason reads as a speedup.
+        let m = model(
+            vec![
+                graded("ort:coreml", 14.4, Some(0.481)),
+                graded("openvino:cpu", 35.0, Some(0.490)),
+                graded("ort:cpu", 33.7, Some(0.481)),
+            ],
+            None,
+        );
+        assert_eq!(m.recommended.as_deref(), Some("ort:coreml"));
+        assert!(
+            m.recommendation.contains("2.34x faster than ort:cpu"),
+            "{}",
+            m.recommendation
+        );
+        // A faster but clearly less accurate device loses, and the reason says so.
+        let m = model(
+            vec![
+                graded("ort:coreml", 40.0, Some(0.55)),
+                graded("openvino:cpu", 60.0, Some(0.75)),
+            ],
+            None,
+        );
+        assert!(
+            m.recommendation
+                .contains("ort:coreml is 1.50x faster (40.0 ms) but less accurate"),
+            "{}",
+            m.recommendation
+        );
+
         let mut a = model(vec![graded("openvino:cpu", 30.0, Some(0.5))], None);
         a.model = "small".into();
         let mut b = model(vec![graded("ort:coreml", 45.0, Some(0.8))], None);
@@ -1213,5 +1324,150 @@ mod tests {
         assert_eq!(info.image_path("a.jpg"), Some("/data/s/a.jpg".into()));
         assert_eq!(info.image_path("b.jpg"), None);
         assert_eq!(info.image_path("../a.jpg"), None);
+    }
+
+    /// A run with an accuracy report whose sweep comes from `preds` (confidence, TP) over
+    /// `objects` objects.
+    fn with_sweep(mut d: DeviceResult, objects: usize, preds: &[(f32, bool)]) -> DeviceResult {
+        use super::super::metrics::{Breakpoints, SweepImage, SweepPred, SweepScope};
+        use super::super::threshold::{Curve, ThresholdSweep, exact_pick, objectives};
+        let img = SweepImage {
+            gt: vec![("person".into(), false); objects],
+            preds: preds
+                .iter()
+                .map(|&(confidence, tp)| SweepPred {
+                    confidence,
+                    class: "person".into(),
+                    tp,
+                    small: false,
+                })
+                .collect(),
+        };
+        let bp = Breakpoints::new(&[&img], SweepScope::All);
+        let curve = |key: &str| Curve {
+            key: key.into(),
+            images: 1,
+            gt: objects,
+            relative: false,
+            points: super::super::metrics::SWEEP_THRESHOLDS
+                .iter()
+                .map(|&t| bp.point_at(t))
+                .collect(),
+            configured: bp.point_at(0.5),
+            picks: objectives(Objective::F1)
+                .iter()
+                .filter_map(|o| exact_pick(&bp, *o))
+                .collect(),
+            exact: bp.decimated(50),
+        };
+        let run = d.run.as_mut().unwrap();
+        run.accuracy = Some(super::super::AccuracyReport {
+            ground_truth: "ground truth".into(),
+            relative: false,
+            classes: vec!["person".into()],
+            threshold: 0.5,
+            overall: Default::default(),
+            by_dataset: vec![],
+            by_tag: vec![],
+            all_classes: None,
+            sweep: Some(ThresholdSweep {
+                configured: 0.5,
+                overall: curve("overall"),
+                by_dataset: vec![curve("exdark-night")],
+                by_tag: vec![],
+                per_class: vec![curve("person")],
+            }),
+        });
+        d
+    }
+
+    #[test]
+    fn threshold_advice_from_the_recommended_device() {
+        // CPU (reference) and a faster CoreML that agrees: CoreML is recommended and its curve
+        // is used. Kept sets: CPU best keeps down to 0.45, CoreML down to 0.35.
+        let cpu = with_sweep(
+            dev("openvino:cpu", 50.0, scene()),
+            3,
+            &[(0.9, true), (0.6, true), (0.45, true), (0.2, false)],
+        );
+        let coreml = with_sweep(
+            dev("ort:coreml", 10.0, scene()),
+            3,
+            &[
+                (0.9, true),
+                (0.6, true),
+                (0.55, false),
+                (0.35, true),
+                (0.2, false),
+            ],
+        );
+        let m = model(vec![cpu, coreml], None);
+        assert_eq!(m.recommended.as_deref(), Some("ort:coreml"));
+        let a = m.threshold.as_ref().unwrap();
+        assert_eq!(a.device, "ort:coreml");
+        assert_eq!(a.objective, "f1");
+        let best = a.best.as_ref().unwrap();
+        // F1: {.9,.6} .8, {+.55 FP} .667, {+.35} .857, {+.2 FP} .75 -> (0.2, 0.35] -> 0.27.
+        assert_eq!(best.exact_threshold, Some(0.35));
+        assert_eq!(best.threshold, 0.27);
+        assert_eq!(a.configured.threshold, 0.5);
+        assert_eq!(a.by_device.len(), 2);
+        let cpu_best = a.by_device[0].best.as_ref().unwrap();
+        assert_eq!(cpu_best.exact_threshold, Some(0.45));
+        assert_eq!(a.alternatives.len(), 3);
+        assert_eq!(a.by_dataset[0].key, "exdark-night");
+        assert_eq!(a.per_class[0].key, "person");
+        assert!(!a.exact.is_empty() && a.curve.len() == 19);
+        assert!(
+            m.recommendation
+                .contains("P/R at the best confidence threshold 0.27 (F1)"),
+            "{}",
+            m.recommendation
+        );
+        assert!(m.recommendation.contains("at the configured 0.50"));
+        // Polling summary: no per-device curves, the advice stays.
+        let s = m.summary();
+        assert!(s.devices.iter().all(|d| {
+            d.run
+                .as_ref()
+                .unwrap()
+                .accuracy
+                .as_ref()
+                .unwrap()
+                .sweep
+                .is_none()
+        }));
+        assert_eq!(s.threshold, m.threshold);
+        let r = BenchmarkResults::new(Default::default(), Default::default(), vec![m.clone()]);
+        assert_eq!(r.thresholds(None), [("m".to_string(), 0.27)]);
+        assert!(r.thresholds(Some(&["other".into()])).is_empty());
+
+        // Another objective: F2 favors the lower threshold that finds everything.
+        let mut m2 = m.clone();
+        m2.threshold_objective = Objective::F2;
+        m2.finish();
+        let b2 = m2.threshold.as_ref().unwrap().best.as_ref().unwrap();
+        assert_eq!(b2.objective, "f2");
+        assert!(b2.point.recall.unwrap() >= best.point.recall.unwrap());
+
+        // Results of older versions (no sweep, no advice fields) still load.
+        let mut v = serde_json::to_value(&m).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("threshold");
+        o.remove("threshold_objective");
+        for d in o["devices"].as_array_mut().unwrap() {
+            d["run"]["accuracy"]
+                .as_object_mut()
+                .unwrap()
+                .remove("sweep");
+        }
+        let mut old: ModelResult = serde_json::from_value(v).unwrap();
+        assert!(old.threshold.is_none());
+        assert_eq!(old.threshold_objective, Objective::F1);
+        old.finish();
+        assert!(old.threshold.is_none());
+        // A round trip keeps everything.
+        let back: ModelResult = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
     }
 }

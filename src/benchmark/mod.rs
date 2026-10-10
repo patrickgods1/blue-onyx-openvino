@@ -12,7 +12,9 @@
 //! detections against a CPU reference device and recommends a device ([`report::recommend`]).
 //! [`report`] holds the persisted results (`benchmark.json` next to the config file),
 //! [`service`] the background run behind `/v1/benchmark`, [`cli`] the command line, and
-//! [`export`] the standalone HTML / Markdown report.
+//! [`export`] the standalone HTML / Markdown report. [`threshold`] sweeps the confidence
+//! threshold over the same low-threshold predictions (no extra inference) and picks the best
+//! threshold per model.
 //!
 //! Runtimes are shared through a `Mutex<Runtimes>` that is held only while compiling, so the
 //! server can benchmark through the registry's own runtimes (one OpenVINO `Core`, the ONNX
@@ -24,7 +26,9 @@ pub mod grade;
 pub mod images;
 pub mod metrics;
 pub mod report;
+pub mod search;
 pub mod service;
+pub mod threshold;
 
 pub use report::{
     Agreement, BenchmarkResults, DeviceResult, ModelResult, NOISE_MARGIN, RESULTS_FILE,
@@ -242,6 +246,10 @@ pub struct AccuracyReport {
     /// model has no other classes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all_classes: Option<AllClasses>,
+    /// Precision / recall / F1 / F2 over confidence thresholds (results of older versions
+    /// have none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep: Option<threshold::ThresholdSweep>,
 }
 
 /// AP over all of a model's classes.
@@ -255,13 +263,13 @@ pub struct AllClasses {
 
 /// One image in a class map's label space: ground truth per original object (None = not
 /// scored) and the evaluation input. Applies the set's `scored_labels`.
-fn eval_input(
+pub(crate) fn eval_input(
     map: &ClassMap,
-    set: &ImageSet,
+    scored_labels: Option<&[String]>,
     gt: &[GtBox],
     eval_preds: &[PredBox],
 ) -> (Vec<Option<GtBox>>, EvalImage, Option<Vec<String>>) {
-    let allowed = set.scored_labels.as_ref().map(|l| map.restrict(l));
+    let allowed = scored_labels.map(|l| map.restrict(l));
     let ok = |c: &str| allowed.as_ref().is_none_or(|a| a.iter().any(|x| x == c));
     let mapped: Vec<Option<GtBox>> = gt
         .iter()
@@ -331,6 +339,11 @@ pub struct RunResult {
     pub agreement: Option<Agreement>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub per_image: Vec<ImageRun>,
+    /// Per image (same order as `per_image`): the predictions at the evaluation threshold in
+    /// a scored class (labelled with it), in post-processing order. Not in `benchmark.json`: persisted in
+    /// [`search::PREDS_FILE`] for the threshold search.
+    #[serde(skip)]
+    pub eval_preds: Vec<Vec<PredBox>>,
 }
 
 /// Detections of one run matched against another's (`--compare-cpu`, agreement).
@@ -635,6 +648,8 @@ pub struct Bench<'a> {
     /// Called at every phase change and after every iteration.
     pub progress: Option<&'a (dyn Fn(&Progress) + Sync)>,
     pub weights: Weights,
+    /// What the best confidence threshold optimizes (exact picks are computed per run).
+    pub threshold_objective: threshold::Objective,
 }
 
 /// One request's timings (decode, preprocess, infer, postprocess; ms).
@@ -686,6 +701,7 @@ impl<'a> Bench<'a> {
             cancel: None,
             progress: None,
             weights: Weights::default(),
+            threshold_objective: threshold::Objective::default(),
         }
     }
 
@@ -948,7 +964,14 @@ impl<'a> Bench<'a> {
         let loop_s = loop_time.as_secs_f64();
 
         let total = Stats::from_samples(&samples[4]);
-        let (accuracy, accuracy_note) = score(job, &all, &mut per_image, &eval_preds, threshold);
+        let (accuracy, accuracy_note) = score(
+            job,
+            &all,
+            &mut per_image,
+            &eval_preds,
+            threshold,
+            self.threshold_objective,
+        );
         let accuracy_score = accuracy.as_ref().and_then(|a| {
             let small = a
                 .overall
@@ -1020,6 +1043,10 @@ impl<'a> Bench<'a> {
             grades: Some(grades),
             agreement: None,
             per_image,
+            eval_preds: {
+                let map = ClassMap::for_model(&job.classes);
+                eval_preds.iter().map(|v| map.map_preds(v)).collect()
+            },
         })
     }
 }
@@ -1033,6 +1060,7 @@ fn score(
     per_image: &mut [ImageRun],
     eval_preds: &[Vec<PredBox>],
     threshold: f32,
+    objective: threshold::Objective,
 ) -> (Option<AccuracyReport>, Option<String>) {
     let map = ClassMap::for_model(&job.classes);
     if map.is_empty() {
@@ -1054,7 +1082,8 @@ fn score(
             evals.push(None);
             continue;
         };
-        let (mapped, eval, allowed) = eval_input(&map, set, gt, &eval_preds[k]);
+        let (mapped, eval, allowed) =
+            eval_input(&map, set.scored_labels.as_deref(), gt, &eval_preds[k]);
         let gt_list = eval.gt.clone();
         // Drill-down flags on the stored (production) predictions.
         let run = &mut per_image[k];
@@ -1119,7 +1148,15 @@ fn score(
             .iter()
             .filter_map(|&k| {
                 let gt = all[k].1.gt.as_ref()?;
-                Some(eval_input(&all_map, all[k].0, gt, &eval_preds[k]).1)
+                Some(
+                    eval_input(
+                        &all_map,
+                        all[k].0.scored_labels.as_deref(),
+                        gt,
+                        &eval_preds[k],
+                    )
+                    .1,
+                )
             })
             .collect();
         let s = metrics::evaluate(&imgs, &all_map.classes, threshold);
@@ -1174,6 +1211,15 @@ fn score(
             Breakdown::of(t, &sum, relative)
         })
         .collect();
+    let sweep = threshold_sweep(
+        all,
+        &evals,
+        &chosen,
+        relative,
+        &map.classes,
+        threshold,
+        objective,
+    );
     (
         Some(AccuracyReport {
             ground_truth,
@@ -1184,9 +1230,96 @@ fn score(
             by_dataset,
             by_tag,
             all_classes,
+            sweep: Some(sweep),
         }),
         None,
     )
+}
+
+/// Threshold curves of a run from its evaluation inputs (`evals`, None = image not scored):
+/// overall (over `chosen`, the images of the overall score), per dataset, per tag of
+/// [`threshold::SWEEP_TAGS`], for small objects and per class.
+fn threshold_sweep(
+    all: &[(&ImageSet, &images::SetImage)],
+    evals: &[Option<EvalImage>],
+    chosen: &[usize],
+    relative: bool,
+    classes: &[String],
+    configured: f32,
+    objective: threshold::Objective,
+) -> threshold::ThresholdSweep {
+    use metrics::{SWEEP_THRESHOLDS, SweepImage, SweepScope, ThresholdPoint};
+    let matched: Vec<Option<SweepImage>> = evals
+        .iter()
+        .map(|e| e.as_ref().map(SweepImage::of))
+        .collect();
+    let objectives = threshold::objectives(objective);
+    let curve = |key: &str, ks: &[usize], scope: SweepScope, relative: bool| {
+        let imgs: Vec<&SweepImage> = ks.iter().filter_map(|&k| matched[k].as_ref()).collect();
+        let bp = metrics::Breakpoints::new(&imgs, scope);
+        threshold::Curve {
+            key: key.to_string(),
+            images: imgs.len(),
+            gt: bp.npos,
+            relative,
+            points: SWEEP_THRESHOLDS.iter().map(|&t| bp.point_at(t)).collect(),
+            configured: ThresholdPoint::new(configured, bp.counts_at(configured), imgs.len()),
+            picks: objectives
+                .iter()
+                .filter_map(|o| threshold::exact_pick(&bp, *o))
+                .collect(),
+            exact: Vec::new(),
+        }
+    };
+    let mut by_dataset = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for (s, _) in all {
+        if seen.contains(&s.id.as_str()) {
+            continue;
+        }
+        seen.push(&s.id);
+        let ks: Vec<usize> = (0..all.len())
+            .filter(|&k| all[k].0.id == s.id && matched[k].is_some())
+            .collect();
+        if !ks.is_empty() {
+            by_dataset.push(curve(
+                &s.id,
+                &ks,
+                SweepScope::All,
+                !s.ground_truth.is_real(),
+            ));
+        }
+    }
+    let mut by_tag = Vec::new();
+    for tag in threshold::SWEEP_TAGS {
+        let ks: Vec<usize> = chosen
+            .iter()
+            .copied()
+            .filter(|&k| all[k].1.tags.iter().any(|t| t == tag))
+            .collect();
+        if !ks.is_empty() {
+            by_tag.push(curve(tag, &ks, SweepScope::All, relative));
+        }
+    }
+    let small = curve(threshold::SMALL_KEY, chosen, SweepScope::Small, relative);
+    if small.gt > 0 {
+        by_tag.push(small);
+    }
+    let mut overall = curve("overall", chosen, SweepScope::All, relative);
+    let imgs: Vec<&SweepImage> = chosen.iter().filter_map(|&k| matched[k].as_ref()).collect();
+    overall.exact =
+        metrics::Breakpoints::new(&imgs, SweepScope::All).decimated(threshold::EXACT_POINTS);
+    threshold::ThresholdSweep {
+        configured,
+        overall,
+        by_dataset,
+        by_tag,
+        per_class: classes
+            .iter()
+            .map(|c| curve(c, chosen, SweepScope::Class(c), relative))
+            .filter(|c| c.gt > 0)
+            .collect(),
+    }
 }
 
 /// Fill the ground truth of every set without it with the detections of `reference` on
@@ -1221,6 +1354,7 @@ pub fn pseudo_ground_truth(
         cancel: bench.cancel,
         progress: bench.progress,
         weights: bench.weights,
+        threshold_objective: bench.threshold_objective,
     };
     let run = pb
         .run_exact(runtimes, &job, device)
@@ -1273,6 +1407,8 @@ pub struct SweepOptions {
     /// The device the model is configured to run on (kept when within the noise margin of the
     /// best; marked in the UI).
     pub configured: Option<String>,
+    /// What the best confidence threshold optimizes.
+    pub threshold_objective: threshold::Objective,
 }
 
 /// Run `job` on every chosen device, compare detections with the CPU reference device (OpenVINO
@@ -1290,6 +1426,7 @@ pub fn sweep(
 ) -> Result<ModelResult> {
     let selection = lock(runtimes).selection(Some(&job.path));
     let mut result = ModelResult::new(job, bench, opts.configured.clone());
+    result.threshold_objective = opts.threshold_objective;
 
     // (selection order, device, label, why it cannot run).
     let mut planned: Vec<(usize, Device, String, Option<String>)> = Vec::new();
@@ -1646,7 +1783,14 @@ mod tests {
                 counts: None,
             })
             .collect();
-        let (acc, note) = score(&job, &all, &mut per_image, &[eval.clone(), eval], 0.5);
+        let (acc, note) = score(
+            &job,
+            &all,
+            &mut per_image,
+            &[eval.clone(), eval],
+            0.5,
+            Default::default(),
+        );
         assert!(note.is_none());
         let acc = acc.unwrap();
         // Real ground truth wins for the overall score.
@@ -1674,7 +1818,7 @@ mod tests {
         let all = vec![(&pseudo, &pseudo.images[0])];
         let mut pi = vec![per_image[1].clone()];
         let ev = vec![pred("dog", 0.9, [1.0, 1.0, 100.0, 100.0])];
-        let (acc, _) = score(&job, &all, &mut pi, &[ev], 0.5);
+        let (acc, _) = score(&job, &all, &mut pi, &[ev], 0.5, Default::default());
         let acc = acc.unwrap();
         assert!(acc.relative);
         assert_eq!(
@@ -1687,11 +1831,11 @@ mod tests {
             classes: vec!["package".into()],
             ..job.clone()
         };
-        let (acc, note) = score(&pkg, &all, &mut pi, &[vec![]], 0.5);
+        let (acc, note) = score(&pkg, &all, &mut pi, &[vec![]], 0.5, Default::default());
         assert!(acc.is_none() && note.unwrap().contains("CCTV"));
         let bare = ImageSet::sample();
         let all = vec![(&bare, &bare.images[0])];
-        let (acc, note) = score(&job, &all, &mut pi, &[vec![]], 0.5);
+        let (acc, note) = score(&job, &all, &mut pi, &[vec![]], 0.5, Default::default());
         assert!(acc.is_none() && note.unwrap().contains("no ground truth"));
     }
 
@@ -1732,6 +1876,11 @@ mod tests {
         let eval = vec![
             p("car", [0.0, 0.0, 100.0, 100.0]),
             p("person", [500.0, 0.0, 600.0, 100.0]),
+            // A low-confidence false positive: only in the threshold curve below 0.5.
+            PredBox {
+                confidence: 0.3,
+                ..p("car", [700.0, 0.0, 800.0, 100.0])
+            },
         ];
         let all = vec![(&set, &set.images[0])];
         let mut pi = vec![ImageRun {
@@ -1751,7 +1900,7 @@ mod tests {
             gt_matched: vec![],
             counts: None,
         }];
-        let (acc, _) = score(&job, &all, &mut pi, &[eval], 0.5);
+        let (acc, _) = score(&job, &all, &mut pi, &[eval], 0.5, Default::default());
         let acc = acc.unwrap();
         assert_eq!(
             (
@@ -1767,6 +1916,31 @@ mod tests {
         let all_c = acc.all_classes.unwrap();
         assert_eq!(all_c.classes, 1);
         assert!((all_c.ap50.unwrap() - 1.0).abs() < 1e-12);
+
+        // Threshold sweep: the person prediction and person object are out of scope.
+        let sw = acc.sweep.unwrap();
+        assert_eq!(sw.configured, 0.5);
+        let at = |t: f32| {
+            let p = sw.overall.points.iter().find(|p| p.threshold == t).unwrap();
+            (p.counts.tp, p.counts.fp, p.counts.fn_)
+        };
+        assert_eq!(at(0.25), (1, 1, 0));
+        assert_eq!(at(0.5), (1, 0, 0));
+        assert_eq!(at(0.95), (0, 0, 1));
+        assert_eq!(sw.overall.gt, 1);
+        assert_eq!(sw.overall.configured.counts, acc.overall.counts);
+        assert_eq!(sw.by_dataset.len(), 1);
+        let classes: Vec<&str> = sw.per_class.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(classes, ["car"]);
+        assert!(!sw.overall.exact.is_empty());
+        // F1 1 for thresholds in (0.3, 0.9]: midpoint 0.6.
+        let best = sw.overall.best(threshold::Objective::F1).unwrap();
+        assert_eq!(best.exact_threshold, Some(0.9));
+        assert_eq!(best.plateau, Some([0.3, 0.9]));
+        assert_eq!(best.threshold, 0.6);
+        assert_eq!(best.point.f1, Some(1.0));
+        // Every standard objective has an exact pick.
+        assert_eq!(sw.overall.picks.len(), 3);
     }
 
     #[test]
@@ -1812,6 +1986,7 @@ mod tests {
         let opts = SweepOptions {
             devices: Some(REFERENCE_DEVICES.to_vec()),
             configured: None,
+            ..Default::default()
         };
         let mut seen = 0;
         let r = sweep(&bench, &rt, &job, &opts, &mut |_| seen += 1).unwrap();

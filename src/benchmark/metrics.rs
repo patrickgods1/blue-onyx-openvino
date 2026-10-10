@@ -15,6 +15,17 @@
 //! a false positive; ignored ground truth is never a miss. AP is the mean, over the 101 recall
 //! points 0, 0.01, .., 1, of the interpolated (monotone envelope) precision; classes without
 //! ground truth are left out of the mean.
+//!
+//! Threshold sweep ([`SweepImage`], [`threshold_curve`]): TP / FP / FN, precision, recall, F1,
+//! F2 and false positives per image at every confidence threshold of [`SWEEP_THRESHOLDS`],
+//! from one matching of the low-threshold predictions. This is exact, not an approximation:
+//! greedy matching visits predictions by descending confidence, so whether a prediction is a
+//! true positive (and which object it takes) depends only on the predictions at least as
+//! confident as it is, all of which survive any threshold it survives. Matching the
+//! predictions at or above `t` therefore gives the same outcome for each of them as matching
+//! everything and keeping those at or above `t`. The same holds for the families' post-processing
+//! (see `Bench::time`): greedy NMS keeps or drops a box based only on more confident boxes, and
+//! the DETR top-Q selection keeps a prefix of the confidence order.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -35,6 +46,65 @@ pub const CCTV_CLASSES: [&str; 10] = [
 
 /// Model labels that stand for several ground-truth classes.
 pub const CLASS_GROUPS: [(&str, &[&str]); 1] = [("vehicle", &["car", "truck", "bus"])];
+
+/// Fine-grained model labels that stand for one scored class: a label any of whose words
+/// (split on spaces and hyphens) is listed counts as that class. ipcam-bird labels bird
+/// species ("Blue Jay", "Eastern Screech-Owl", ...); "Purple Squirrel" matches nothing.
+pub const SPECIES: [(&str, &[&str]); 1] = [(
+    "bird",
+    &[
+        "bird",
+        "blackbird",
+        "bluebird",
+        "bunting",
+        "cardinal",
+        "chickadee",
+        "crow",
+        "dove",
+        "duck",
+        "eagle",
+        "falcon",
+        "finch",
+        "flicker",
+        "goldfinch",
+        "goose",
+        "grackle",
+        "gull",
+        "hawk",
+        "heron",
+        "hummingbird",
+        "jay",
+        "junco",
+        "kestrel",
+        "magpie",
+        "mockingbird",
+        "nuthatch",
+        "oriole",
+        "owl",
+        "parrot",
+        "pigeon",
+        "robin",
+        "sparrow",
+        "starling",
+        "swallow",
+        "tanager",
+        "thrush",
+        "towhee",
+        "warbler",
+        "woodpecker",
+        "wren",
+    ],
+)];
+
+/// The scored class a fine-grained label belongs to ([`SPECIES`]), if any.
+pub fn species_class(label: &str) -> Option<&'static str> {
+    let l = canonical_label(label);
+    let words: Vec<&str> = l.split([' ', '-']).filter(|w| !w.is_empty()).collect();
+    SPECIES
+        .iter()
+        .find(|(_, names)| words.iter().any(|w| names.contains(w)))
+        .map(|(class, _)| *class)
+}
 
 /// IoU thresholds of AP@[0.5:0.95].
 pub const IOU_THRESHOLDS: [f32; 10] = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95];
@@ -130,6 +200,18 @@ impl ClassMap {
                 m.pred.insert(c.to_string(), c.to_string());
             }
         }
+        for l in &labels {
+            if m.pred.contains_key(l) {
+                continue;
+            }
+            if let Some(class) = species_class(l) {
+                if !m.classes.iter().any(|c| c == class) {
+                    m.classes.push(class.to_string());
+                    m.gt.insert(class.to_string(), class.to_string());
+                }
+                m.pred.insert(l.clone(), class.to_string());
+            }
+        }
         for (group, members) in CLASS_GROUPS {
             if has(group) {
                 m.classes.push(group.to_string());
@@ -217,6 +299,8 @@ pub struct ImageMatch {
     pub pred: Vec<Option<bool>>,
     /// Per ground-truth box (input order): matched. Ignored boxes are always false.
     pub gt_matched: Vec<bool>,
+    /// Per prediction (input order): index of the ground-truth box it matched (true positives).
+    pub pred_gt: Vec<Option<usize>>,
 }
 
 /// Greedy COCO matching of `preds` (any order; matched by descending confidence) against `gt`,
@@ -227,6 +311,7 @@ pub fn match_image(preds: &[PredBox], gt: &[GtBox], iou_thr: f32) -> ImageMatch 
     let mut out = ImageMatch {
         pred: vec![Some(false); preds.len()],
         gt_matched: vec![false; gt.len()],
+        pred_gt: vec![None; preds.len()],
     };
     for i in order {
         let p = &preds[i];
@@ -245,6 +330,7 @@ pub fn match_image(preds: &[PredBox], gt: &[GtBox], iou_thr: f32) -> ImageMatch 
             Some((j, _)) => {
                 out.gt_matched[j] = true;
                 out.pred[i] = Some(true);
+                out.pred_gt[i] = Some(j);
             }
             None => {
                 let in_ignored = gt
@@ -529,6 +615,280 @@ pub fn evaluate(images: &[EvalImage], classes: &[String], threshold: f32) -> Sum
     }
 }
 
+/// Confidence thresholds of the threshold sweep: 0.05 to 0.95 by 0.05.
+pub const SWEEP_THRESHOLDS: [f32; 19] = [
+    0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85,
+    0.9, 0.95,
+];
+
+impl Counts {
+    /// F-beta from the counts, `(1 + b^2) TP / ((1 + b^2) TP + b^2 FN + FP)` (beta 1 = F1,
+    /// beta 2 weighs recall four times as much as precision). None without ground truth. Unlike
+    /// [`Counts::f1`], 0 (not None) when nothing is detected: every object was missed.
+    pub fn f_beta(&self, beta: f64) -> Option<f64> {
+        if self.tp + self.fn_ == 0 {
+            return None;
+        }
+        let b2 = beta * beta;
+        let tp = (1.0 + b2) * self.tp as f64;
+        Some(tp / (tp + b2 * self.fn_ as f64 + self.fp as f64))
+    }
+}
+
+/// Counts and rates at one confidence threshold (IoU 0.5).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ThresholdPoint {
+    pub threshold: f32,
+    #[serde(flatten)]
+    pub counts: Counts,
+    /// None without detections.
+    pub precision: Option<f64>,
+    /// None without ground truth.
+    pub recall: Option<f64>,
+    /// [`Counts::f_beta`] with beta 1 and 2.
+    pub f1: Option<f64>,
+    pub f2: Option<f64>,
+    /// False positives per image (0 without images).
+    pub fp_per_image: f64,
+}
+
+impl ThresholdPoint {
+    pub fn new(threshold: f32, counts: Counts, images: usize) -> Self {
+        Self {
+            threshold,
+            counts,
+            precision: counts.precision(),
+            recall: counts.recall(),
+            f1: counts.f_beta(1.0),
+            f2: counts.f_beta(2.0),
+            fp_per_image: if images == 0 {
+                0.0
+            } else {
+                counts.fp as f64 / images as f64
+            },
+        }
+    }
+}
+
+/// A scored prediction after matching, for the threshold sweep.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SweepPred {
+    pub confidence: f32,
+    /// Scored class.
+    pub class: String,
+    pub tp: bool,
+    /// Counts in the small-object scope: a true positive of a small object, or a small false
+    /// positive.
+    pub small: bool,
+}
+
+/// One image matched once (at IoU 0.5) for the threshold sweep: its non-ignored ground truth
+/// and its scored (non-ignored) predictions.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SweepImage {
+    /// Non-ignored ground truth: (class, small).
+    pub gt: Vec<(String, bool)>,
+    pub preds: Vec<SweepPred>,
+}
+
+impl SweepImage {
+    /// Match `img` (predictions at the low evaluation threshold) once; see the module docs for
+    /// why every higher threshold follows exactly.
+    pub fn of(img: &EvalImage) -> Self {
+        Self::with_iou(img, 0.5)
+    }
+
+    /// [`SweepImage::of`] with matches at IoU >= `iou`.
+    pub fn with_iou(img: &EvalImage, iou: f32) -> Self {
+        let m = match_image(&img.preds, &img.gt, iou);
+        let is_small = |b: &BBox| area(b) < SMALL_AREA;
+        let preds = img
+            .preds
+            .iter()
+            .zip(m.pred.iter().zip(&m.pred_gt))
+            .filter_map(|(p, (r, j))| {
+                let tp = (*r)?;
+                let small = match j {
+                    Some(j) => is_small(&img.gt[*j].bbox),
+                    None => is_small(&p.bbox),
+                };
+                Some(SweepPred {
+                    confidence: p.confidence,
+                    class: p.label.clone(),
+                    tp,
+                    small,
+                })
+            })
+            .collect();
+        Self {
+            gt: img
+                .gt
+                .iter()
+                .filter(|g| !g.ignore)
+                .map(|g| (g.label.clone(), is_small(&g.bbox)))
+                .collect(),
+            preds,
+        }
+    }
+}
+
+/// Which objects and predictions a curve counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepScope<'a> {
+    /// Every scored class.
+    All,
+    /// One scored class.
+    Class(&'a str),
+    /// Small objects (< 32x32 px): recall over small ground truth; a true positive of a larger
+    /// object is not counted, and a false positive only when its box is small (COCO's area
+    /// range rule).
+    Small,
+}
+
+impl SweepScope<'_> {
+    fn gt(&self, class: &str, small: bool) -> bool {
+        match self {
+            SweepScope::All => true,
+            SweepScope::Class(c) => *c == class,
+            SweepScope::Small => small,
+        }
+    }
+
+    fn pred(&self, p: &SweepPred) -> bool {
+        self.gt(&p.class, p.small)
+    }
+}
+
+/// Counts over `images` at `threshold` (predictions with confidence >= `threshold`).
+pub fn sweep_counts(images: &[&SweepImage], scope: SweepScope, threshold: f32) -> Counts {
+    let mut c = Counts::default();
+    for img in images {
+        let npos = img.gt.iter().filter(|(l, s)| scope.gt(l, *s)).count();
+        let mut tp = 0;
+        for p in img
+            .preds
+            .iter()
+            .filter(|p| p.confidence >= threshold && scope.pred(p))
+        {
+            if p.tp {
+                tp += 1;
+            } else {
+                c.fp += 1;
+            }
+        }
+        c.tp += tp;
+        c.fn_ += npos - tp;
+    }
+    c
+}
+
+/// The curve over `thresholds`.
+pub fn threshold_curve(
+    images: &[&SweepImage],
+    scope: SweepScope,
+    thresholds: &[f32],
+) -> Vec<ThresholdPoint> {
+    thresholds
+        .iter()
+        .map(|&t| ThresholdPoint::new(t, sweep_counts(images, scope, t), images.len()))
+        .collect()
+}
+
+/// Cumulative counts at every distinct prediction confidence of a scope: precision, recall
+/// and F only change at those values, so this is the exact curve. Built with one sort and one
+/// pass with running TP / FP counts (FN = scored ground truth - TP; predictions in ignore
+/// regions are not in [`SweepImage::preds`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Breakpoints {
+    /// Scored (non-ignored) ground truth in the scope.
+    pub npos: usize,
+    pub images: usize,
+    /// `(confidence, TP, FP)` with every prediction at or above `confidence`, by descending
+    /// confidence (one entry per distinct confidence).
+    pub steps: Vec<(f32, usize, usize)>,
+}
+
+impl Breakpoints {
+    pub fn new(images: &[&SweepImage], scope: SweepScope) -> Self {
+        let mut preds: Vec<(f32, bool)> = Vec::new();
+        let mut npos = 0;
+        for img in images {
+            npos += img.gt.iter().filter(|(l, s)| scope.gt(l, *s)).count();
+            preds.extend(
+                img.preds
+                    .iter()
+                    .filter(|p| scope.pred(p))
+                    .map(|p| (p.confidence, p.tp)),
+            );
+        }
+        preds.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut steps: Vec<(f32, usize, usize)> = Vec::new();
+        let (mut tp, mut fp) = (0, 0);
+        for (i, &(c, is_tp)) in preds.iter().enumerate() {
+            if is_tp {
+                tp += 1;
+            } else {
+                fp += 1;
+            }
+            // Close the step after the last prediction of this confidence.
+            if preds.get(i + 1).is_none_or(|n| n.0 != c) {
+                steps.push((c, tp, fp));
+            }
+        }
+        Self {
+            npos,
+            images: images.len(),
+            steps,
+        }
+    }
+
+    /// Counts with the predictions at or above `t` (binary search over the steps).
+    pub fn counts_at(&self, t: f32) -> Counts {
+        let n = self.steps.partition_point(|s| s.0 >= t);
+        let (tp, fp) = match n {
+            0 => (0, 0),
+            n => (self.steps[n - 1].1, self.steps[n - 1].2),
+        };
+        Counts {
+            tp,
+            fp,
+            fn_: self.npos - tp,
+        }
+    }
+
+    pub fn point_at(&self, t: f32) -> ThresholdPoint {
+        ThresholdPoint::new(t, self.counts_at(t), self.images)
+    }
+
+    /// The exact curve (one point per distinct confidence, ascending threshold) thinned to at
+    /// most `max` points, keeping the first and the last (for charts).
+    pub fn decimated(&self, max: usize) -> Vec<ThresholdPoint> {
+        let pts: Vec<ThresholdPoint> = self
+            .steps
+            .iter()
+            .rev()
+            .map(|&(c, tp, fp)| {
+                ThresholdPoint::new(
+                    c,
+                    Counts {
+                        tp,
+                        fp,
+                        fn_: self.npos - tp,
+                    },
+                    self.images,
+                )
+            })
+            .collect();
+        if pts.len() <= max || max < 2 {
+            return pts;
+        }
+        let last = pts.len() - 1;
+        (0..max)
+            .map(|i| pts[(i * last + (max - 1) / 2) / (max - 1)])
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +936,18 @@ mod tests {
         assert_eq!(both.gt_class("bus"), Some("vehicle"));
         // No scored classes (package model).
         assert!(ClassMap::for_model(&["package".into()]).is_empty());
+        // ipcam-bird: species labels count as bird; a squirrel does not.
+        let birds = ClassMap::for_model(&[
+            "Blue Jay".into(),
+            "Eastern Screech-Owl".into(),
+            "House Finch Female".into(),
+            "Purple Squirrel".into(),
+        ]);
+        assert_eq!(birds.classes, ["bird"]);
+        assert_eq!(birds.pred_class("Blue Jay"), Some("bird"));
+        assert_eq!(birds.pred_class("Eastern Screech-Owl"), Some("bird"));
+        assert_eq!(birds.pred_class("Purple Squirrel"), None);
+        assert_eq!(birds.gt_class("bird"), Some("bird"));
     }
 
     #[test]
@@ -712,5 +1084,212 @@ mod tests {
             fn_: 3,
         };
         assert_eq!(c.f1(), Some(0.0));
+    }
+
+    #[test]
+    fn threshold_curve_hand_computed() {
+        let img = EvalImage {
+            gt: vec![
+                gt("person", [0.0, 0.0, 100.0, 200.0]),     // large
+                gt("person", [300.0, 300.0, 320.0, 320.0]), // small
+                GtBox {
+                    ignore: true,
+                    ..gt("person", [500.0, 0.0, 600.0, 100.0])
+                },
+            ],
+            preds: vec![
+                p("person", 0.9, [0.0, 0.0, 100.0, 200.0]),   // TP (large)
+                p("person", 0.7, [505.0, 5.0, 600.0, 100.0]), // in the ignore region
+                p("person", 0.6, [700.0, 0.0, 800.0, 100.0]), // FP, large box
+                p("person", 0.3, [300.0, 300.0, 320.0, 320.0]), // TP (small)
+                p("person", 0.2, [2.0, 0.0, 100.0, 200.0]),   // duplicate: FP, large box
+            ],
+        };
+        let s = SweepImage::of(&img);
+        assert_eq!(s.gt.len(), 2);
+        assert_eq!(s.preds.len(), 4, "the ignored prediction is dropped");
+        let imgs = [&s];
+        let at = |scope, t| sweep_counts(&imgs, scope, t);
+        let c = |tp, fp, fn_| Counts { tp, fp, fn_ };
+        assert_eq!(at(SweepScope::All, 0.1), c(2, 2, 0));
+        assert_eq!(at(SweepScope::All, 0.25), c(2, 1, 0));
+        assert_eq!(at(SweepScope::All, 0.5), c(1, 1, 1));
+        assert_eq!(at(SweepScope::All, 0.95), c(0, 0, 2));
+        // Small objects: only the small object and small false positives (none) count.
+        assert_eq!(at(SweepScope::Small, 0.1), c(1, 0, 0));
+        assert_eq!(at(SweepScope::Small, 0.5), c(0, 0, 1));
+        assert_eq!(at(SweepScope::Class("car"), 0.1), c(0, 0, 0));
+
+        let curve = threshold_curve(&imgs, SweepScope::All, &SWEEP_THRESHOLDS);
+        assert_eq!(curve.len(), 19);
+        let pt = |t: f32| *curve.iter().find(|p| p.threshold == t).unwrap();
+        let p25 = pt(0.25);
+        assert!((p25.precision.unwrap() - 2.0 / 3.0).abs() < 1e-12);
+        assert_eq!(p25.recall, Some(1.0));
+        assert!((p25.f1.unwrap() - 0.8).abs() < 1e-12);
+        // F2 = 5 TP / (5 TP + 4 FN + FP) = 10 / 11.
+        assert!((p25.f2.unwrap() - 10.0 / 11.0).abs() < 1e-12);
+        assert_eq!(p25.fp_per_image, 1.0);
+        let p50 = pt(0.5);
+        assert_eq!((p50.precision, p50.recall), (Some(0.5), Some(0.5)));
+        assert!((p50.f2.unwrap() - 0.5).abs() < 1e-12);
+        // Nothing detected: precision unknown, F1 0 (every object missed).
+        let p95 = pt(0.95);
+        assert_eq!(
+            (p95.precision, p95.recall, p95.f1),
+            (None, Some(0.0), Some(0.0))
+        );
+        // No ground truth: no recall, no F.
+        let car = threshold_curve(&imgs, SweepScope::Class("car"), &[0.5]);
+        assert_eq!((car[0].recall, car[0].f1), (None, None));
+    }
+
+    /// The sweep from one matching equals matching at each threshold (`image_counts`, what the
+    /// P/R at the configured threshold uses), on pseudo-random scenes with duplicates,
+    /// overlapping objects, ignore regions and several classes.
+    #[test]
+    fn threshold_curve_equals_rematching_at_each_threshold() {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rnd = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as f32 / (1u64 << 31) as f32
+        };
+        let classes = ["person", "car"];
+        let mut images = Vec::new();
+        for _ in 0..60 {
+            let mut img = EvalImage::default();
+            for _ in 0..(rnd() * 6.0) as usize {
+                let (x, y, w) = (rnd() * 300.0, rnd() * 300.0, 10.0 + rnd() * 80.0);
+                img.gt.push(GtBox {
+                    label: classes[(rnd() * 2.0) as usize % 2].into(),
+                    bbox: [x, y, x + w, y + w],
+                    ignore: rnd() < 0.15,
+                });
+            }
+            for _ in 0..(rnd() * 10.0) as usize {
+                let (x, y, w) = match img.gt.get((rnd() * 8.0) as usize) {
+                    // Near an object (sometimes a duplicate), else anywhere.
+                    Some(g) => (
+                        g.bbox[0] + rnd() * 12.0 - 6.0,
+                        g.bbox[1] + rnd() * 12.0 - 6.0,
+                        g.bbox[2] - g.bbox[0] + rnd() * 10.0 - 5.0,
+                    ),
+                    None => (rnd() * 300.0, rnd() * 300.0, 10.0 + rnd() * 80.0),
+                };
+                // Coarse confidences so ties on the grid happen.
+                let conf = ((0.05 + rnd() * 0.95) * 40.0).round() / 40.0;
+                img.preds.push(p(
+                    classes[(rnd() * 2.0) as usize % 2],
+                    conf.max(0.05),
+                    [x, y, x + w, y + w],
+                ));
+            }
+            images.push(img);
+        }
+        let sweep: Vec<SweepImage> = images.iter().map(SweepImage::of).collect();
+        let refs: Vec<&SweepImage> = sweep.iter().collect();
+        let mut nonzero = 0;
+        for t in SWEEP_THRESHOLDS.into_iter().chain([0.42, 0.5, 0.125]) {
+            let mut want = Counts::default();
+            for img in &images {
+                want.add(image_counts(img, t).0);
+            }
+            assert_eq!(sweep_counts(&refs, SweepScope::All, t), want, "t = {t}");
+            nonzero += usize::from(want.tp > 0 && want.fp > 0);
+            // Per class: the per-class P/R of `evaluate` at the same threshold.
+            let s = evaluate(&images, &["person".into(), "car".into()], t);
+            for cm in &s.per_class {
+                let c = sweep_counts(&refs, SweepScope::Class(&cm.class), t);
+                assert_eq!(
+                    (c.precision(), c.recall()),
+                    (cm.precision, cm.recall),
+                    "t = {t}"
+                );
+            }
+        }
+        assert!(nonzero > 5, "the scenes exercise true and false positives");
+    }
+
+    /// The breakpoint sweep equals brute-force counting at every breakpoint and in between,
+    /// for every scope.
+    #[test]
+    fn breakpoints_match_brute_force() {
+        let mut seed: u64 = 7;
+        let mut rnd = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as f32 / (1u64 << 31) as f32
+        };
+        let mut imgs = Vec::new();
+        for _ in 0..40 {
+            let mut img = SweepImage::default();
+            for _ in 0..(rnd() * 5.0) as usize {
+                img.gt.push((
+                    ["person", "car"][(rnd() * 2.0) as usize % 2].into(),
+                    rnd() < 0.3,
+                ));
+            }
+            for _ in 0..(rnd() * 8.0) as usize {
+                img.preds.push(SweepPred {
+                    // Coarse values so equal confidences occur.
+                    confidence: 0.05 + ((rnd() * 0.95) * 60.0).floor() / 60.0,
+                    class: ["person", "car"][(rnd() * 2.0) as usize % 2].into(),
+                    tp: rnd() < 0.5,
+                    small: rnd() < 0.3,
+                });
+            }
+            // Keep TP <= objects per class, as matching guarantees.
+            for class in ["person", "car"] {
+                for small in [false, true] {
+                    let objects = img
+                        .gt
+                        .iter()
+                        .filter(|g| g.0 == class && (!small || g.1))
+                        .count();
+                    let mut tps = 0;
+                    for p in img
+                        .preds
+                        .iter_mut()
+                        .filter(|p| p.class == class && (!small || p.small))
+                    {
+                        if p.tp {
+                            tps += 1;
+                            if tps > objects {
+                                p.tp = false;
+                            }
+                        }
+                    }
+                }
+            }
+            imgs.push(img);
+        }
+        let refs: Vec<&SweepImage> = imgs.iter().collect();
+        for scope in [SweepScope::All, SweepScope::Class("car"), SweepScope::Small] {
+            let bp = Breakpoints::new(&refs, scope);
+            assert!(bp.steps.len() > 20);
+            assert!(bp.steps.windows(2).all(|w| w[0].0 > w[1].0));
+            for &(c, _, _) in &bp.steps {
+                assert_eq!(
+                    bp.counts_at(c),
+                    sweep_counts(&refs, scope, c),
+                    "{scope:?} {c}"
+                );
+            }
+            for t in [0.0, 0.051, 0.33, 0.5, 0.999, 1.5] {
+                assert_eq!(
+                    bp.counts_at(t),
+                    sweep_counts(&refs, scope, t),
+                    "{scope:?} {t}"
+                );
+            }
+            let d = bp.decimated(10);
+            assert_eq!(d.len(), 10);
+            assert_eq!(d[0].threshold, bp.steps.last().unwrap().0);
+            assert_eq!(d[9].threshold, bp.steps[0].0);
+            assert!(d.windows(2).all(|w| w[0].threshold < w[1].threshold));
+        }
     }
 }

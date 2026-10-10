@@ -50,7 +50,7 @@ Device spec (`device` in config/model entry, `--device`): `auto` (default), `ope
 `openvino:cpu`, `openvino:npu`, `ort:cuda[:N]`, `ort:tensorrt[:N]`, `ort:directml[:N]`, `ort:coreml`,
 `ort:cpu`; legacy `GPU`/`GPU.N`/`CPU` mean `openvino:*`. `auto` ranks: NVIDIA+CUDA, Intel GPU (OpenVINO),
 AMD/other on Windows (DirectML), macOS arm64 (CoreML), CPU (`openvino:cpu`, else `ort:cpu`). TensorRT and
-NPU are never auto. RT-DETR is excluded from CoreML (aborts in ORT 1.24.4). ORT needs `.onnx` files.
+NPU are never auto. RT-DETR runs on CoreML only with every input dim pinned (a dynamic batch dim aborts MPSGraph in ORT 1.24.4). ORT needs `.onnx` files.
 
 ## Architecture (see the plan in the repo history / README for detail)
 

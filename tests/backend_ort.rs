@@ -161,16 +161,35 @@ fn rtdetr_on_ort_cpu_with_i64_input() {
         let boxes = outs.iter().find(|o| o.name == "boxes").unwrap();
         assert_eq!(boxes.shape.last(), Some(&4));
 
-        // RT-DETR is never attempted on CoreML (it aborts the process); it falls back to CPU.
-        if cfg!(target_os = "macos") {
-            let b = rt
+        // RT-DETR runs on CoreML once its batch dimension is pinned (a dynamic batch makes
+        // MPSGraph abort the process, see `unsupported_on`); same results as the CPU.
+        if cfg!(target_os = "macos") && rt.probe().ort.ep_error(spec::Target::CoreMl).is_none() {
+            let mut b = rt
                 .load(
                     &spec::parse("ort:coreml").unwrap(),
                     &req(&path, "ort:coreml"),
                 )
-                .expect("falls back to a CPU option");
-            assert!(b.info().device.fell_back);
-            assert!(b.info().device.spec.ends_with(":cpu"));
+                .expect("load rt-detr on ort:coreml");
+            assert!(!b.info().device.fell_back);
+            assert_eq!(b.info().device.spec, "ort:coreml");
+            let cm = b.infer(&chw, &extra).expect("coreml inference");
+            let scores = |o: &[blue_onyx_prism::model::NamedOutput]| match &o
+                .iter()
+                .find(|o| o.name == "scores")
+                .unwrap()
+                .data
+            {
+                OutputBuf::F32(v) => {
+                    let mut v = v.clone();
+                    v.sort_by(|a, b| b.total_cmp(a));
+                    v.truncate(20);
+                    v
+                }
+                other => panic!("expected f32 scores, got {other:?}"),
+            };
+            for (a, c) in scores(&outs).iter().zip(scores(&cm)) {
+                assert!((a - c).abs() < 1e-3, "cpu {a} vs coreml {c}");
+            }
         }
     });
 }

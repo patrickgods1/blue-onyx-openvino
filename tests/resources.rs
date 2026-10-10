@@ -342,13 +342,13 @@ fn fresh_macos_needs_coreml_flavor() {
 }
 
 #[test]
-fn rtdetr_on_macos_skips_coreml() {
+fn rtdetr_on_macos_uses_coreml() {
+    // RT-DETRv2 runs on CoreML (batch pinned to 1); OpenVINO CPU stays the fallback.
     let cfg = config(vec![model("models/rt-detrv2-s.onnx")]);
     let r = needed(&cfg, &mac(), &files_only(&cfg));
-    assert_eq!(ids(&r), [OPENVINO_RUNTIME_ID]);
-    assert_eq!(pick(&r, "rt-detrv2-s"), "openvino:cpu");
-    let skipped = &r.model("rt-detrv2-s").unwrap().skipped;
-    assert!(skipped[0].contains("RT-DETR"), "{skipped:?}");
+    assert_eq!(ids(&r), ["onnxruntime-coreml", OPENVINO_RUNTIME_ID]);
+    assert_eq!(pick(&r, "rt-detrv2-s"), "ort:coreml");
+    assert!(r.model("rt-detrv2-s").unwrap().skipped.is_empty());
 }
 
 #[test]

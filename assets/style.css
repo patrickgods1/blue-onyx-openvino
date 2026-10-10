@@ -22,6 +22,11 @@
   --lv-debug: #5d6677;
   --lv-trace: #8a93a5;
   --log-bg: #fbfcfd;
+  --chart-p: #1f5fbf;
+  --chart-r: #b35c00;
+  --chart-f1: #1d7a3e;
+  --chart-grid: #e3e6ec;
+  --chart-f2: #8e3fb0;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -47,6 +52,11 @@
     --lv-debug: #a3acbd;
     --lv-trace: #6f7889;
     --log-bg: #0f1217;
+    --chart-p: #7fb0ff;
+    --chart-r: #ffb067;
+    --chart-f1: #7fd99a;
+    --chart-grid: #2a313d;
+    --chart-f2: #d39cf0;
   }
 }
 * { box-sizing: border-box; }
@@ -267,3 +277,24 @@ figure.thumb figcaption { font-size: 0.78rem; color: var(--muted); word-break: b
   table.bench.devices td { border: none; padding: 0.15rem 0.6rem; text-align: left; white-space: normal; }
   table.bench.devices td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 0.8rem; }
 }
+
+/* Benchmark: confidence threshold chart (inline SVG). */
+.thr-chart-wrap { max-width: 560px; }
+.thr-chart { width: 100%; height: auto; background: var(--card); }
+.thr-chart .thr-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.thr-chart .thr-axis { stroke: var(--muted); stroke-width: 1; }
+.thr-chart .thr-tick { fill: var(--muted); font-size: 11px; }
+.thr-chart .thr-label { fill: var(--fg); font-size: 12px; }
+.thr-chart .thr-line { fill: none; stroke-width: 2; }
+.thr-chart .thr-p { stroke: var(--chart-p); }
+.thr-chart .thr-r { stroke: var(--chart-r); stroke-dasharray: 6 3; }
+.thr-chart .thr-f1 { stroke: var(--chart-f1); stroke-width: 2.5; }
+.thr-chart .thr-mark-best { stroke: var(--fg); stroke-width: 1.5; }
+.thr-chart .thr-mark-cfg { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.thr-chart .thr-f2 { stroke: var(--chart-f2); stroke-dasharray: 2 3; }
+.thr-chart .thr-hit { fill: transparent; pointer-events: all; cursor: crosshair; }
+.thr-chart .thr-guide { stroke: var(--muted); stroke-width: 1; }
+.thr-chart .thr-tip rect { fill: var(--card); stroke: var(--border); }
+.thr-chart .thr-tip text { fill: var(--fg); font-size: 11px; }
+table.bench tr.best-row td { background: var(--ok-bg); font-weight: 600; }
+table.bench tr.selected td:first-child { font-weight: 600; }

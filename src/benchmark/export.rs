@@ -2,10 +2,12 @@
 //! self-contained HTML page (`--report out.html`, inline CSS, light/dark, no scripts or
 //! external files). Both show the machine, the datasets, the cross-model ranking, and per model
 //! the device table with grades plus the recommended device's breakdown by dataset, tag and
-//! resolution.
+//! resolution, and the confidence-threshold sweep (best threshold per model, a compact
+//! P/R/F1/F2 table per model).
 
 use super::grade::{ACCURACY_THRESHOLDS, SMALL_RECALL_WEIGHT, SPEED_THRESHOLDS_MS};
 use super::report::{BenchmarkResults, DeviceResult, ModelResult};
+use super::threshold::{GroupPick, Pick, ThresholdAdvice, table_points};
 use super::{Breakdown, RunResult};
 use anyhow::{Context, Result, bail};
 use std::fmt::Write as _;
@@ -131,6 +133,236 @@ fn breakdown_table(title: &str, rows: &[Breakdown]) -> Table {
     }
 }
 
+fn pick_cell(p: Option<&Pick>) -> String {
+    match p {
+        Some(p) if p.met => format!("{:.2}", p.threshold),
+        Some(p) => format!("{:.2} (target not reached)", p.threshold),
+        None => "-".into(),
+    }
+}
+
+fn delta(a: Option<f64>, b: Option<f64>) -> String {
+    match (a, b) {
+        (Some(a), Some(b)) => format!("{:+.1}", (a - b) * 100.0),
+        _ => "-".into(),
+    }
+}
+
+/// The best-threshold summary across models.
+fn threshold_summary(r: &BenchmarkResults) -> Option<Section> {
+    let rows: Vec<(&ModelResult, &ThresholdAdvice)> = r
+        .models
+        .iter()
+        .filter_map(|m| m.threshold.as_ref().map(|a| (m, a)))
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let alt =
+        |a: &ThresholdAdvice, o: &str| pick_cell(a.alternatives.iter().find(|p| p.objective == o));
+    let night = |a: &ThresholdAdvice| {
+        a.by_dataset
+            .iter()
+            .chain(&a.by_tag)
+            .filter(|g| g.key.contains("night"))
+            .map(|g| format!("{} {}", g.key, pick_cell(g.best.as_ref())))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Some(Section {
+        heading: "Best confidence threshold".into(),
+        level: 2,
+        paragraphs: vec![
+            "Per model on its recommended device: precision / recall / F1 (%, IoU 0.5) at the configured threshold and at the best one for the objective. The best threshold is exact (every distinct confidence is evaluated), taken from the middle of the widest range scoring within 0.002 of the optimum and rounded down to 0.01; F2 and precision:0.9 show what those objectives would pick. Apply with `benchmark --apply-threshold` or the Benchmark page. The server threshold is what a model reports; Blue Iris may send its own min_confidence per request (it then replaces the server threshold for that request), and each camera's minimum confidence filters the returned objects again."
+                .into(),
+        ],
+        tables: vec![Table {
+            title: String::new(),
+            head: [
+                "model",
+                "device",
+                "objective",
+                "configured",
+                "P",
+                "R",
+                "F1",
+                "best",
+                "P",
+                "R",
+                "F1",
+                "F1 gain",
+                "f2 pick",
+                "precision:0.9 pick",
+                "night",
+            ]
+            .map(String::from)
+            .to_vec(),
+            rows: rows
+                .iter()
+                .map(|(m, a)| {
+                    let c = &a.configured;
+                    let b = a.best.as_ref();
+                    vec![
+                        if a.relative {
+                            format!("{} (relative)", m.model)
+                        } else {
+                            m.model.clone()
+                        },
+                        a.device.clone(),
+                        a.objective.clone(),
+                        format!("{:.2}", c.threshold),
+                        pct(c.precision),
+                        pct(c.recall),
+                        pct(c.f1),
+                        pick_cell(b),
+                        pct(b.and_then(|b| b.point.precision)),
+                        pct(b.and_then(|b| b.point.recall)),
+                        pct(b.and_then(|b| b.point.f1)),
+                        delta(b.and_then(|b| b.point.f1), c.f1),
+                        alt(a, "f2"),
+                        alt(a, "precision:0.9"),
+                        night(a),
+                    ]
+                })
+                .collect(),
+        }],
+    })
+}
+
+fn group_table(title: &str, groups: &[GroupPick]) -> Table {
+    Table {
+        title: title.to_string(),
+        head: [
+            "",
+            "images",
+            "objects",
+            "best",
+            "P",
+            "R",
+            "F1",
+            "configured F1",
+        ]
+        .map(String::from)
+        .to_vec(),
+        rows: groups
+            .iter()
+            .map(|g| {
+                let b = g.best.as_ref();
+                vec![
+                    if g.relative {
+                        format!("{} (relative)", g.key)
+                    } else {
+                        g.key.clone()
+                    },
+                    g.images.to_string(),
+                    g.gt.to_string(),
+                    pick_cell(b),
+                    pct(b.and_then(|b| b.point.precision)),
+                    pct(b.and_then(|b| b.point.recall)),
+                    pct(b.and_then(|b| b.point.f1)),
+                    pct(g.configured.f1),
+                ]
+            })
+            .collect(),
+    }
+}
+
+/// The "Confidence threshold" tables of one model.
+fn threshold_tables(a: &ThresholdAdvice, paragraphs: &mut Vec<String>, tables: &mut Vec<Table>) {
+    let obj = a.objective().describe();
+    match &a.best {
+        Some(b) => {
+            let mut p = format!(
+                "Confidence threshold ({obj}, on {}): best {:.2} with P {} R {} F1 {}, configured {:.2} with P {} R {} F1 {} (F1 {}).",
+                a.device,
+                b.threshold,
+                pct(b.point.precision),
+                pct(b.point.recall),
+                pct(b.point.f1),
+                a.configured.threshold,
+                pct(a.configured.precision),
+                pct(a.configured.recall),
+                pct(a.configured.f1),
+                delta(b.point.f1, a.configured.f1),
+            );
+            if let (Some(e), Some([lo, hi])) = (b.exact_threshold, b.plateau) {
+                p.push_str(&format!(
+                    " Exact optimum at {e:.3}; near-optimal range {lo:.3}..{hi:.3}."
+                ));
+            }
+            if let Some(n) = &b.note {
+                p.push_str(&format!(" Note: {n}."));
+            }
+            paragraphs.push(p);
+        }
+        None => paragraphs.push(format!(
+            "Confidence threshold ({obj}, on {}): no ground truth for a curve.",
+            a.device
+        )),
+    }
+    let best = a.best.as_ref().map(|b| b.threshold);
+    let mut extra = vec![a.configured];
+    if let Some(b) = &a.best {
+        extra.push(b.point);
+    }
+    tables.push(Table {
+        title: format!("Confidence threshold on {} (%, IoU 0.5)", a.device),
+        head: ["confidence", "P", "R", "F1", "F2", "FP / image", ""]
+            .map(String::from)
+            .to_vec(),
+        rows: table_points(&a.curve, &extra)
+            .iter()
+            .map(|p| {
+                let mut marks = Vec::new();
+                if best.is_some_and(|b| (b - p.threshold).abs() < 1e-6) {
+                    marks.push("best");
+                }
+                if (a.configured.threshold - p.threshold).abs() < 1e-6 {
+                    marks.push("configured");
+                }
+                vec![
+                    format!("{:.2}", p.threshold),
+                    pct(p.precision),
+                    pct(p.recall),
+                    pct(p.f1),
+                    pct(p.f2),
+                    format!("{:.2}", p.fp_per_image),
+                    marks.join(", "),
+                ]
+            })
+            .collect(),
+    });
+    let groups: Vec<GroupPick> = a.by_dataset.iter().chain(&a.by_tag).cloned().collect();
+    if !groups.is_empty() {
+        tables.push(group_table("Best threshold by dataset and tag", &groups));
+    }
+    if !a.per_class.is_empty() {
+        tables.push(group_table("Best threshold by class", &a.per_class));
+    }
+    if a.by_device.len() > 1 {
+        tables.push(Table {
+            title: "Best threshold by device".into(),
+            head: ["device", "best", "P", "R", "F1"]
+                .map(String::from)
+                .to_vec(),
+            rows: a
+                .by_device
+                .iter()
+                .map(|d| {
+                    let b = d.best.as_ref();
+                    vec![
+                        d.device.clone(),
+                        pick_cell(b),
+                        pct(b.and_then(|b| b.point.precision)),
+                        pct(b.and_then(|b| b.point.recall)),
+                        pct(b.and_then(|b| b.point.f1)),
+                    ]
+                })
+                .collect(),
+        });
+    }
+}
+
 fn sections(r: &BenchmarkResults) -> Vec<Section> {
     let mut out = Vec::new();
     let hw = &r.hardware;
@@ -201,7 +433,8 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
             level: 2,
             paragraphs: vec![format!(
                 "Each model on its recommended device, ranked by overall grade, then accuracy, then \
-                 speed. Best: {} on {}.",
+                 speed. Models with no class in the datasets are not scored for accuracy and \
+                 rank last. Best: {} on {}.",
                 ranking[0].model, ranking[0].device
             )],
             tables: vec![Table {
@@ -216,8 +449,12 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                             k.rank.to_string(),
                             k.model.clone(),
                             k.device.clone(),
-                            k.overall.to_string(),
-                            k.accuracy.map_or("-".into(), |a| {
+                            if k.accuracy.is_none() {
+                                format!("{} (speed only)", k.overall)
+                            } else {
+                                k.overall.to_string()
+                            },
+                            k.accuracy.map_or("not scored".into(), |a| {
                                 if k.relative {
                                     format!("{a}*")
                                 } else {
@@ -232,6 +469,9 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                     .collect(),
             }],
         });
+    }
+    if let Some(s) = threshold_summary(r) {
+        out.push(s);
     }
     for m in &r.models {
         let mut paragraphs = vec![format!(
@@ -362,6 +602,9 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                         .collect(),
                 });
             }
+        }
+        if let Some(a) = &m.threshold {
+            threshold_tables(a, &mut paragraphs, &mut tables);
         }
         out.push(Section {
             heading: m.model.clone(),
@@ -522,5 +765,78 @@ mod tests {
         write(&r, &dir.join("r.HTML")).unwrap();
         assert!(write(&r, &dir.join("r.txt")).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn threshold_sections() {
+        use super::super::metrics::{Counts, SWEEP_THRESHOLDS, ThresholdPoint};
+        use super::super::threshold::{GroupPick, Pick, ThresholdAdvice};
+        let pt = |t: f32| {
+            // Fewer detections as the threshold rises.
+            let tp = (10.0 * (1.0 - t)) as usize;
+            ThresholdPoint::new(
+                t,
+                Counts {
+                    tp,
+                    fp: (20.0 * (1.0 - t) * (1.0 - t)) as usize,
+                    fn_: 10 - tp,
+                },
+                4,
+            )
+        };
+        let pick = |t: f32, o: &str, met: bool| Pick {
+            objective: o.into(),
+            threshold: t,
+            point: pt(t),
+            met,
+            note: (!met).then(|| "unreachable".into()),
+            exact_threshold: Some(t + 0.004),
+            exact_score: Some(0.7),
+            plateau: Some([t - 0.05, t + 0.05]),
+        };
+        let mut m = ModelResult::failed("yolo26n", "m.onnx", String::new());
+        m.error = None;
+        m.threshold = Some(ThresholdAdvice {
+            objective: "f1".into(),
+            device: "ort:coreml".into(),
+            relative: false,
+            configured: pt(0.5),
+            best: Some(pick(0.37, "f1", true)),
+            alternatives: vec![
+                pick(0.37, "f1", true),
+                pick(0.21, "f2", true),
+                pick(0.9, "precision:0.9", false),
+            ],
+            curve: SWEEP_THRESHOLDS.iter().map(|&t| pt(t)).collect(),
+            exact: vec![],
+            by_dataset: vec![GroupPick {
+                key: "exdark-night".into(),
+                images: 2,
+                gt: 5,
+                relative: false,
+                configured: pt(0.5),
+                best: Some(pick(0.25, "f1", true)),
+            }],
+            by_tag: vec![],
+            per_class: vec![],
+            by_device: vec![],
+        });
+        let r = BenchmarkResults::new(Default::default(), Default::default(), vec![m]);
+        let md = markdown(&r);
+        assert!(md.contains("## Best confidence threshold"), "{md}");
+        assert!(md.contains("| yolo26n | ort:coreml | f1 | 0.50 |"), "{md}");
+        assert!(
+            md.contains("| 0.21 | 0.90 (target not reached) | exdark-night 0.25 |"),
+            "{md}"
+        );
+        assert!(md.contains("**Confidence threshold on ort:coreml (%, IoU 0.5)**"));
+        // 0.20..0.80 by 0.05 plus the off-grid best 0.37; marks on best and configured.
+        assert!(md.contains("| 0.37 |") && md.contains("| best |"), "{md}");
+        assert!(md.contains("| configured |"));
+        assert!(!md.contains("| 0.15 |") && md.contains("| 0.80 |"));
+        assert!(md.contains("Exact optimum at 0.374"));
+        assert!(md.contains("min_confidence"));
+        let h = html(&r);
+        assert!(h.contains("<h2>Best confidence threshold</h2>"));
     }
 }

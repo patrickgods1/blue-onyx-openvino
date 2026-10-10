@@ -2,7 +2,7 @@
 {% block title %}Benchmark{% endblock %}
 {% block content %}
 <h1>Benchmark</h1>
-<p class="muted">Runs each model on each device over the chosen datasets with the production pipeline (decode, preprocess, inference, postprocess), grades <strong>accuracy</strong> (AP@0.5 against ground truth, or against a reference model where a dataset has none) and <strong>speed</strong> (full request p50), and checks that every device detects the same objects as the CPU. The recommended device of a model is its best-graded device whose detections agree with the CPU; within 5% of the best speed the configured device is kept. Results: <code>{{ results_file }}</code> (the <code>benchmark</code> CLI writes the same file). JSON: <a href="/v1/benchmark"><code>/v1/benchmark</code></a>.</p>
+<p class="muted">Runs each model on each device over the chosen datasets with the production pipeline (decode, preprocess, inference, postprocess), grades <strong>accuracy</strong> (AP@0.5 against ground truth, or against a reference model where a dataset has none) and <strong>speed</strong> (full request p50), and checks that every device detects the same objects as the CPU. The recommended device of a model is its best-graded device whose detections agree with the CPU; within 5% of the best speed the configured device is kept. The same predictions are also scored at every confidence threshold (no extra inference) to find each model's <strong>best confidence threshold</strong> for the chosen objective. Results: <code>{{ results_file }}</code> (the <code>benchmark</code> CLI writes the same file). JSON: <a href="/v1/benchmark"><code>/v1/benchmark</code></a>.</p>
 <p class="warn">{{ warning }}</p>
 {% if force_cpu %}<p class="warn">Force CPU is on: it overrides every per-model device until it is unchecked on the <a href="/config#inference">Config page</a>.</p>{% endif %}
 
@@ -47,6 +47,10 @@
       <label>Timed runs per image <input type="number" name="repeat" min="1" max="1000" value="{{ repeat }}"></label>
       <label>Warm-up runs <input type="number" name="warmup" min="0" max="100" value="{{ warmup }}"></label>
       <label>Accuracy weight of the overall grade (0..1, speed gets the rest) <input type="number" name="accuracy_weight" min="0" max="1" step="0.05" value="{{ accuracy_weight }}"></label>
+      <label>Best confidence threshold optimizes
+        <select name="threshold_objective">
+          {% for o in objectives %}<option value="{{ o.0 }}"{% if o.2 %} selected{% endif %}>{{ o.1 }}</option>{% endfor %}
+        </select></label>
       <p class="muted">Speed: {{ speed_thresholds }}. Accuracy score (AP@0.5, 20% small-object recall when present): {{ accuracy_thresholds }}.</p>
     </fieldset>
   </div>
@@ -60,6 +64,39 @@
   <ul id="warnings" class="warn-list"></ul>
 </form>
 
+<section class="card" id="search-card">
+  <h2>Confidence search</h2>
+  <p class="muted">Finds the best confidence threshold from the predictions the last benchmark stored (<code>benchmark-preds.json</code>): every distinct confidence is evaluated exactly, no inference, so a search takes milliseconds. Filter by dataset, tag (e.g. <code>night</code>) and class, pick the objective, then apply the result. {{ blue_iris_note }}</p>
+  <p id="s-empty" class="muted" hidden></p>
+  <form id="search-form" onsubmit="return false" hidden>
+    <div class="bench-grid">
+      <fieldset><legend>Models</legend><div id="s-models"></div>
+        <label>Device <select id="s-device"><option value="">Recommended device of each model</option></select></label></fieldset>
+      <fieldset><legend>Images</legend><div id="s-datasets"></div>
+        <p class="muted">Only images with all of these tags:</p><div id="s-tags"></div></fieldset>
+      <fieldset><legend>Classes</legend><div id="s-classes"></div><p class="muted">None checked = all scored classes.</p></fieldset>
+      <fieldset><legend>Objective</legend>
+        <label>Optimize <select id="s-objective">
+          <option value="f1">F1: balance precision and recall</option>
+          <option value="f2">F2: favor recall (fewer missed objects)</option>
+          <option value="precision">Highest recall with precision at least…</option>
+          <option value="recall">Highest precision with recall at least…</option>
+        </select></label>
+        <label id="s-target-label" style="display:none">Target (0..1) <input type="number" id="s-target" min="0.05" max="1" step="0.01" value="0.9"></label>
+        <label>Match IoU <input type="number" id="s-iou" min="0.05" max="0.95" step="0.05" value="0.5"></label>
+      </fieldset>
+    </div>
+    <div class="actions">
+      <button type="button" id="s-run">Search</button>
+      <button type="button" id="s-apply-all" hidden>Apply all</button>
+      <button type="button" id="s-csv-copy" hidden>Copy as CSV</button>
+      <button type="button" id="s-csv-dl" hidden>Download CSV</button>
+      <span id="s-msg" class="muted" aria-live="polite"></span>
+    </div>
+  </form>
+  <div id="s-results"></div>
+</section>
+
 <section id="results">
   <noscript><p class="muted">The results view needs JavaScript; see <a href="/v1/benchmark">/v1/benchmark</a>.</p></noscript>
   <div id="summary" class="cards"></div>
@@ -69,6 +106,11 @@
     <span class="muted">Writes each model's <code>device</code> into the config; a restart loads them.</span>
   </div>
   <p id="apply-msg" class="notice" hidden></p>
+  <div id="thresholds"></div>
+  <div class="actions" id="apply-thr-bar" hidden>
+    <button type="button" id="apply-all-thr">Apply all thresholds</button>
+    <span class="muted">Writes each model's best threshold as its <code>confidence_threshold</code> in the config; a restart uses them. {{ blue_iris_note }}</span>
+  </div>
   <div id="models"></div>
 </section>
 
@@ -93,7 +135,7 @@
   function formBody(extra) {
     var b = new URLSearchParams();
     form.querySelectorAll("input[type=checkbox]:checked").forEach(function (c) { b.append(c.name, c.value); });
-    ["max_images", "repeat", "warmup", "accuracy_weight"].forEach(function (n) { b.append(n, form.elements[n].value); });
+    ["max_images", "repeat", "warmup", "accuracy_weight", "threshold_objective"].forEach(function (n) { b.append(n, form.elements[n].value); });
     b.append("reference_model", form.elements.reference_model.value);
     var f = $("add-folder").value.trim();
     if (f) b.append("dataset", f.indexOf("dir:") === 0 ? f : "dir:" + f);
@@ -167,6 +209,7 @@
     }
     if (j.restarting) waitForRestart();
     refresh();
+    loadSearch().then(function () { if (search.data) drawSearch(); });
   }
   function restart() { fetch("/config/restart", {method: "POST"}).then(waitForRestart, waitForRestart); }
   function waitForRestart() {
@@ -175,10 +218,285 @@
       fetch("/v1/benchmark", {cache: "no-store"}).then(function () { location.reload(); }, function () { setTimeout(again, 1000); });
     }, 1500);
   }
+  function useThreshold(model, t) {
+    return post("/v1/benchmark/apply-threshold", new URLSearchParams({model: model, threshold: t.toFixed(2)})).then(showApply);
+  }
+  $("apply-all-thr").addEventListener("click", function () {
+    if (!confirm("Write the best confidence threshold of every benchmarked model into the config?")) return;
+    post("/v1/benchmark/apply-threshold", new URLSearchParams({all: "1"})).then(showApply);
+  });
+  function thr(v) { return v === null || v === undefined ? "-" : v.toFixed(2); }
+  function applicable(a) { return a && a.best && a.best.met && a.best.point.tp > 0; }
+
+  // Confidence threshold: P / R / F1 vs threshold as an inline SVG line chart.
+  var SVGNS = "http://www.w3.org/2000/svg", chartId = 0;
+  function sv(tag, attrs, text) { var e = document.createElementNS(SVGNS, tag); Object.keys(attrs || {}).forEach(function (k) { e.setAttribute(k, attrs[k]); }); if (text !== undefined) e.textContent = text; return e; }
+  // opts: title, desc, points (ascending thresholds), configured, best, current, f2 (draw F2).
+  function chartSvg(o) {
+    var W = 560, H = 290, L = 48, R = 16, T = 34, B = 44, pw = W - L - R, ph = H - T - B;
+    var X = function (t) { return L + t * pw; }, Y = function (v) { return T + (1 - v) * ph; };
+    var id = "thr-chart-" + (++chartId);
+    var svg = sv("svg", {viewBox: "0 0 " + W + " " + H, class: "thr-chart", role: "img", "aria-labelledby": id + "-t " + id + "-d"});
+    svg.appendChild(sv("title", {id: id + "-t"}, o.title));
+    svg.appendChild(sv("desc", {id: id + "-d"}, o.desc));
+    for (var k = 0; k <= 10; k += 2) {
+      var v = k / 10;
+      svg.appendChild(sv("line", {x1: L, x2: L + pw, y1: Y(v), y2: Y(v), class: "thr-grid"}));
+      svg.appendChild(sv("text", {x: L - 6, y: Y(v) + 4, "text-anchor": "end", class: "thr-tick"}, (v * 100).toFixed(0)));
+      svg.appendChild(sv("line", {x1: X(v), x2: X(v), y1: T + ph, y2: T + ph + 4, class: "thr-axis"}));
+      svg.appendChild(sv("text", {x: X(v), y: T + ph + 16, "text-anchor": "middle", class: "thr-tick"}, v.toFixed(1)));
+    }
+    svg.appendChild(sv("line", {x1: L, x2: L + pw, y1: T + ph, y2: T + ph, class: "thr-axis"}));
+    svg.appendChild(sv("line", {x1: L, x2: L, y1: T, y2: T + ph, class: "thr-axis"}));
+    svg.appendChild(sv("text", {x: L + pw / 2, y: H - 6, "text-anchor": "middle", class: "thr-label"}, "Confidence threshold"));
+    svg.appendChild(sv("text", {x: 12, y: T + ph / 2, "text-anchor": "middle", class: "thr-label", transform: "rotate(-90 12 " + (T + ph / 2) + ")"}, "%"));
+    var series = [["precision", "thr-p", "Precision"], ["recall", "thr-r", "Recall"], ["f1", "thr-f1", "F1"]];
+    if (o.f2) series.push(["f2", "thr-f2", "F2"]);
+    var lx = L + 4;
+    series.forEach(function (s) {
+      var d = "", pen = false;
+      o.points.forEach(function (p) { var v = p[s[0]]; if (v === null || v === undefined) { pen = false; return; } d += (pen ? "L" : "M") + X(p.threshold).toFixed(1) + " " + Y(v).toFixed(1); pen = true; });
+      if (d) svg.appendChild(sv("path", {d: d, class: "thr-line " + s[1]}));
+      svg.appendChild(sv("line", {x1: lx, x2: lx + 18, y1: 14, y2: 14, class: "thr-line " + s[1]}));
+      svg.appendChild(sv("text", {x: lx + 22, y: 18, class: "thr-tick"}, s[2])); lx += 84;
+    });
+    [["thr-mark-best", "best"], ["thr-mark-cfg", "configured"]].forEach(function (m) {
+      svg.appendChild(sv("line", {x1: lx, x2: lx + 18, y1: 14, y2: 14, class: m[0]}));
+      svg.appendChild(sv("text", {x: lx + 22, y: 18, class: "thr-tick"}, m[1])); lx += 90;
+    });
+    function mark(t, cls, text, dy) {
+      if (t === null || t === undefined) return;
+      svg.appendChild(sv("line", {x1: X(t), x2: X(t), y1: T, y2: T + ph, class: cls}));
+      svg.appendChild(sv("text", {x: Math.min(X(t) + 4, L + pw - 90), y: T + 12 + dy, class: "thr-tick"}, text));
+    }
+    mark(o.configured, "thr-mark-cfg", "configured " + thr(o.configured), 0);
+    mark(o.best, "thr-mark-best", "best " + thr(o.best), 14);
+    if (o.current !== null && o.current !== undefined && Math.abs(o.current - o.configured) > 1e-6) mark(o.current, "thr-mark-cfg", "in config " + thr(o.current), 28);
+    // Hover: the nearest point's exact values.
+    var guide = sv("line", {y1: T, y2: T + ph, class: "thr-guide", visibility: "hidden"});
+    var tip = sv("g", {class: "thr-tip", visibility: "hidden"}), tipBg = sv("rect", {rx: 4, width: 150, height: 74}), tipText = sv("text", {});
+    tip.appendChild(tipBg); tip.appendChild(tipText); svg.appendChild(guide); svg.appendChild(tip);
+    var hit = sv("rect", {x: L, y: T, width: pw, height: ph, class: "thr-hit"}); svg.appendChild(hit);
+    function show(evt) {
+      var r = svg.getBoundingClientRect(); if (!r.width || !o.points.length) return;
+      var t = ((evt.clientX - r.left) * W / r.width - L) / pw;
+      var p = o.points.reduce(function (a, q) { return Math.abs(q.threshold - t) < Math.abs(a.threshold - t) ? q : a; });
+      var x = X(p.threshold); guide.setAttribute("x1", x); guide.setAttribute("x2", x); guide.setAttribute("visibility", "visible");
+      var lines = ["confidence " + p.threshold.toFixed(3), "P " + pct(p.precision) + "  R " + pct(p.recall), "F1 " + pct(p.f1) + "  F2 " + pct(p.f2), "TP " + p.tp + " FP " + p.fp + " FN " + p["fn"]];
+      tipText.replaceChildren(); lines.forEach(function (l, i) { tipText.appendChild(sv("tspan", {x: 0, dy: i ? 15 : 0}, l)); });
+      var tx = x + 160 > L + pw ? x - 158 : x + 8;
+      tip.setAttribute("transform", "translate(" + tx + "," + (T + 30) + ")"); tipBg.setAttribute("y", -13); tipBg.setAttribute("x", -6); tip.setAttribute("visibility", "visible");
+    }
+    hit.addEventListener("pointermove", show);
+    hit.addEventListener("pointerleave", function () { guide.setAttribute("visibility", "hidden"); tip.setAttribute("visibility", "hidden"); });
+    return svg;
+  }
+  function thresholdChart(m, a, current) {
+    var best = a.best;
+    return chartSvg({
+      title: m.model + ": precision, recall and F1 vs confidence threshold on " + a.device,
+      desc: "Best threshold " + (best ? thr(best.threshold) + " (" + a.objective + "): precision " + pct(best.point.precision) + "%, recall " + pct(best.point.recall) + "%, F1 " + pct(best.point.f1) + "%" : "none") + ". Configured " + thr(a.configured.threshold) + ": precision " + pct(a.configured.precision) + "%, recall " + pct(a.configured.recall) + "%, F1 " + pct(a.configured.f1) + "%.",
+      points: a.exact && a.exact.length > 1 ? a.exact : a.curve,
+      configured: a.configured.threshold, best: best ? best.threshold : null, current: current, f2: a.objective === "f2"
+    });
+  }
+  function thresholdBlock(m, c) {
+    var a = m.threshold, box = el("div", "thr-block");
+    if (!a) return box;
+    box.appendChild(el("h3", null, "Confidence threshold"));
+    var b = a.best, p = el("p", b && b.met ? "notice" : "warn");
+    if (b) {
+      p.textContent = "Best " + thr(b.threshold) + " for " + a.objective + " on " + a.device + ": P " + pct(b.point.precision) + " R " + pct(b.point.recall) + " F1 " + pct(b.point.f1) + " (configured " + thr(a.configured.threshold) + ": P " + pct(a.configured.precision) + " R " + pct(a.configured.recall) + " F1 " + pct(a.configured.f1) + ")" + (b.note ? ". " + b.note : "") + (b.plateau && b.exact_threshold !== null && b.exact_threshold !== undefined ? ". Exact optimum at confidence " + b.exact_threshold.toFixed(3) + "; near-optimal range " + b.plateau[0].toFixed(3) + "–" + b.plateau[1].toFixed(3) + ", rounded down to 0.01." : ".");
+    } else p.textContent = "No ground truth for a threshold curve.";
+    box.appendChild(p);
+    var wrapC = el("div", "thr-chart-wrap"); wrapC.appendChild(thresholdChart(m, a, c.confidenceThreshold)); box.appendChild(wrapC);
+    if (applicable(a) && !(c.confidenceThreshold !== undefined && Math.abs(c.confidenceThreshold - b.threshold) < 1e-6)) {
+      var u = el("button", "small", "Apply threshold " + thr(b.threshold)); u.type = "button";
+      u.addEventListener("click", function () { useThreshold(m.model, b.threshold); }); box.appendChild(u);
+    }
+    var groups = (a.by_dataset || []).concat(a.by_tag || [], (a.per_class || []).map(function (g) { return Object.assign({}, g, {key: "class " + g.key}); }), (a.by_device || []).map(function (d) { return {key: "device " + d.device, best: d.best, configured: null}; }));
+    if (groups.length) {
+      var t = sortable(table("", ["Group", "Images", "Objects", "Best", "P", "R", "F1", "F1 at configured"]));
+      groups.forEach(function (g) {
+        var tr = el("tr"), gb = g.best; cell(tr, g.key + (g.relative ? " (relative)" : "")); cell(tr, g.images === undefined ? "-" : g.images, g.images); cell(tr, g.gt === undefined ? "-" : g.gt, g.gt);
+        cell(tr, gb ? thr(gb.threshold) + (gb.met ? "" : " !") : "-", gb ? gb.threshold : null);
+        [gb && gb.point.precision, gb && gb.point.recall, gb && gb.point.f1, g.configured && g.configured.f1].forEach(function (v) { cell(tr, pct(v), v === null || v === undefined ? null : -v); });
+        t.tBodies[0].appendChild(tr);
+      });
+      var d = el("details", "bd"); d.appendChild(el("summary", null, "Best threshold by dataset, tag, class and device")); d.appendChild(wrap(t)); box.appendChild(d);
+    }
+    return box;
+  }
+  function renderThresholds(models, cfg) {
+    var box = $("thresholds"); box.replaceChildren();
+    var rows = models.filter(function (m) { return m.threshold; });
+    $("apply-thr-bar").hidden = !rows.some(function (m) { return applicable(m.threshold); });
+    if (!rows.length) return;
+    var cfgByName = {}; (cfg.models || []).forEach(function (c) { cfgByName[c.name.toLowerCase()] = c; });
+    box.appendChild(el("h2", null, "Best confidence threshold"));
+    box.appendChild(el("p", "muted", "Exact best threshold per model on its recommended device (middle of the widest near-optimal range, rounded down to 0.01). F2 favors recall; precision:0.9 limits false alerts. Blue Iris may send its own min_confidence per request (it then replaces the server threshold) and each camera's minimum confidence filters again."));
+    var t = sortable(table("", ["Model", "Objective", "Now", "P", "R", "F1", "Best", "P", "R", "F1", "Gain", "F2 pick", "P≥90% pick", ""]));
+    rows.forEach(function (m) {
+      var a = m.threshold, b = a.best, c = cfgByName[m.model.toLowerCase()] || {}, tr = el("tr"), cp = a.configured;
+      var alt = function (o) { var x = (a.alternatives || []).find(function (p) { return p.objective === o; }); return x ? thr(x.threshold) + (x.met ? "" : " !") : "-"; };
+      cell(tr, m.model + (a.relative ? " *" : "")); cell(tr, a.objective);
+      cell(tr, thr(cp.threshold), cp.threshold); [cp.precision, cp.recall, cp.f1].forEach(function (v) { cell(tr, pct(v), v === null ? null : -v); });
+      var bc = cell(tr, b ? thr(b.threshold) : "-", b ? b.threshold : null); if (applicable(a)) bc.appendChild(el("span", "tag rec", "best"));
+      [b && b.point.precision, b && b.point.recall, b && b.point.f1].forEach(function (v) { cell(tr, pct(v), v === null || v === undefined ? null : -v); });
+      var sb = b && objScore(a.objective, b.point), sc = objScore(a.objective, cp);
+      var gain = sb !== null && sb !== undefined && sc !== null && sc !== undefined ? (sb - sc) * 100 : null;
+      var gc = cell(tr, gain === null ? "-" : (gain >= 0 ? "+" : "") + gain.toFixed(1) + " " + gainLabel(a.objective), gain === null ? null : -gain);
+      gc.title = gainLabel(a.objective) + " at the best minus at the configured threshold";
+      cell(tr, alt("f2")); cell(tr, alt("precision:0.9"));
+      var act = el("td", "actions-cell");
+      if (applicable(a) && !(c.confidenceThreshold !== undefined && Math.abs(c.confidenceThreshold - b.threshold) < 1e-6)) { var u = el("button", "small", "Apply " + thr(b.threshold)); u.type = "button"; u.addEventListener("click", function () { useThreshold(m.model, b.threshold); }); act.appendChild(u); }
+      else if (applicable(a)) act.appendChild(el("span", "muted", "in use"));
+      tr.appendChild(act);
+      t.tBodies[0].appendChild(tr);
+    });
+    box.appendChild(wrap(t));
+  }
   $("apply-all").addEventListener("click", function () {
     if (!confirm("Write the recommended device of every benchmarked model into the config?")) return;
     post("/v1/benchmark/apply", new URLSearchParams({all: "1"})).then(showApply);
   });
+
+  // Confidence search over the stored predictions.
+  var search = {data: null, opts: null, thresholds: {}, selected: null};
+  function checks(box, name, values, checked) {
+    box.replaceChildren();
+    values.forEach(function (v) {
+      var l = el("label", "check"), i = el("input"); i.type = "checkbox"; i.name = name; i.value = v; i.checked = checked(v);
+      l.appendChild(i); l.append(" " + v); box.appendChild(l);
+    });
+    if (!values.length) box.appendChild(el("p", "muted", "none"));
+  }
+  function loadSearch() {
+    return fetch("/v1/benchmark/threshold-search", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j.success) { $("s-empty").hidden = false; $("s-empty").textContent = j.message; $("search-form").hidden = true; return; }
+      $("s-empty").hidden = true; $("search-form").hidden = false;
+      search.opts = j.options; search.thresholds = j.thresholds || {};
+      var ms = j.options.models.map(function (m) { return m.model; });
+      checks($("s-models"), "s-model", ms, function () { return true; });
+      var devs = []; j.options.models.forEach(function (m) { m.devices.forEach(function (d) { if (devs.indexOf(d) < 0) devs.push(d); }); });
+      var sel = $("s-device"); sel.querySelectorAll("option:not(:first-child)").forEach(function (o) { o.remove(); });
+      devs.forEach(function (d) { var o = el("option", null, d); o.value = d; sel.appendChild(o); });
+      checks($("s-datasets"), "s-dataset", j.options.datasets, function () { return true; });
+      checks($("s-tags"), "s-tag", j.options.tags.filter(function (t) { return t.indexOf("res:") !== 0; }), function () { return false; });
+      checks($("s-classes"), "s-class", j.options.classes, function () { return false; });
+      var obj = String(j.objective || "f1"), kind = obj.split(":")[0];
+      $("s-objective").value = kind; if (obj.indexOf(":") > 0) $("s-target").value = obj.split(":")[1];
+      $("s-target-label").style.display = kind === "precision" || kind === "recall" ? "" : "none";
+    });
+  }
+  $("s-objective").addEventListener("change", function () { var k = $("s-objective").value; $("s-target-label").style.display = k === "precision" || k === "recall" ? "" : "none"; });
+  // The value an objective maximizes, for its gain column.
+  function objScore(obj, p) {
+    if (!p) return null;
+    var k = obj.split(":")[0], t = parseFloat(obj.split(":")[1]);
+    if (k === "f2") return p.f2;
+    if (k === "precision") return p.precision !== null && p.precision >= t - 1e-12 ? p.recall : null;
+    if (k === "recall") return p.recall !== null && p.recall >= t - 1e-12 ? p.precision : null;
+    return p.f1;
+  }
+  function gainLabel(obj) { var k = obj.split(":")[0]; return k === "f2" ? "F2" : k === "precision" ? "recall" : k === "recall" ? "precision" : "F1"; }
+  function searchBody() {
+    var b = new URLSearchParams(), checked = function (n) { return Array.prototype.map.call(document.querySelectorAll("input[name=" + n + "]:checked"), function (c) { return c.value; }); };
+    var ms = checked("s-model"); if (!ms.length) ms = ["all"]; ms.forEach(function (m) { b.append("model", m); });
+    if ($("s-device").value) b.append("device", $("s-device").value);
+    checked("s-dataset").forEach(function (d) { b.append("dataset", d); });
+    checked("s-tag").forEach(function (t) { b.append("tag", t); });
+    checked("s-class").forEach(function (c) { b.append("class", c); });
+    var k = $("s-objective").value; b.append("objective", k === "precision" || k === "recall" ? k + ":" + $("s-target").value : k);
+    b.append("iou", $("s-iou").value);
+    return b;
+  }
+  $("s-run").addEventListener("click", function () {
+    $("s-msg").textContent = "searching…";
+    post("/v1/benchmark/threshold-search", searchBody()).then(function (j) {
+      if (!j.success) { $("s-msg").textContent = j.message; return; }
+      search.data = j; if (!search.selected || !j.results.some(function (r) { return r.model === search.selected; })) search.selected = j.results[0].model;
+      $("s-msg").textContent = j.results.length + " model(s) in " + j.elapsedMs.toFixed(1) + " ms" + (j.errors.length ? " · " + j.errors.join("; ") : "");
+      drawSearch();
+    });
+  });
+  function applicableSearch(r) { return r.best && r.best.met && r.best.point.tp > 0; }
+  function nowThr(model) { return search.thresholds[model.trim().toLowerCase().replace(/(.)\.(onnx|xml)$/, "$1")]; }
+  $("s-apply-all").addEventListener("click", function () {
+    var rs = search.data.results.filter(applicableSearch); if (!rs.length) return;
+    if (!confirm("Write the searched best threshold of " + rs.length + " model(s) into the config?")) return;
+    var b = new URLSearchParams(); rs.forEach(function (r) { b.append("model", r.model); b.append("threshold", r.best.threshold.toFixed(2)); });
+    post("/v1/benchmark/apply-threshold", b).then(showApply);
+  });
+  $("s-csv-copy").addEventListener("click", function () {
+    if (navigator.clipboard) navigator.clipboard.writeText(search.data.csv).then(function () { $("s-msg").textContent = "CSV copied"; }, function () { $("s-msg").textContent = "copy failed; use Download CSV"; });
+  });
+  $("s-csv-dl").addEventListener("click", function () {
+    var a = el("a"); a.href = URL.createObjectURL(new Blob([search.data.csv], {type: "text/csv"})); a.download = "confidence-search.csv"; document.body.appendChild(a); a.click(); a.remove();
+  });
+  function drawSearch() {
+    var j = search.data, box = $("s-results"); box.replaceChildren();
+    $("s-csv-copy").hidden = $("s-csv-dl").hidden = !j;
+    $("s-apply-all").hidden = !j || !j.results.some(applicableSearch);
+    if (!j) return;
+    var obj = j.results.length ? j.results[0].objective : "f1";
+    var t = sortable(table("", ["Model", "Device", "Images", "Objects", "Configured", "P", "R", "F1", "Best", "P", "R", "F1", gainLabel(obj) + " gain", ""]));
+    j.results.forEach(function (r) {
+      var tr = el("tr"), c = r.configured, b = r.best;
+      if (r.model === search.selected) tr.classList.add("selected");
+      var name = cell(tr, r.model + (r.relative ? " *" : "")); name.title = r.ground_truth;
+      cell(tr, r.device); cell(tr, r.images, r.images); cell(tr, r.gt, r.gt);
+      cell(tr, thr(c.threshold), c.threshold); [c.precision, c.recall, c.f1].forEach(function (v) { cell(tr, pct(v), v === null ? null : -v); });
+      cell(tr, b ? thr(b.threshold) + (b.met ? "" : " !") : "-", b ? b.threshold : null);
+      [b && b.point.precision, b && b.point.recall, b && b.point.f1].forEach(function (v) { cell(tr, pct(v), v === null || v === undefined ? null : -v); });
+      var sb = b && objScore(r.objective, b.point), sc = objScore(r.objective, c);
+      var gain = sb !== null && sb !== undefined && sc !== null && sc !== undefined ? (sb - sc) * 100 : null;
+      var gc = cell(tr, gain === null ? (sb !== null && sb !== undefined ? "target met only at best" : "-") : (gain >= 0 ? "+" : "") + gain.toFixed(1), gain === null ? null : -gain);
+      gc.title = gainLabel(r.objective) + " at the best minus at the configured threshold";
+      var act = el("td", "actions-cell"), show = el("button", "small", "Chart"); show.type = "button";
+      show.addEventListener("click", function () { search.selected = r.model; drawSearch(); }); act.appendChild(show);
+      var cur = nowThr(r.model);
+      if (applicableSearch(r) && !(cur !== undefined && Math.abs(cur - b.threshold) < 1e-6)) { var u = el("button", "small", "Apply " + thr(b.threshold)); u.type = "button"; u.addEventListener("click", function () { useThreshold(r.model, b.threshold); }); act.appendChild(u); }
+      tr.appendChild(act); t.tBodies[0].appendChild(tr);
+    });
+    box.appendChild(wrap(t));
+    var r = j.results.find(function (x) { return x.model === search.selected; }); if (!r) return;
+    var b = r.best, f2 = r.objective === "f2";
+    box.appendChild(el("h3", null, r.model + " on " + r.device + " (" + r.ground_truth + ", IoU " + r.iou + ")"));
+    if (b) box.appendChild(el("p", b.met ? "notice" : "warn", "Best " + thr(b.threshold) + " for " + r.objective + ": P " + pct(b.point.precision) + " R " + pct(b.point.recall) + " F1 " + pct(b.point.f1) + " F2 " + pct(b.point.f2) + " · " + b.point.fp_per_image.toFixed(2) + " false positives per image. Exact optimum at " + (b.exact_threshold !== null && b.exact_threshold !== undefined ? b.exact_threshold.toFixed(3) : "-") + (b.plateau ? ", near-optimal range " + b.plateau[0].toFixed(3) + "–" + b.plateau[1].toFixed(3) : "") + "." + (b.note ? " " + b.note + "." : "")));
+    var cw = el("div", "thr-chart-wrap");
+    cw.appendChild(chartSvg({
+      title: r.model + ": precision, recall, F1" + (f2 ? ", F2" : "") + " vs confidence threshold on " + r.device,
+      desc: "Configured " + thr(r.configured.threshold) + ": F1 " + pct(r.configured.f1) + "%. Best " + (b ? thr(b.threshold) + ": F1 " + pct(b.point.f1) + "%" : "none") + ".",
+      points: r.exact.length > 1 ? r.exact : r.grid, configured: r.configured.threshold, best: b ? b.threshold : null,
+      current: r.current ? r.current.threshold : null, f2: f2
+    }));
+    box.appendChild(cw);
+    var g = sortable(table("", ["Confidence", "P", "R", "F1", "F2", "FP / image", "TP", "FP", "FN", ""]));
+    var rows = r.grid.slice(); [r.configured, b && b.point, r.current].forEach(function (p) { if (p && !rows.some(function (q) { return Math.abs(q.threshold - p.threshold) < 1e-6; })) rows.push(p); });
+    rows.sort(function (x, y) { return x.threshold - y.threshold; });
+    rows.forEach(function (p) {
+      var tr = el("tr"), marks = [];
+      if (b && Math.abs(b.threshold - p.threshold) < 1e-6) { marks.push("best"); tr.classList.add("best-row"); }
+      if (Math.abs(r.configured.threshold - p.threshold) < 1e-6) marks.push("configured");
+      if (r.current && Math.abs(r.current.threshold - p.threshold) < 1e-6) marks.push("in config");
+      cell(tr, p.threshold.toFixed(2), p.threshold); [p.precision, p.recall, p.f1, p.f2].forEach(function (v) { cell(tr, pct(v), v === null ? null : -v); });
+      cell(tr, p.fp_per_image.toFixed(2), p.fp_per_image); cell(tr, p.tp, p.tp); cell(tr, p.fp, p.fp); cell(tr, p["fn"], p["fn"]); cell(tr, marks.join(", "));
+      g.tBodies[0].appendChild(tr);
+    });
+    var d = el("details", "bd"); d.open = true; d.appendChild(el("summary", null, "Every 0.05 step")); d.appendChild(wrap(g)); box.appendChild(d);
+    var groups = r.by_dataset.concat(r.per_class.map(function (x) { return Object.assign({}, x, {key: "class " + x.key}); }));
+    if (groups.length) {
+      var gt = sortable(table("", ["Group", "Images", "Objects", "Best", "P", "R", "F1", "F1 at configured"]));
+      groups.forEach(function (x) {
+        var tr = el("tr"), xb = x.best; cell(tr, x.key + (x.relative ? " (relative)" : "")); cell(tr, x.images, x.images); cell(tr, x.gt, x.gt);
+        cell(tr, xb ? thr(xb.threshold) + (xb.met ? "" : " !") : "-", xb ? xb.threshold : null);
+        [xb && xb.point.precision, xb && xb.point.recall, xb && xb.point.f1, x.configured.f1].forEach(function (v) { cell(tr, pct(v), v === null || v === undefined ? null : -v); });
+        gt.tBodies[0].appendChild(tr);
+      });
+      var d2 = el("details", "bd"); d2.appendChild(el("summary", null, "Best threshold by dataset and class")); d2.appendChild(wrap(gt)); box.appendChild(d2);
+    }
+  }
 
   // Results: saved results overlaid with the models of the current run.
   function merged(j) {
@@ -210,8 +528,10 @@
     var t = sortable(table("", ["#", "Model", "Device", "Overall", "Accuracy", "Speed", "p50 ms", "AP50"]));
     rows.forEach(function (r) {
       var tr = el("tr"); cell(tr, r.rank, r.rank); cell(tr, r.model); cell(tr, r.device);
-      var o = cell(tr, ""); o.appendChild(gradeEl(r.overall)); o.dataset.v = 4 - r.overall_points;
-      var a = cell(tr, ""); a.appendChild(gradeEl(r.accuracy, r.relative));
+      var unscored = r.accuracy === null || r.accuracy === undefined;
+      var o = cell(tr, ""); o.appendChild(gradeEl(r.overall)); o.dataset.v = (unscored ? 10 : 0) + 4 - r.overall_points;
+      if (unscored) { o.append(" "); o.appendChild(el("span", "muted", "speed only")); }
+      var a = cell(tr, ""); if (unscored) { a.appendChild(el("span", "muted", "not scored")); a.title = "None of this model's classes are in the selected datasets"; } else a.appendChild(gradeEl(r.accuracy, r.relative));
       var s = cell(tr, ""); s.appendChild(gradeEl(r.speed));
       cell(tr, ms(r.p50_ms), r.p50_ms); cell(tr, pct(r.ap50), r.ap50 === null ? null : -r.ap50);
       t.tBodies[0].appendChild(tr);
@@ -290,6 +610,7 @@
       });
       card.appendChild(wrap(t));
       if (m.skipped && m.skipped.length) card.appendChild(el("p", "muted", "Not runnable here: " + m.skipped.join("; ")));
+      card.appendChild(thresholdBlock(m, c));
       var rr = recRun(m) || (fastest && fastest.run); if (rr) card.appendChild(details(rr));
       box.appendChild(card);
     });
@@ -333,8 +654,10 @@
     var models = merged(j);
     renderSummary(models);
     renderRanking(j.ranking);
+    renderThresholds(models, j.config);
     renderModels(models, j.config);
     $("apply-all-bar").hidden = !models.some(function (m) { return m.recommended; }) || j.running;
+    if (j.running) $("apply-thr-bar").hidden = true;
     var p = j.run.progress, running = j.running;
     $("start").disabled = running; $("cancel").hidden = !running; $("progress").hidden = !running;
     if (running && p) {
@@ -343,7 +666,7 @@
         ptext.textContent = p.model + " (" + p.modelIndex + "/" + p.modelCount + ") on " + p.device + " · " + p.phase + (p.total ? " " + p.done + "/" + p.total : "") + (p.image ? " · " + p.image : "") + " · " + p.percent.toFixed(0) + "%" + (p.etaSecs ? " · about " + Math.ceil(p.etaSecs) + " s left" : "");
       } else { bar.removeAttribute("value"); ptext.textContent = p.text || p.stage; }
     } else if (running) { bar.removeAttribute("value"); ptext.textContent = "starting…"; }
-    if (!running && lastState === "running") msg.textContent = j.run.message || j.run.error || j.state;
+    if (!running && lastState === "running") { msg.textContent = j.run.message || j.run.error || j.state; loadSearch(); }
     else if (!running && !msg.textContent && j.run.state !== "idle") msg.textContent = j.run.message || j.run.error || "";
     var w = $("warnings"); w.replaceChildren(); (j.run.warnings || []).forEach(function (t) { w.appendChild(el("li", null, t)); });
     lastState = j.state;
@@ -357,6 +680,7 @@
     }, 1000);
   }
   refresh().then(function (running) { if (running) poll(); });
+  loadSearch();
 })();
 </script>
 {% endblock %}

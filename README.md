@@ -48,7 +48,7 @@ on Windows (DirectML), Apple silicon (CoreML), CPU (`openvino:cpu`, else `ort:cp
 | Linux | Intel | `openvino:gpu` | `setup-openvino` | `intel-opencl-icd`, `render` group. |
 | Linux | NVIDIA | `ort:cuda` | `setup-onnxruntime --flavor cuda` | CUDA 12 + cuDNN 9 user-installed. |
 | Linux | AMD | `openvino:cpu` | `setup-openvino` | No ROCm/MIGraphX in the stock ONNX Runtime packages: CPU. |
-| macOS arm64 | Apple GPU | `ort:coreml` | `setup-onnxruntime` | RT-DETR is never run on CoreML (it aborts in ONNX Runtime 1.24.4); it uses the CPU. |
+| macOS arm64 | Apple GPU | `ort:coreml` | `setup-onnxruntime` | RT-DETRv2 runs on CoreML (~1.6-1.9x `openvino:cpu` on an M1) because its batch dimension is pinned to 1; an RT-DETR export with an unnamed dynamic dimension is refused there (MPSGraph would abort) and uses the CPU. YOLO26 needs the `.onnx` export. |
 | any | none | `openvino:cpu` | `setup-openvino` | `ort:cpu` if OpenVINO is missing. |
 
 TensorRT (`ort:tensorrt`, first engine build takes minutes) and the NPU (`openvino:npu`) can be
@@ -387,6 +387,34 @@ the CLI and the UI read and write the same file.
   (devices that disagree, e.g. a broken FP16 path, are never recommended); within 5% of the best p50
   the configured device is kept. The page and the report also rank the models ("best model for this
   machine").
+- **Confidence threshold**: the same low-threshold (0.05) predictions are scored at every confidence
+  threshold, without extra inference: TP/FP/FN, precision, recall, F1, F2 and false positives per
+  image, overall, per dataset, per tag (day, night, small objects) and per class. The best threshold
+  per model is exact (precision and recall only change at the predictions' confidence values, so
+  every distinct confidence is evaluated; filtering 0.05-threshold output at a higher threshold equals
+  running at it, NMS included). Among thresholds within 0.002 of the best score the middle of the
+  widest range is taken, rounded down to 0.01 (at least 0.05). The objective is
+  `benchmark.threshold_objective` / `--threshold-objective`: `f1` (default), `f2` (favor recall: fewer
+  missed people), `precision:<p>` (highest recall with precision >= p, e.g. `precision:0.9` for fewer
+  false alerts) or `recall:<r>` (highest precision with recall >= r); ties go to the higher threshold.
+  The recommendation text adds P/R at the best threshold; the accuracy grade stays on AP.
+  The server threshold is what a model reports: Blue Iris may send its own `min_confidence` per
+  request (when it does, it replaces the server threshold for that request), and each camera's
+  minimum confidence filters the returned objects again on top.
+
+```sh
+blue-onyx-prism benchmark --all-devices --apply-threshold    # also write each model's best confidence_threshold
+blue-onyx-prism benchmark --apply --apply-threshold --threshold-objective f2
+blue-onyx-prism benchmark --threshold-search --tag night --threshold-objective recall:0.9   # stored predictions, no inference
+blue-onyx-prism benchmark --threshold-search --dataset exdark-night --class person --iou 0.6 --json
+```
+
+The predictions behind the search are stored in `benchmark-preds.json` next to `benchmark.json`
+(`[class, confidence, x_min, y_min, x_max, y_max]` per prediction and image, per model and device). The
+Benchmark page's **Confidence search** card runs the same search (models, device, datasets, tags,
+classes, objective with target, IoU) in milliseconds and shows P/R/F1(/F2) vs threshold with hover
+values, the configured and best thresholds marked, a summary and a 0.05-step table, **Apply** /
+**Apply all** (writes `confidence_threshold`, same restart flow) and CSV copy/download.
 
 The `benchmark` config section holds the defaults (**Save as default** on the page writes it):
 
@@ -395,7 +423,8 @@ The `benchmark` config section holds the defaults (**Save as default** on the pa
   "datasets": ["coco-cctv", "bmd45-cctv", "exdark-night"],
   "max_images_per_dataset": 0, "devices": [], "models": [],
   "warmup": 3, "repeat_per_image": 1, "reference_model": null,
-  "weights": {"accuracy": 0.6, "speed": 0.4}, "auto_download_datasets": true
+  "weights": {"accuracy": 0.6, "speed": 0.4}, "auto_download_datasets": true,
+  "threshold_objective": "f1"
 }
 ```
 
@@ -409,7 +438,7 @@ Open `http://<host>:32168/` in a browser:
 | `/stats` | Per-model state, runtime, device, CPU fallback, requests, dropped, queue, inference/process/round-trip avg/min/max; updates in place every 5 s from `/stats.json` |
 | `/test` | Pick, drop or paste an image, choose a model and `min_confidence`; the page posts to `/v1/vision/custom/{model}` and draws the boxes client-side, with a detections table and the raw JSON (same code path and metrics as the API; without JavaScript the form posts to `/test` and the server draws the image) |
 | `/config` | Models card (which models load, the default model, **Save and restart**), Resources, server/inference/logging settings with "applies now" / "needs restart" tags and the `models` list as JSON under *Advanced*; **Restart server** reloads the file, recompiles the enabled models and rebinds the port without restarting the process (the page waits for the server and reloads) |
-| `/benchmark` | Benchmark models x devices x datasets in the background (progress, ETA, cancel); grade cards, model ranking, sortable per-device tables (fastest, recommended and configured marked), breakdowns by dataset/tag/class/size/resolution, per-image drill-down with ground truth and predictions drawn; **Use <device>** / **Apply recommended to all** write per-model devices |
+| `/benchmark` | Benchmark models x devices x datasets in the background (progress, ETA, cancel); grade cards, model ranking, sortable per-device tables (fastest, recommended and configured marked), breakdowns by dataset/tag/class/size/resolution, per-image drill-down with ground truth and predictions drawn; **Use <device>** / **Apply recommended to all** write per-model devices; best confidence threshold per model with a P/R/F1 vs threshold chart, **Apply threshold** / **Apply all thresholds**; **Confidence search** over the stored predictions (filters, objective, chart with hover values, tables, CSV) |
 | `/logs` | The last 2,000 log events of this process, live (polls `/logs.json`), with level filter, search, pause/follow, Copy and Download .txt, and the server log level (applies immediately; `POST /config/loglevel` with `level=debug`, form or query) |
 | `/prometheus` | Prometheus metrics (`blue_onyx_prism_*{model="..."}`), linked in the footer with the JSON endpoints |
 
@@ -473,6 +502,8 @@ Put models in `deploy/models` and a `blue_onyx_prism_config.json` in `deploy/con
 | POST | `/v1/benchmark` | start (202; 409 while one runs); form fields, all optional with the `benchmark` config as default: `model`, `device`, `dataset` (repeated), `max_images`, `repeat`, `warmup`, `reference_model`, `accuracy_weight` |
 | POST | `/v1/benchmark/cancel`, `/v1/benchmark/settings` | cancel; save the form fields as the `benchmark` config defaults |
 | POST | `/v1/benchmark/apply` | `model` + `device` (`""`/`global` clears it), or `all=1` for every saved recommendation; `restart=1` restarts |
+| POST | `/v1/benchmark/apply-threshold` | `model` + `threshold` (pairs, repeatable), or `all=1` for every saved best threshold; writes `confidence_threshold`; `restart=1` restarts |
+| GET, POST | `/v1/benchmark/threshold-search` | GET: searchable models/devices/datasets/tags/classes; POST: `model` (repeated or `all`), `device` (default recommended), `dataset`, `tag`, `class` (repeated), `objective` (`f1`, `f2`, `precision:<p>`, `recall:<r>`), `iou` (0.5): best threshold, P/R/F1/F2/FP per image at best vs configured, exact curve, 0.05 grid, per dataset/class, CSV; 400 when nothing is stored (run a benchmark first) |
 | GET | `/v1/benchmark/images?model=&device=`, `/v1/benchmark/image?set=&file=` | per-image drill-down data; an image of the saved results |
 | POST | `/v1/resources/add-to-config` | form `id` of a downloaded model, or `local:<file>` for a model file in `models_dir` (family `auto`): append it to `models` |
 
@@ -492,6 +523,8 @@ blue-onyx-prism-benchmark --model models/IPcam-general.onnx --family yolo5 --all
 [Per-model devices and benchmarking](#per-model-devices-and-benchmarking)). `--device` takes any device
 spec and `--all-devices` benchmarks every runnable option for each model (grades, agreement,
 recommendation, `benchmark.json`). Flags: `--model`, `--family`, `--device`, `--all-devices`, `--apply`,
+`--apply-threshold`, `--threshold-objective`, `--threshold-search` (with `--tag`, `--class`, `--search-model`,
+`--search-device`, `--iou`),
 `--report <file.html|.md>`, `--no-save`, `--force-cpu`, `--image` (one file), `--dataset` (repeatable),
 `--images <dir>`, `--gt`, `--max-images`, `--list-datasets`, `--reference-model`, `--accuracy-weight`,
 `--repeat` (timed runs per image; 100 for a single image), `--warmup`, `--compare-cpu` (also runs on CPU
