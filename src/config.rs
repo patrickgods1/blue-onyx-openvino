@@ -157,6 +157,15 @@ pub struct Config {
     /// CPU inference threads (0 = OpenVINO default).
     pub intra_threads: usize,
     pub models_dir: PathBuf,
+    /// Download missing resources (runtimes, models) in the background at startup. `false`
+    /// (air-gapped, Docker) only reports what is missing and the command to fetch it.
+    pub auto_download: bool,
+    /// Allow downloads over 500 MB (`resources::LARGE_DOWNLOAD_BYTES`), in practice the NVIDIA
+    /// CUDA/cuDNN libraries. Off by default.
+    pub allow_large_downloads: bool,
+    /// Root for downloaded runtimes (`openvino/`, `onnxruntime/<flavor>/`, ...), relative to the
+    /// exe dir. None = the exe dir. Model files go where each model's `path` points.
+    pub download_dir: Option<PathBuf>,
     /// Name of the model that serves `/v1/vision/detection`. None = first enabled entry.
     pub default_model: Option<String>,
     pub models: Vec<ModelConfig>,
@@ -183,6 +192,9 @@ impl Default for Config {
             save_ref_image: false,
             intra_threads: 0,
             models_dir: PathBuf::from("models"),
+            auto_download: true,
+            allow_large_downloads: false,
+            download_dir: None,
             default_model: None,
             models: Vec::new(),
         }
@@ -301,6 +313,54 @@ impl Config {
         crate::backend::spec::parse(&self.device_for(m)).with_context(|| field)
     }
 
+    /// Root for downloaded runtimes and relative model paths: `download_dir` (resolved against
+    /// the exe dir), else the exe dir.
+    pub fn data_root(&self) -> PathBuf {
+        self.download_dir
+            .as_deref()
+            .map(crate::resolve_path)
+            .unwrap_or_else(crate::exe_dir)
+    }
+
+    /// A model/classes/models_dir path: absolute as is, else under [`Self::data_root`].
+    pub fn data_path(&self, p: &Path) -> PathBuf {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.data_root().join(p)
+        }
+    }
+
+    /// OpenVINO install dir to use: `openvino_dir` (resolved against the exe dir), else
+    /// `<download_dir>/openvino` when `download_dir` is set and that exists. None = the exe
+    /// dir's `openvino/`, then the system.
+    pub fn openvino_dir_effective(&self) -> Option<PathBuf> {
+        if let Some(d) = &self.openvino_dir {
+            return Some(crate::resolve_path(d));
+        }
+        self.download_dir.as_ref()?;
+        let d = self
+            .data_root()
+            .join(crate::backend::libs::BUNDLED_DIR_NAME);
+        d.is_dir().then_some(d)
+    }
+
+    /// ONNX Runtime lookup options for this config (explicit dir and the install root).
+    pub fn ort_options(&self) -> crate::backend::OrtOptions {
+        crate::backend::OrtOptions {
+            onnxruntime_dir: self.onnxruntime_dir.as_deref().map(crate::resolve_path),
+            default_dir: self
+                .download_dir
+                .is_some()
+                .then(|| self.data_root().join(crate::backend::libs::ORT_DIR_NAME)),
+            cuda_libs_dir: Some(
+                self.data_root()
+                    .join(crate::backend::libs::ORT_DIR_NAME)
+                    .join(crate::backend::libs::CUDA_LIBS_DIR_NAME),
+            ),
+        }
+    }
+
     /// Cache directory resolved against the exe dir, or None when disabled.
     pub fn cache_dir_path(&self) -> Option<PathBuf> {
         if self.cache_dir.trim().is_empty() {
@@ -333,6 +393,8 @@ pub const FORM_FIELDS: &[&str] = &[
     "save_image_path",
     "save_ref_image",
     "intra_threads",
+    "auto_download",
+    "allow_large_downloads",
 ];
 
 /// Apply a submitted `/config` form to `config`. All fields are validated first; on any error
@@ -410,6 +472,12 @@ pub fn apply_config_form(
         c.save_image_path = opt_path(v);
     }
     c.save_ref_image = checkbox("save_ref_image");
+    // Download settings are checkboxes too, but only forms that show them (marked with the
+    // hidden `download_settings` field) change them, so older form posts keep their values.
+    if form.contains_key("download_settings") {
+        c.auto_download = checkbox("auto_download");
+        c.allow_large_downloads = checkbox("allow_large_downloads");
+    }
     if let Some(v) = get("intra_threads") {
         c.intra_threads = num("intra_threads", v)?;
     }

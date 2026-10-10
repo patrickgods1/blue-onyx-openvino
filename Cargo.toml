@@ -34,6 +34,9 @@ onnxruntime = ["dep:ort"]
 
 [dependencies]
 openvino = { version = "0.11", features = ["runtime-linking"] }
+# Same version/feature as `openvino` uses; `library::load_from` loads openvino_c by explicit path
+# (no environment variable) in later registry generations.
+openvino-sys = { version = "=0.11.0", features = ["runtime-linking"] }
 anyhow = "1"
 thiserror = "2"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "multipart", "tokio", "query", "form"] }
@@ -59,13 +62,14 @@ jpeg-encoder = { version = "0.7", features = ["std", "simd"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 imageproc = { version = "0.27", default-features = false }
 ab_glyph = "0.2"
-hf-hub = { version = "1", default-features = false, features = ["rustls-tls", "blocking"] }
 indicatif = "0.18"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "webpki-roots", "json", "multipart", "stream", "http2"] }
 futures-util = "0.3"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
+# SHA-256 of downloads (already in the tree via other crates).
+sha2 = "0.11"
 num_cpus = "1"
 base64 = "0.22"
 # Same major as openvino-sys's runtime-linking dependency; used to preload libtbb/libopenvino

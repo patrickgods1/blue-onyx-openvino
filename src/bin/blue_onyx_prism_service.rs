@@ -204,10 +204,12 @@ mod service {
         );
         // Set OPENVINO_INSTALL_DIR (and the DLL search path) before any runtime/worker thread
         // exists; `OvCore::new` calls it again per generation and then leaves it untouched.
+        // `openvino_dir`, else `<download_dir>/openvino` (installs go under the install dir or
+        // `download_dir`, never %TEMP%).
         let openvino_dir = first
             .as_ref()
             .ok()
-            .and_then(|(c, _)| c.openvino_dir.as_deref().map(resolve_path));
+            .and_then(|(c, _)| c.openvino_dir_effective());
         libs::prepare_environment(openvino_dir.as_deref());
 
         let server = {

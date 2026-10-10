@@ -60,6 +60,9 @@ pub struct WorkerConfig {
     pub lazy: bool,
     /// Reported as `canUseGPU` (some GPU-class device option of any runtime can run).
     pub can_use_gpu: bool,
+    /// Downloads to wait for before loading (phase 7.3); progress goes into the model state.
+    /// `classes` is empty then and read from disk once the files are there.
+    pub wait: Option<crate::resources::provision::Wait>,
 }
 
 /// One-shot "this worker is done with its startup load" signal, used by the registry to make
@@ -331,9 +334,28 @@ fn ms(d: Duration) -> i32 {
 }
 
 impl WorkerCtx {
-    fn run(self, rx: Receiver<WorkItem>, after: Option<LoadGate>) {
+    fn run(mut self, rx: Receiver<WorkItem>, after: Option<LoadGate>) {
         let name = self.cfg.name.clone();
-        if let Some(prev) = after
+        if let Some(wait) = self.cfg.wait.take() {
+            // Do not hold up the models after this one while downloading.
+            self.gate.open();
+            if !self.wait_for_downloads(&wait) {
+                return;
+            }
+            if self.cfg.classes.is_empty() {
+                let classes = self.cfg.model.classes.clone();
+                match crate::registry::resolve_class_names(&self.cfg.model.path, classes.as_deref())
+                {
+                    Ok(c) => self.cfg.classes = c,
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        error!(model = %name, "{msg}");
+                        self.state.set(ModelState::Failed(msg));
+                        return;
+                    }
+                }
+            }
+        } else if let Some(prev) = after
             && !prev.wait(&self.shutdown)
         {
             self.gate.open();
@@ -418,6 +440,39 @@ impl WorkerCtx {
             }
         }
         info!(model = %name, "worker exiting");
+    }
+
+    /// Block until the model's downloads are installed (true: load now). Keeps the state
+    /// `Initializing` with the progress text; a failed download makes it `Failed`; a runtime
+    /// that got installed keeps it waiting for the new generation (false on shutdown).
+    fn wait_for_downloads(&self, wait: &crate::resources::provision::Wait) -> bool {
+        use crate::resources::provision::WaitStatus;
+        let name = &self.cfg.name;
+        let mut last = String::new();
+        loop {
+            if self.shutdown.is_cancelled() {
+                return false;
+            }
+            match wait.poll() {
+                WaitStatus::Ready => {
+                    info!(model = %name, "downloads installed; loading");
+                    return true;
+                }
+                WaitStatus::Failed(msg) => {
+                    error!(model = %name, "{msg}");
+                    self.state.set(ModelState::Failed(msg));
+                    return false;
+                }
+                WaitStatus::Pending(msg) | WaitStatus::AwaitingRestart(msg) => {
+                    if msg != last {
+                        debug!(model = %name, "{msg}");
+                        self.state.set_initializing(msg.clone());
+                        last = msg;
+                    }
+                }
+            }
+            std::thread::sleep(POLL);
+        }
     }
 
     /// Load + warm up, updating state/device/soft capacity. Returns None on failure.

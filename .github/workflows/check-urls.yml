@@ -1,0 +1,23 @@
+# Weekly check that every pinned download in the resource catalog (src/resources/catalog.rs) still
+# answers with its catalogued size: OpenVINO, ONNX Runtime, DirectML, the NVIDIA wheels and the
+# models, for every platform. Hashes are pinned in the binary; this catches moved or deleted
+# files before users hit them.
+name: Check catalog URLs
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-urls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check every catalog URL
+        run: cargo run --quiet -- list-resources --check-urls

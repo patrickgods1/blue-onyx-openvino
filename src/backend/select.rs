@@ -213,7 +213,8 @@ impl RuntimeProbe {
     }
 }
 
-/// One selectable device.
+/// One selectable device. Three states: runnable; downloadable (not runnable, but `download`
+/// says what to fetch to make it so); unavailable (not runnable, `reason` says why).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceOption {
     #[serde(serialize_with = "ser_display")]
@@ -223,6 +224,39 @@ pub struct DeviceOption {
     pub runnable: bool,
     /// Why it cannot run (always set when `runnable` is false).
     pub reason: Option<String>,
+    /// Not runnable now, but downloading these resources makes it runnable.
+    pub download: Option<DownloadOffer>,
+}
+
+/// What a "downloadable" device option needs (from `resources::resolve::downloadable_options`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DownloadOffer {
+    /// Resource ids, e.g. `["onnxruntime-cuda", "nvidia-cuda-libs"]`.
+    pub resources: Vec<String>,
+    /// Total download size in bytes.
+    pub size: u64,
+    /// Over the large-download threshold (needs `allow_large_downloads`).
+    pub large: bool,
+    /// "will download ONNX Runtime CUDA/TensorRT 1.24.4 (281 MB)".
+    pub summary: String,
+}
+
+impl DeviceOption {
+    /// Not runnable now, but downloadable.
+    pub fn is_downloadable(&self) -> bool {
+        !self.runnable && self.download.is_some()
+    }
+
+    /// "ok", "download" or "no".
+    pub fn status(&self) -> &'static str {
+        if self.runnable {
+            "ok"
+        } else if self.download.is_some() {
+            "download"
+        } else {
+            "no"
+        }
+    }
 }
 
 fn ser_display<S: Serializer>(d: &Device, s: S) -> Result<S::Ok, S::Error> {
@@ -252,6 +286,23 @@ impl Selection {
     /// The device `auto` tries first.
     pub fn auto_pick(&self) -> Option<&DeviceOption> {
         self.auto.first().and_then(|d| self.option(d))
+    }
+
+    /// Mark `spec` downloadable with `offer`. A runnable option is left alone (and `auto` is
+    /// never changed: it only ever holds runnable options); an option this machine's selection
+    /// does not list (e.g. OpenVINO GPU before OpenVINO is installed) is added, not runnable.
+    pub fn offer_download(&mut self, spec: Device, label: &str, offer: DownloadOffer) {
+        match self.options.iter_mut().find(|o| o.spec == spec) {
+            Some(o) if o.runnable => {}
+            Some(o) => o.download = Some(offer),
+            None => self.options.push(DeviceOption {
+                spec,
+                label: label.to_string(),
+                runnable: false,
+                reason: Some("not installed".to_string()),
+                download: Some(offer),
+            }),
+        }
     }
 
     /// Some GPU-class option can run (`canUseGPU`).
@@ -317,6 +368,7 @@ impl Builder<'_> {
             label,
             runnable: reason.is_none(),
             reason,
+            download: None,
         });
     }
 
@@ -521,7 +573,7 @@ pub fn format_options(sel: &Selection) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "  {:<width$}  {:<8}  LABEL / REASON", "SPEC", "STATUS");
     for o in &sel.options {
-        let status = if o.runnable { "ok" } else { "no" };
+        let status = o.status();
         let _ = writeln!(
             out,
             "  {:<width$}  {:<8}  {}",
@@ -529,7 +581,9 @@ pub fn format_options(sel: &Selection) -> String {
             status,
             o.label
         );
-        if let Some(r) = &o.reason {
+        if let Some(d) = &o.download {
+            let _ = writeln!(out, "  {:<width$}  {:<8}    -> {}", "", "", d.summary);
+        } else if let Some(r) = &o.reason {
             let _ = writeln!(out, "  {:<width$}  {:<8}    -> {}", "", "", r);
         }
     }

@@ -56,6 +56,32 @@ pub enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// Download what the config needs (default), named resources, or everything for this
+    /// platform: runtimes, ONNX Runtime flavors, NVIDIA libraries and models (for Docker builds
+    /// and offline preparation).
+    Fetch {
+        /// Everything the config needs on this machine (the default without other flags).
+        #[arg(long)]
+        for_config: bool,
+        /// Resource id (repeatable), e.g. `openvino-runtime`, `onnxruntime-cuda`,
+        /// `nvidia-cuda-libs`, `model:IPcam-general`. See `list-resources`.
+        #[arg(long)]
+        resource: Vec<String>,
+        /// Every resource available for this platform (large ones need --allow-large).
+        #[arg(long)]
+        all_for_platform: bool,
+        /// Allow downloads over 500 MB (also config `allow_large_downloads`).
+        #[arg(long)]
+        allow_large: bool,
+    },
+    /// Show the downloadable resources for this platform: installed, needed by the config, or
+    /// available, with sizes.
+    ListResources {
+        /// Instead, check that every pinned URL of every platform answers with its catalogued
+        /// size (no full download; used by the weekly CI job). Exits non-zero on failure.
+        #[arg(long)]
+        check_urls: bool,
+    },
     /// Show detected GPUs, every device option (runnable or why not) and what `auto` picks.
     ListDevices {
         /// Also show the load plan for this model file (repeatable; default: the enabled models
@@ -212,6 +238,7 @@ impl Cli {
                 add_to_config,
             },
             Command::ListModels { dir } => Command::ListModels { dir: abs(&dir) },
+            Command::Fetch { .. } | Command::ListResources { .. } => cmd,
             Command::ListDevices { model } => Command::ListDevices {
                 model: model.iter().map(|p| absolutize(p, base)).collect(),
             },

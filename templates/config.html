@@ -42,6 +42,66 @@
   </div>
 </form>
 
+<section class="card" id="resources">
+  <h2>Resources</h2>
+  <p class="muted">Runtimes, ONNX Runtime flavors, NVIDIA libraries and models this server can download for this platform (pinned versions, SHA-256 checked). With <em>auto download</em> on, whatever the config needs is fetched at startup; anything else can be downloaded here. A new runtime is used after the server restarts (it does so by itself when a model is waiting for it). Live JSON: <a href="/v1/resources"><code>/v1/resources</code></a>.</p>
+  {% if !resources_enabled %}<p class="muted">This server has no download manager; use <code>blue-onyx-prism fetch</code>.</p>{% endif %}
+  <div class="scroll">
+  <table>
+  <thead><tr><th>Resource</th><th>Size</th><th>State</th><th>Action</th></tr></thead>
+  <tbody>
+  {% for r in resources %}
+  <tr data-id="{{ r.id }}" data-busy="{{ r.busy }}">
+    <td>{{ r.title }} <code>{{ r.id }}</code><br><span class="muted">{{ r.description }}{% if r.kind == "cuda-libs" %} &middot; {{ r.license }}{% endif %}</span></td>
+    <td class="num">{{ r.size_text }}{% if r.large %}<br><span class="muted">large</span>{% endif %}</td>
+    <td class="res-state">{{ r.state_text }}{% if r.active %} <span class="tag">active</span>{% endif %}{% if r.loaded %} <span class="tag">loaded</span>{% endif %}{% if !r.blocking.is_empty() %}<br><span class="muted">needed by {{ r.blocking.join(", ") }}</span>{% endif %}</td>
+    <td>
+    {% if r.state == "installed" %}
+      {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove {{ r.title }}?">Remove</button></form>
+      {% else if let Some(why) = r.remove_blocked %}<span class="muted">{{ why }}</span>{% endif %}
+      {% if r.can_add_to_config %}<form method="post" action="/v1/resources/add-to-config" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit">Add to config</button></form>{% endif %}
+    {% else if r.busy %}<span class="muted">in progress</span>
+    {% else if resources_enabled %}
+      <form method="post" action="/v1/resources/download" class="inline"><input type="hidden" name="id" value="{{ r.id }}">
+      {% if r.large %}<input type="hidden" name="confirm_large" value="1"><button type="submit" data-confirm="{{ r.title }} is {{ r.size_text }} ({{ r.license }}). Download it?">Download {{ r.size_text }} (large)</button>
+      {% else %}<button type="submit">Download</button>{% endif %}
+      </form>
+    {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+  </div>
+  <p class="muted">YOLO26 models cannot be downloaded (the weights are AGPL-3.0): export them locally with <code>scripts/export_yolo26.py</code> (see the README) and add the <code>.xml</code>/<code>.onnx</code> to the models below. The large NVIDIA CUDA/cuDNN libraries (needed for <code>ort:cuda</code> unless CUDA 12 and cuDNN 9 are installed) are covered by NVIDIA's license.</p>
+</section>
+<script>
+// Confirmation for large downloads and removals (without JS the button label shows the size).
+document.querySelectorAll("button[data-confirm]").forEach(function (b) {
+  b.addEventListener("click", function (e) { if (!confirm(b.dataset.confirm)) e.preventDefault(); });
+});
+// Live progress: poll /v1/resources while something downloads; reload when it finishes.
+(function () {
+  var busy = function () { return document.querySelector('#resources tr[data-busy="true"]'); };
+  if (!busy()) return;
+  var timer = setInterval(function () {
+    fetch("/v1/resources").then(function (r) { return r.json(); }).then(function (j) {
+      var done = true;
+      j.resources.forEach(function (r) {
+        var row = document.querySelector('#resources tr[data-id="' + r.id + '"]');
+        if (!row) return;
+        var cell = row.querySelector(".res-state");
+        if (row.dataset.busy === "true") {
+          cell.firstChild.nodeValue = r.state_text;
+          if (r.busy) done = false;
+        }
+      });
+      if (done) { clearInterval(timer); location.reload(); }
+    }).catch(function () {});
+  }, 2000);
+})();
+</script>
+
 <form method="post" action="/config" class="card grid">
   <h2>Server</h2>
   <label>Port <input type="number" name="port" min="1" max="65535" value="{{ c.port }}" required></label>
@@ -54,9 +114,12 @@
     {% for d in device_choices %}<option value="{{ d.value }}"{% if d.selected %} selected{% endif %}{% if d.disabled %} disabled class="unavailable"{% endif %}>{{ d.label }}</option>{% endfor %}
     </select>
   </label>
-  <p class="muted">Options that cannot run on this machine are greyed out with the reason. Live list: <a href="/v1/devices"><code>/v1/devices</code></a>. Per-model devices are set in the models JSON below (<code>"device"</code>).</p>
+  <p class="muted">Options marked "will download" are fetched when you save (the server restarts and switches once installed; large ones need "Allow large downloads"). Options that cannot run on this machine are greyed out with the reason. Live list: <a href="/v1/devices"><code>/v1/devices</code></a>. Per-model devices are set in the models JSON below (<code>"device"</code>).</p>
   <label>GPU index <input type="number" name="gpu_index" min="0" value="{{ c.gpu_index }}" required></label>
   <label class="check"><input type="checkbox" name="force_cpu"{% if c.force_cpu %} checked{% endif %}> Force CPU</label>
+  <input type="hidden" name="download_settings" value="1">
+  <label class="check"><input type="checkbox" name="auto_download"{% if c.auto_download %} checked{% endif %}> Auto download (missing runtimes and models at startup)</label>
+  <label class="check"><input type="checkbox" name="allow_large_downloads"{% if c.allow_large_downloads %} checked{% endif %}> Allow large downloads (over 500 MB, e.g. NVIDIA CUDA libraries)</label>
   <label>Cache dir (empty disables) <input type="text" name="cache_dir" value="{{ c.cache_dir }}"></label>
   <label>CPU threads (0 = default) <input type="number" name="intra_threads" min="0" value="{{ c.intra_threads }}" required></label>
   <label>Confidence threshold <input type="number" name="confidence_threshold" min="0" max="1" step="0.01" value="{{ c.confidence_threshold }}" required></label>

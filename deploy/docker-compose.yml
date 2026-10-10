@@ -18,6 +18,13 @@ services:
       - "${RENDER_GID:-109}"
       - "${VIDEO_GID:-44}"
     volumes:
-      - ./models:/app/models
+      # Named volume: starts with the models fetched at image build time (`fetch --for-config`
+      # on deploy/docker-config.json). Use `./models:/app/models` instead to bring your own.
+      - models:/app/models
       - ./cache:/app/cache
+      # The default config (auto_download: false, IPcam-general on `auto`) is copied here on
+      # first start; edit it, then restart the container.
       - ./config:/app/config
+
+volumes:
+  models:

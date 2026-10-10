@@ -16,6 +16,8 @@ cargo run -- setup-openvino                 # downloads OpenVINO runtime libs in
 cargo run -- setup-onnxruntime [--flavor auto|cpu|cuda|directml] [--dir <d>]   # ORT libs into ./onnxruntime
 cargo run -- list-devices                    # runnable device options and the `auto` pick
 cargo run -- download-models --name IPcam-general
+cargo run -- fetch [--for-config] [--resource <id>] [--all-for-platform] [--allow-large]   # pre-download what the config needs
+cargo run -- list-resources [--check-urls]   # installed / needed / available; --check-urls checks every pinned URL (weekly CI)
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --force-cpu
 cargo run -- --model models/IPcam-general.onnx --family yolo5 --device ort:cpu
 cargo build --no-default-features            # OpenVINO-only build (drops the `onnxruntime` feature / `ort`)
@@ -28,14 +30,19 @@ Python export env (YOLO26 -> OpenVINO IR): `.venv` (Python 3.11, `ultralytics`, 
 created with `uv venv --python 3.11 .venv && uv pip install -r scripts/requirements-export.txt`;
 run `.venv/Scripts/python.exe scripts/export_yolo26.py` (Windows) or `.venv/bin/python scripts/export_yolo26.py`.
 
-OpenVINO libs are discovered through `openvino-finder`: `OPENVINO_INSTALL_DIR` (set at runtime by
-`backend/libs.rs` to `<exe_dir>/openvino` when present) or the OS library path. Pinned version lives in
-one constant in `src/setup_openvino.rs`.
+OpenVINO libs are discovered through `openvino-finder`: `OPENVINO_INSTALL_DIR` (Windows; on Unix
+`backend/libs.rs` loads `openvino_c` by path) pointing at `<download root>/openvino` when present, or the OS library path.
 
-ONNX Runtime libs: `onnxruntime_dir` in the config, else `ORT_DYLIB_PATH`, else `<exe_dir>/onnxruntime`
-(`setup-onnxruntime` writes the libs plus `flavor.txt`). The pin (`ONNXRUNTIME_VERSION` 1.24.4,
-`DIRECTML_VERSION`) lives in `src/setup_onnxruntime.rs`. The `ort` crate's api-level must stay <= the pinned
-ORT lib (1.24), because the DirectML NuGet stops there. A process loads one ORT flavor only.
+On-demand resources: pins, URLs, SHA-256 and sizes of everything downloadable (OpenVINO, ONNX Runtime
+flavors, DirectML, `nvidia-cuda-libs`, models) live in `src/resources/catalog.rs`; change them only in
+reviewed commits. The service downloads what the config + hardware need at startup (`auto_download`, default
+true; `allow_large_downloads`, default false, gates > 500 MB; `download_dir`, default the exe dir).
+
+ONNX Runtime libs: `onnxruntime_dir` in the config, else `ORT_DYLIB_PATH`, else `onnxruntime/<flavor>/` named by
+`onnxruntime/active.txt`, else the old flat `onnxruntime/`, else any flavor dir. `ONNXRUNTIME_VERSION` 1.24.4 and
+`DIRECTML_VERSION` are in the catalog. The `ort` crate's api-level must stay <= the pinned ORT lib (1.24), because
+the DirectML NuGet stops there. A process loads one ORT flavor only. `onnxruntime/cuda-libs` (opt-in NVIDIA
+wheels, ~1.9 GB) is preloaded by path before the CUDA provider loads.
 
 Device spec (`device` in config/model entry, `--device`): `auto` (default), `openvino:gpu[.N]`,
 `openvino:cpu`, `openvino:npu`, `ort:cuda[:N]`, `ort:tensorrt[:N]`, `ort:directml[:N]`, `ort:coreml`,
@@ -60,6 +67,11 @@ NPU are never auto. RT-DETR is excluded from CoreML (aborts in ORT 1.24.4). ORT 
 - `src/model/` model families: `yolo26` (end-to-end `[1,300,6]`), `yolo5` (`[1,N,5+C]` + NMS),
   `yolo8` (`[1,4+C,8400]` + NMS), `rtdetr` (`images` + i64 `orig_target_sizes`; `labels/boxes/scores`).
   Preprocess = letterbox (YOLO) or stretch (RT-DETR) to 640x640 RGB f32 0..1, CHW.
+- `src/resources/` on-demand resources: `catalog` (pins), `resolve` (pure needs from config + hardware +
+  installed), `manager` (one download thread, Range resume, SHA-256, staging + atomic rename, `.installed.json`,
+  `.downloads.lock`, backoff), `extract` (whitelist-only, nothing executed), `provision` (startup: models wait
+  with progress; a new runtime starts a new registry generation), `status` (`/v1/resources` + UI actions),
+  `commands` (`fetch`, `list-resources`).
 - `src/config.rs` JSON config next to the exe; CLI overrides only non-default values and writes back.
 - Windows service in `src/bin/blue_onyx_prism_service.rs` (cfg windows). systemd/launchd/Docker in `deploy/`.
 
