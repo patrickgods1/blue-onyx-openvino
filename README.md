@@ -8,8 +8,98 @@ Modeled on [blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT) without ONNX R
 multi-model serving (`/v1/vision/custom/{model}`), YOLO26 end-to-end models and Intel GPU inference
 on Windows.
 
-Status: under construction. The implementation plan is in [docs/PLAN.md](docs/PLAN.md); the module
-map and conventions are in [CLAUDE.md](CLAUDE.md).
+## Features
+
+- Drop-in CodeProject.AI / DeepStack compatible API for Blue Iris (`/v1/vision/detection`, `/v1/vision/custom/{model}`, `/v1/vision/custom/list`).
+- Native OpenVINO inference (no ONNX Runtime): Intel integrated/discrete GPU on Windows and Linux, CPU everywhere, automatic GPU -> CPU fallback.
+- Several models served at once, each with its own worker and metrics; per-model device, threshold, class filter and lazy loading.
+- Model families: YOLO26 (end-to-end), YOLOv5 (the blue-onyx IPcam models), YOLOv8/11, RT-DETRv2. ONNX or OpenVINO IR.
+- Compiled-model cache (fast restarts), HTTP served while models compile, web UI (stats, test page, config editor), Prometheus metrics.
+- Runs as a Windows service, systemd unit, launchd daemon or Docker container.
+
+## Supported platforms
+
+| Platform | Inference | Notes |
+|---|---|---|
+| Windows 11 x86_64 | Intel GPU (iGPU/Arc) + CPU | Primary target; Windows service. Needs the MSVC runtime redistributable. |
+| Linux x86_64 | Intel GPU (`/dev/dri`) + CPU | Install `intel-opencl-icd`; user in the `render` group. systemd and Docker files provided. |
+| macOS arm64 | CPU only | launchd daemon. No GPU plugin exists for Apple silicon. |
+
+## Quick start
+
+Download the archive for your OS from the [releases page](https://github.com/patrickgods1/blue-onyx-openvino/releases)
+(`blue-onyx-openvino-<version>-<os>-<arch>.zip|tar.gz`, with a `.sha256` file). It already contains the
+OpenVINO runtime in `openvino/`, the binaries and the helper scripts. Or build from source (see
+[Developer setup](#developer-setup)) and run `blue-onyx-openvino setup-openvino`.
+
+Windows (PowerShell):
+
+```powershell
+Expand-Archive blue-onyx-openvino-*-windows-x86_64.zip .; cd blue-onyx-openvino-*-windows-x86_64
+.\blue-onyx-openvino.exe download-models --name IPcam-general --add-to-config
+.\blue-onyx-openvino.exe            # GPU by default; add --force-cpu to stay on the CPU
+```
+
+Linux / macOS:
+
+```sh
+tar xzf blue-onyx-openvino-*-linux-x86_64.tar.gz && cd blue-onyx-openvino-*-linux-x86_64
+./blue-onyx-openvino download-models --name IPcam-general --add-to-config
+./blue-onyx-openvino                 # macOS: CPU is used automatically
+```
+
+Check it: open `http://127.0.0.1:32168/`, or `./test-blue-onyx-openvino` (see [Test client](#test-client)).
+`--model <path> --family yolo5|yolo26|yolo8|rtdetr|auto` runs a single model without editing the config.
+`blue-onyx-openvino --help` lists every option; `list-models` shows the downloadable catalog.
+
+The first GPU start compiles each model (20-60 s on an iGPU) and stores the result in `cache/`;
+later starts take seconds. The HTTP server is up immediately and answers `Model initializing` until
+the model is ready.
+
+## Configuration
+
+`blue_onyx_openvino_config.json` next to the executable (`--config <file>` to use another). A CLI
+flag overrides the file and the merged result is written back. Relative paths in the file resolve
+against the executable directory. The Windows service reads `blue_onyx_openvino_config_service.json`
+(created with debug logging on first start).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `port` | `32168` | HTTP listen port (binds `0.0.0.0`) |
+| `request_timeout_secs` | `15` | Max time a request may wait in the queue plus processing |
+| `worker_queue_size` | `0` | Per-model queue length; 0 = auto from timeout and measured inference time |
+| `device` | `"GPU"` | `GPU`, `GPU.N` or `CPU`; falls back to CPU when no GPU is available |
+| `gpu_index` | `0` | GPU to use when several are present |
+| `force_cpu` | `false` | Always use the CPU |
+| `cache_dir` | `"cache"` | Compiled-model cache; empty disables it |
+| `openvino_dir` | `null` | OpenVINO runtime dir; default `<exe_dir>/openvino`, else the system install |
+| `confidence_threshold` | `0.5` | Default minimum confidence (a request's `min_confidence` > 0 overrides it) |
+| `nms_iou` | `0.5` | IoU threshold for NMS-based families |
+| `object_filter` | `[]` | Only report these labels (case-insensitive); empty = all |
+| `log_level` | `"info"` | `trace`, `debug`, `info`, `warn`, `error` |
+| `log_path` | `null` | Directory for daily rolling log files (default: stdout) |
+| `save_image_path` | `null` | Save annotated detections here |
+| `save_ref_image` | `false` | Also save the unannotated image |
+| `intra_threads` | `0` | CPU inference threads (0 = OpenVINO default; try 4 of 6 cores) |
+| `models_dir` | `"models"` | Where `download-models` puts files |
+| `default_model` | `null` | Model serving `/v1/vision/detection`; default = first entry |
+| `models` | `[]` | Model list, see [Multiple models](#multiple-models) |
+
+Model entry fields: `name`, `path` (`.onnx` or IR `.xml`), `family` (`auto`, `yolo26`, `yolo5`, `yolo8`,
+`rtdetr`), `classes` (YAML with `NAMES:`; default `<stem>.yaml`, then COCO-80), `device`,
+`confidence_threshold`, `object_filter`, `lazy`, `gpu_precision`.
+
+## Blue Iris setup
+
+1. Settings -> AI: enable the AI server, choose CodeProject.AI Server, address `127.0.0.1` (or the
+   host running this service), port `32168`. (Older versions: the "Use AI server on IP/port" fields.)
+2. Per camera: Camera settings -> Alerts -> Artificial Intelligence. Leave the custom models field
+   empty to use the default object detection (`/v1/vision/detection`, served by `default_model`), or
+   enter the configured model names comma separated, e.g. `ipcam-general,yolo26s`
+   (each is served via `/v1/vision/custom/<name>`; matching is case-insensitive and ignores a file extension).
+3. Click "Trigger now" on the camera (or use the AI test in Blue Iris); the alert shows the label.
+4. Check `http://127.0.0.1:32168/stats`: per-model request counters rise and `dropped` should stay 0.
+   If it does not, lower the number of models on the GPU or move one to `"device": "CPU"`.
 
 ## Developer setup
 
@@ -83,15 +173,8 @@ frontend, or to ship FP16 weights, convert it with the same venv:
 - `scripts/` service install scripts (Windows PowerShell, systemd, launchd) and the YOLO26 export script
 - `deploy/` systemd unit, launchd plist, docker-compose; `Dockerfile` at the root
 - `docs/PLAN.md` implementation plan and phase checklist
-- `.github/workflows/ci.yml` build, lint, test and a CPU smoke test on Windows, Linux and macOS
+- `.github/workflows/ci.yml` build, lint, test and a CPU smoke test on Windows, Linux and macOS; `release.yml` builds the per-OS archives and a draft release
 - `.claude/` Claude Code project configuration (agent definitions)
-
-## Blue Iris configuration
-
-Settings -> AI: enable "Use AI server", address `127.0.0.1`, port `32168`. Per camera -> Alerts -> AI:
-default object detection is served by the default model via `/v1/vision/detection`. For custom models
-enter their names comma separated in the custom models field, e.g. `yolo26s,ipcam-general`; each name
-is served via `/v1/vision/custom/{name}`.
 
 ## Multiple models
 
@@ -138,6 +221,103 @@ Open `http://<host>:32168/` in a browser:
 `log_path` changes need a full process restart. The UI has no authentication: do not expose the port
 beyond your LAN.
 
+## Running as a service
+
+**Windows** (elevated PowerShell, from the extracted archive):
+
+```powershell
+.\scripts\install_service.ps1        # service BlueOnyxOpenVINOService, auto start, auto restart, firewall rule
+.\scripts\uninstall_service.ps1
+```
+
+The script raises `ServicesPipeTimeout` to 600000 ms (applies after a reboot) so the first start can
+compile models. If GPU access fails under LocalSystem, install with `-Account DOMAIN\user`.
+Logs go to the Application event log (source `BlueOnyxOpenVINO`) and, with `log_path`, to files.
+
+**Linux** (systemd):
+
+```sh
+sudo cp -r blue-onyx-openvino-<version>-linux-x86_64 /opt/blue-onyx-openvino
+sudo /opt/blue-onyx-openvino/scripts/install_systemd.sh      # creates user blueonyx (render, video groups)
+journalctl -u blue-onyx-openvino -f
+```
+
+**macOS** (launchd, CPU only):
+
+```sh
+sudo cp -r blue-onyx-openvino-<version>-macos-aarch64 /usr/local/blue-onyx-openvino
+sudo /usr/local/blue-onyx-openvino/scripts/install_launchd.sh   # KeepAlive; log in blue-onyx-openvino.log
+```
+
+**Docker** (Linux, Intel GPU through `/dev/dri`; image based on `openvino/ubuntu24_runtime`):
+
+```sh
+cd deploy && mkdir -p models cache config
+RENDER_GID=$(getent group render | cut -d: -f3) docker compose up -d --build
+```
+
+Put models in `deploy/models` and a `blue_onyx_openvino_config.json` in `deploy/config`.
+
+## HTTP API
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/v1/vision/detection` | multipart `image`, optional `min_confidence`; default model |
+| POST | `/v1/vision/custom/{model}` | same, named model |
+| POST, GET | `/v1/vision/custom/list` | configured model names |
+| GET | `/v1/status/updateavailable` | GitHub release check |
+| GET | `/`, `/stats`, `/stats.json`, `/prometheus` | UI and metrics |
+| GET, POST | `/test`, `/config` | test page, config editor |
+| POST | `/config/restart`, `/config/loglevel` | reload config, change log level |
+
+The detection response is byte-compatible with CodeProject.AI: `success, message, error, predictions
+[{x_min, y_min, x_max, y_max, confidence, label}], count, command, moduleId, executionProvider,
+canUseGPU, inferenceMs, processMs, analysisRoundTripMs`.
+
+## Benchmark
+
+```sh
+blue-onyx-openvino-benchmark --model models/IPcam-general.onnx --family yolo5 --repeat 50 --warmup 5
+blue-onyx-openvino-benchmark --model models/yolo26s.xml --family yolo26 --device GPU --compare-cpu --json
+```
+
+Flags: `--model`, `--family`, `--device`, `--force-cpu`, `--image`, `--repeat`, `--warmup`,
+`--compare-cpu` (also runs on CPU and diffs detections), `--cache-dir` (`""` disables), `--threads`,
+`--classes`, `--min-confidence`, `--config` (models from the config when no `--model`), `--json`, `-v`.
+If GPU latency is not clearly below CPU latency, the GPU was probably not used (check the log) or
+the FP32 path is active.
+
+## Test client
+
+```sh
+test-blue-onyx-openvino                                   # embedded sample image -> /v1/vision/detection
+test-blue-onyx-openvino --model ipcam-general --image cam.jpg --min-confidence 0.4
+test-blue-onyx-openvino --repeat 50 --parallel 4          # latency summary (client, inferenceMs, processMs)
+test-blue-onyx-openvino --list                            # /v1/vision/custom/list
+test-blue-onyx-openvino --save out.jpg                    # annotated copy of the image
+```
+
+Also `--url` (default `http://127.0.0.1:32168`) and `--interval-ms`. Exits non-zero if any
+response has `success: false` or a non-200 status.
+
+## Troubleshooting
+
+- **GPU not used / `executionProvider` says CPU:** the log prints the available devices. On Windows
+  install the current Intel graphics driver; on Linux install `intel-opencl-icd` and make sure the service
+  user is in the `render` group (`ls -l /dev/dri`). If the GPU still fails the service falls back to
+  CPU and reports `OpenVINO CPU (fallback)`. Under Windows services try `-Account` (see above).
+- **First start is slow:** GPU kernels are compiled once (20-60 s per model) and cached in `cache/`;
+  keep that directory. Windows service starts allow up to 10 minutes.
+- **macOS:** only the CPU plugin exists for Apple silicon; the GPU option is ignored.
+- **`Unable to find the openvino_c library`:** run `blue-onyx-openvino setup-openvino` or set
+  `openvino_dir` / `OPENVINO_INSTALL_DIR`. On Windows install the Visual C++ redistributable.
+- **Windows error 1053 / `ServicesPipeTimeout`:** the service did not report in time; reboot once after
+  installing (the timeout registry value applies at boot).
+- **Blue Iris shows `Unknown model`:** the name in the custom models field must match a configured model name.
+
 ## License
 
-MIT. Portions derived from blue-onyx (MIT, Marcus Asteborg). See `LICENSE`.
+MIT. Portions derived from [blue-onyx](https://github.com/xnorpx/blue-onyx) (MIT, Marcus Asteborg).
+See `LICENSE`. YOLO26 weights are AGPL-3.0 and are not distributed with this project: export them
+locally (see above). The blue-onyx IPcam models and RT-DETRv2 models are downloaded from their own
+Hugging Face repositories under their own licenses.

@@ -1,0 +1,142 @@
+# How to make a release
+# - Update `version` in Cargo.toml and merge to main
+# - git tag X.Y.Z && git push origin X.Y.Z
+# - Edit the draft release created by this workflow and publish it
+# (workflow_dispatch builds the archives and creates a draft for the Cargo.toml version, without a tag.)
+
+name: release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+            ext: zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+            ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-aarch64
+            ext: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Determine version
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "$VERSION" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version $VERSION" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "NAME=blue-onyx-openvino-$VERSION-${{ matrix.label }}" >> "$GITHUB_ENV"
+
+      - name: Build release
+        run: cargo build --release --locked --bins --target ${{ matrix.target }}
+
+      - name: Stage files
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="target/${{ matrix.target }}/release"
+          STAGE="dist/$NAME"
+          mkdir -p "$STAGE/scripts"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            for b in blue-onyx-openvino blue-onyx-openvino-service blue-onyx-openvino-benchmark test-blue-onyx-openvino; do
+              cp "$OUT/$b.exe" "$STAGE/"
+            done
+            cp scripts/*.ps1 "$STAGE/scripts/"
+          else
+            # The service binary is Windows-only (a stub elsewhere), so it is not shipped.
+            for b in blue-onyx-openvino blue-onyx-openvino-benchmark test-blue-onyx-openvino; do
+              cp "$OUT/$b" "$STAGE/"
+            done
+            cp scripts/*.sh "$STAGE/scripts/"
+            chmod +x "$STAGE"/blue-onyx-openvino* "$STAGE"/test-blue-onyx-openvino "$STAGE"/scripts/*.sh
+            mkdir -p "$STAGE/deploy"
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              cp deploy/blue-onyx-openvino.service "$STAGE/deploy/"
+            else
+              cp deploy/com.blueonyx.openvino.plist "$STAGE/deploy/"
+            fi
+          fi
+          cp scripts/export_yolo26.py scripts/convert_onnx_to_ir.py scripts/requirements-export.txt "$STAGE/scripts/"
+          cp README.md LICENSE "$STAGE/"
+          mkdir -p "$STAGE/models"
+          "$OUT/blue-onyx-openvino" setup-openvino --dest "$STAGE/openvino"
+          find "$STAGE" -maxdepth 2 | sort
+
+      - name: Archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            7z a -tzip "$NAME.zip" "$NAME" >/dev/null
+          else
+            tar -czf "$NAME.tar.gz" "$NAME"
+          fi
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$NAME.${{ matrix.ext }}" > "$NAME.${{ matrix.ext }}.sha256"
+          else
+            shasum -a 256 "$NAME.${{ matrix.ext }}" > "$NAME.${{ matrix.ext }}.sha256"
+          fi
+          cat "$NAME.${{ matrix.ext }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            dist/${{ env.NAME }}.${{ matrix.ext }}
+            dist/${{ env.NAME }}.${{ matrix.ext }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: draft release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Determine version
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          ls -l artifacts
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || env.VERSION }}
+          name: ${{ env.VERSION }}
+          draft: true
+          generate_release_notes: true
+          files: artifacts/*
+          fail_on_unmatched_files: true

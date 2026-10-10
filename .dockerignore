@@ -1,0 +1,7 @@
+target
+.git
+models
+cache
+openvino
+.venv
+*_config*.json

@@ -7,7 +7,10 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing_subscriber::{
-    EnvFilter, Registry, layer::SubscriberExt, reload, util::SubscriberInitExt,
+    EnvFilter, Layer, Registry,
+    layer::{Layered, SubscriberExt},
+    reload,
+    util::SubscriberInitExt,
 };
 
 #[derive(Debug, Clone, Subcommand)]
@@ -296,11 +299,29 @@ fn filter_for(level: LogLevel) -> EnvFilter {
     EnvFilter::new(level.as_str())
 }
 
+/// Subscriber below the extra layer passed to [`init_logging_with`]: the registry plus the
+/// reloadable level filter.
+pub type LogBase = Layered<reload::Layer<EnvFilter, Registry>, Registry>;
+
+/// An additional log sink (e.g. the Windows event log in the service binary).
+pub type ExtraLogLayer = Box<dyn Layer<LogBase> + Send + Sync>;
+
 /// Initialize global tracing. Logs to stdout, or to a daily rolling file in `log_path`
 /// when given.
 pub fn init_logging(level: LogLevel, log_path: Option<&Path>) -> Result<LogReloadHandle> {
+    init_logging_with(level, log_path, None)
+}
+
+/// [`init_logging`] plus an optional extra layer. The level filter (and thus
+/// [`LogReloadHandle::set_level`]) applies to every sink, including `extra`; `extra` may add its
+/// own per-layer filter on top.
+pub fn init_logging_with(
+    level: LogLevel,
+    log_path: Option<&Path>,
+    extra: Option<ExtraLogLayer>,
+) -> Result<LogReloadHandle> {
     let (filter, handle) = reload::Layer::new(filter_for(level));
-    let registry = tracing_subscriber::registry().with(filter);
+    let registry = tracing_subscriber::registry().with(filter).with(extra);
     let guard = match log_path {
         Some(dir) => {
             std::fs::create_dir_all(dir)
