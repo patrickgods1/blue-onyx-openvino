@@ -70,6 +70,7 @@ NPU are never auto. RT-DETR runs on CoreML only with every input dim pinned (a d
   device specs; `detect.rs` finds GPUs (DXGI / sysfs / Apple); `select.rs` builds the ranked, pure
   `DeviceOption` list and the `auto` pick; `plan.rs` turns it into per-model load candidates (compile +
   warm-up, falling down the list, CPU last); `ort.rs` is the ONNX Runtime backend (all `ort` code lives here).
+  `onnx_rewrite.rs`: `ort:coreml` loads a cached copy without HardSigmoid/HardSwish/opset<13 Split (protobuf wire-level, `cache/coreml/<stem>-<sha16>-v<N>.onnx`, `BOP_COREML_REWRITE=0` off).
   Also `GET /v1/devices` and the config-page device dropdown.
 - `src/model/` model families: `yolo26` (end-to-end `[1,300,6]`), `yolo5` (`[1,N,5+C]` + NMS),
   `yolo8` (`[1,4+C,8400]` + NMS), `detr` (D-FINE: `pixel_values` -> `logits/pred_boxes`), `rfdetr` (same, ImageNet-normalized, COCO-91 head), `rtdetr` (`images` + i64 `orig_target_sizes`; `labels/boxes/scores`).

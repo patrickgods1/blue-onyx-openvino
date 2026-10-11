@@ -25,6 +25,7 @@
 pub mod detect;
 pub mod device;
 pub mod libs;
+pub mod onnx_rewrite;
 #[cfg(feature = "onnxruntime")]
 pub mod ort;
 pub mod plan;

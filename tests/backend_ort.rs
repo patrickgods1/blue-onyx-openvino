@@ -215,12 +215,57 @@ fn yolo5_on_coreml() {
             backend.info().device.execution_provider(),
             "ONNX Runtime CoreML"
         );
-        let chw = vec![114.0f32 / 255.0; 3 * 640 * 640];
+        // The session runs a rewritten copy (HardSigmoid/Split replaced, see
+        // `backend::onnx_rewrite`), but the model is still reported as the original file.
+        assert_eq!(backend.info().path, path);
+        let cache = std::env::temp_dir()
+            .join("bop-ort-test-cache")
+            .join("coreml");
+        let rewritten: Vec<_> = std::fs::read_dir(&cache)
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with("IPcam-general-") && n.ends_with(".onnx"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if std::env::var_os("BOP_COREML_REWRITE").is_none() {
+            assert_eq!(rewritten.len(), 1, "rewritten copy in {}", cache.display());
+        }
+
+        // A deterministic, non-constant image so the comparison exercises real detections.
+        let chw: Vec<f32> = (0..3 * 640 * 640)
+            .map(|i| ((i as f32 * 0.001).sin() * 0.5 + 0.5).clamp(0.0, 1.0))
+            .collect();
         backend.infer(&chw, &[]).expect("warm-up");
         let t = Instant::now();
         let outs = backend.infer(&chw, &[]).expect("inference");
         println!("ort:coreml inference {:?}", t.elapsed());
         assert_eq!(outs[0].shape[2], 8);
+
+        // Same results as the CPU (the rewrite is exact; CoreML's arithmetic differs slightly).
+        let mut cpu = rt
+            .load(&spec::parse("ort:cpu").unwrap(), &req(&path, "ort:cpu"))
+            .expect("load on ort:cpu");
+        let reference = cpu.infer(&chw, &[]).expect("cpu inference");
+        assert_eq!(reference[0].shape, outs[0].shape);
+        let (OutputBuf::F32(a), OutputBuf::F32(b)) = (&reference[0].data, &outs[0].data) else {
+            panic!("expected f32 outputs");
+        };
+        let (mut box_diff, mut score_diff) = (0f32, 0f32);
+        for (ra, rb) in a.as_chunks::<8>().0.iter().zip(b.as_chunks::<8>().0) {
+            for k in 0..8 {
+                let d = (ra[k] - rb[k]).abs();
+                if k < 4 {
+                    box_diff = box_diff.max(d);
+                } else {
+                    score_diff = score_diff.max(d);
+                }
+            }
+        }
+        println!("coreml vs cpu: max |diff| boxes {box_diff} px, scores {score_diff}");
+        assert!(box_diff < 0.05, "boxes differ by {box_diff} px");
+        assert!(score_diff < 2e-3, "scores differ by {score_diff}");
     });
 }
 
