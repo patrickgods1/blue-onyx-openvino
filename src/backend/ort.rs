@@ -12,6 +12,11 @@
 //!   CUDA `device_id`; TensorRT fp16 with its engine cache in `cache/tensorrt` (CUDA behind it
 //!   for unsupported nodes); DirectML `device_id`, memory pattern off, sequential execution;
 //!   CoreML MLProgram, compute units ALL, cache in `cache/coreml`; `intra_threads` everywhere.
+//! - CoreML loads a rewritten copy of the model when it has ops the CoreML EP cannot take but
+//!   that have exact equivalents (HardSigmoid/HardSwish, opset < 13 Split; see
+//!   [`super::onnx_rewrite`]), cached as `cache/coreml/<stem>-<sha256/16>-v<N>.onnx`. YOLOv5 then
+//!   runs as one CoreML partition instead of ~50 (6x faster). `BOP_COREML_REWRITE=0` turns it off.
+//!   [`ModelInfo::path`] stays the original file.
 //! - Named dynamic dimensions of the image input and RT-DETR's `orig_target_sizes` are pinned
 //!   to `[1,3,640,640]` / `[1,2]` with free-dimension overrides (the same defaults as the
 //!   OpenVINO reshape), so the ports reported in [`ModelInfo`] are static and `make_family`
@@ -29,7 +34,7 @@ use super::device::{
 };
 use super::select::{EpStatus, NEEDS_ONNX, OrtProbe, onnx_path_for};
 use super::spec::{Runtime, Target};
-use super::{Candidate, DeviceInfo, LoadRequest, ModelInfo, libs};
+use super::{Candidate, DeviceInfo, LoadRequest, ModelInfo, libs, onnx_rewrite};
 use crate::model::{ExtraData, ExtraInput, NamedOutput, OutputBuf, PortElem, PortSpec};
 use ::ort::ep::{self, ExecutionProvider};
 use ::ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
@@ -453,10 +458,16 @@ impl OrtRuntime {
                 path.display()
             );
         }
+        // CoreML: a copy without the ops that would split the graph into many partitions.
+        let session_path = if target == Target::CoreMl {
+            self.coreml_model(&path)
+        } else {
+            path.clone()
+        };
         let session = match session {
             Some(s) if overrides.is_empty() => s,
             _ => {
-                let s = self.build_session(target, index, &path, &overrides)?;
+                let s = self.build_session(target, index, &session_path, &overrides)?;
                 inputs = ports(s.inputs()).0;
                 s
             }
@@ -548,6 +559,73 @@ impl OrtRuntime {
                 .map(|g| g.name.clone())
                 .unwrap_or_default(),
             _ => String::new(),
+        }
+    }
+
+    /// The model file a CoreML session loads: a cached rewrite of `path` (see
+    /// [`onnx_rewrite::rewrite_cached`]) when it has rewritable ops, else `path`. Failures only
+    /// log a warning and fall back to the original.
+    fn coreml_model(&self, path: &Path) -> PathBuf {
+        if !coreml_rewrite_enabled(std::env::var(ENV_COREML_REWRITE).ok().as_deref()) {
+            tracing::info!(
+                "model {}: CoreML graph rewrite disabled ({ENV_COREML_REWRITE})",
+                path.display()
+            );
+            return path.to_path_buf();
+        }
+        let dir = match &self.cache_dir {
+            Some(c) => c.join("coreml"),
+            None => std::env::temp_dir().join("blue-onyx-prism-coreml"),
+        };
+        let t0 = Instant::now();
+        match onnx_rewrite::rewrite_cached(path, &dir, &onnx_rewrite::RewriteOptions::COREML) {
+            Ok(onnx_rewrite::Cached::Rewritten {
+                path: rewritten,
+                counts,
+                skipped,
+                created,
+            }) => {
+                tracing::info!(
+                    "model {}: CoreML loads a rewritten copy ({}; {} in {} ms): {}",
+                    path.display(),
+                    onnx_rewrite::summary(&counts),
+                    if created { "written" } else { "cached" },
+                    t0.elapsed().as_millis(),
+                    rewritten.display()
+                );
+                if !skipped.is_empty() {
+                    tracing::info!(
+                        "model {}: not rewritten for CoreML: {}",
+                        path.display(),
+                        skipped.join("; ")
+                    );
+                }
+                rewritten
+            }
+            Ok(onnx_rewrite::Cached::Original { skipped }) => {
+                if !skipped.is_empty() {
+                    tracing::info!(
+                        "model {}: not rewritten for CoreML: {}",
+                        path.display(),
+                        skipped.join("; ")
+                    );
+                }
+                path.to_path_buf()
+            }
+            Ok(onnx_rewrite::Cached::ExternalData) => {
+                tracing::info!(
+                    "model {}: has external data; CoreML loads it without the graph rewrite",
+                    path.display()
+                );
+                path.to_path_buf()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "model {}: CoreML graph rewrite failed, loading the original: {e:#}",
+                    path.display()
+                );
+                path.to_path_buf()
+            }
         }
     }
 
@@ -656,6 +734,17 @@ impl OrtRuntime {
             )
         })
     }
+}
+
+/// Environment variable that turns the CoreML graph rewrite off (`0`, `false`, `off`, `no`).
+pub const ENV_COREML_REWRITE: &str = "BOP_COREML_REWRITE";
+
+/// Whether the CoreML graph rewrite runs, given the value of [`ENV_COREML_REWRITE`].
+pub(crate) fn coreml_rewrite_enabled(env: Option<&str>) -> bool {
+    !matches!(
+        env.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("0" | "false" | "off" | "no")
+    )
 }
 
 /// Input dimensions that stay dynamic after the free-dimension `overrides` (from
@@ -1149,6 +1238,16 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn coreml_rewrite_switch() {
+        for on in [None, Some("1"), Some("true"), Some(""), Some("yes")] {
+            assert!(coreml_rewrite_enabled(on), "{on:?}");
+        }
+        for off in ["0", "false", "OFF", " no "] {
+            assert!(!coreml_rewrite_enabled(Some(off)), "{off}");
+        }
     }
 
     #[test]

@@ -71,11 +71,18 @@ Measured on an Apple M1 (`inferenceMs`):
 
 | Model | `openvino:cpu` | `ort:cpu` | `ort:coreml` |
 |---|---|---|---|
-| IPcam-general | 37 | 69 | 104 |
+| IPcam-general | 37 | 69 | 17 (104 without the rewrite) |
 | rt-detrv2-s | 101 | 235 | not run (excluded) |
 
-On Apple silicon `auto` currently picks CoreML, which measured slower than OpenVINO CPU for these models
-(CoreML splits the graph into many pieces). To use the faster option set `"device": "openvino:cpu"`.
+CoreML graph rewrite: the CoreML execution provider of ONNX Runtime 1.24 has no HardSigmoid/HardSwish
+and takes `Split` only from opset 13, so the YOLOv5 models (IPcam-*, delivery, package, ipcam-bird)
+used to fall apart into ~50 CoreML pieces with CPU hops between them and ran slower than the CPU. On
+`ort:coreml` the service therefore loads a rewritten copy with exact equivalents
+(`HardSigmoid` -> `Mul`/`Add`/`Clip`, `HardSwish` -> the same times `x`, `Split` -> `Slice`s): one
+CoreML partition, ~6x faster, outputs bit-identical on the CPU. The copy is written once to
+`cache/coreml/<model>-<sha256 prefix>-v<N>.onnx` (the original file is never touched, and the model is
+still reported under its own path); models with external data are left alone. Set the environment
+variable `BOP_COREML_REWRITE=0` to load the original instead.
 
 ## First run
 
@@ -608,7 +615,9 @@ response has `success: false` or a non-200 status.
 - **First start is slow:** GPU kernels are compiled once (20-60 s per model) and cached in `cache/`;
   keep that directory. Windows service starts allow up to 10 minutes.
 - **macOS:** only the CPU plugin exists for OpenVINO on Apple silicon. `auto` uses CoreML through ONNX Runtime
-  (run `setup-onnxruntime`); set `"device": "openvino:cpu"` if that is slower for your models.
+  (run `setup-onnxruntime`); set `"device": "openvino:cpu"` if that is slower for your models. The log line
+  `CoreML loads a rewritten copy (...)` shows the CoreML graph rewrite (see Hardware and device selection); `BOP_COREML_REWRITE=0`
+  turns it off.
 - **`ort:*` device shows as unavailable:** run `list-devices` for the reason. Usually `setup-onnxruntime` has not
   been run, or (NVIDIA) CUDA 12 / cuDNN 9 is not installed.
 - **`Unable to find the openvino_c library`:** run `blue-onyx-prism setup-openvino` or set
