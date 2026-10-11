@@ -51,7 +51,8 @@ pub struct BenchArgs {
     /// Default: auto for --model, the configured device for config models.
     #[arg(long, value_parser = parse_device_arg)]
     pub device: Option<String>,
-    /// Run every runnable device option (see `list-devices`) for each model, grade accuracy and
+    /// Run every runnable device option (see `list-devices`; `benchmark.devices` of the config
+    /// limits them) for each model, grade accuracy and
     /// speed, compare detections with the CPU reference, print the recommended device, and save
     /// the results to `benchmark.json` next to the config file (web UI Benchmark page). Cannot
     /// be combined with --device, --force-cpu or --compare-cpu.
@@ -672,6 +673,9 @@ pub fn run(args: BenchArgs) -> Result<bool> {
     bench.threshold_objective = objective;
     bench.accuracy_metric = metric;
 
+    // `benchmark.devices` of the config limits the sweep, as on the web UI's Benchmark page.
+    let sweep_devices = super::service::parse_devices(&config.benchmark.devices)
+        .context("benchmark.devices in the config")?;
     let mut swept: Vec<ModelResult> = Vec::new();
     for Planned { job, entry } in &jobs {
         if all_devices {
@@ -683,7 +687,7 @@ pub fn run(args: BenchArgs) -> Result<bool> {
                 configured_device(&config, m, &sel)
             });
             let opts = SweepOptions {
-                devices: None,
+                devices: sweep_devices.clone(),
                 configured,
                 threshold_objective: objective,
             };
