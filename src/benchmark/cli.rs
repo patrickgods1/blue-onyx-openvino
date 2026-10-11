@@ -790,12 +790,6 @@ pub fn run(args: BenchArgs) -> Result<bool> {
             report.results_file = Some(path.display().to_string());
             merged
         };
-        if let Some(out) = &args.report {
-            export::write(&merged, out)?;
-            if !args.json {
-                println!("report written to {}", out.display());
-            }
-        }
         if args.apply {
             let picks: Vec<(String, Option<String>)> = swept
                 .iter()
@@ -833,6 +827,35 @@ pub fn run(args: BenchArgs) -> Result<bool> {
         }
         if args.apply_threshold {
             report.applied_thresholds = apply_thresholds(&swept, &config_path, args.json)?;
+        }
+        if let Some(out) = &args.report {
+            // After --apply / --apply-threshold: the report compares with the config as it is
+            // when written (the config file, else the config this run used).
+            let now_cfg = Config::load(&config_path)
+                .ok()
+                .filter(|_| config_path.exists())
+                .unwrap_or_else(|| config.clone());
+            let preds = super::search::StoredPreds::merge(
+                super::search::StoredPreds::load(&super::search::preds_path(&config_path))
+                    .ok()
+                    .flatten(),
+                &merged,
+                &swept,
+            );
+            let device = |m: &crate::config::ModelConfig| {
+                let sel = runtimes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .selection(Some(&now_cfg.data_path(&m.path)));
+                configured_device(&now_cfg, m, &sel)
+            };
+            let now = super::current::from_config(&now_cfg, &device, &|_| None);
+            let mut view = merged.clone();
+            super::current::rebase(&mut view, Some(&preds), &now);
+            export::write(&view, out)?;
+            if !args.json {
+                println!("report written to {}", out.display());
+            }
         }
         if args.threshold_search {
             let preds = super::search::StoredPreds::merge(None, &merged, &swept);
@@ -922,7 +945,8 @@ fn threshold_search_cli(
         "TPR/FPR bs"
     );
     for r in &out.results {
-        let c = &r.configured;
+        // "conf": the threshold configured now (the gain is against it).
+        let c = &r.now;
         let b = r.best.as_ref();
         println!(
             "  {:<20} {:<14} {:>5.2} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5} {:>6}  {:>4} {:>4}  {:>5} {:>11} {:>11}{}",

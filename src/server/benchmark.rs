@@ -395,6 +395,7 @@ fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
             serde_json::json!({
                 "name": name,
                 "enabled": m.enabled,
+                "configuredDevice": configured_device(&cfg, m, &snap.selection),
                 "confidenceThreshold": thr(m.confidence_threshold.unwrap_or(cfg.confidence_threshold)),
                 "ownThreshold": m.confidence_threshold.is_some(),
                 "device": m.device,
@@ -419,23 +420,127 @@ fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
     })
 }
 
+/// What the config says now about each model (threshold, device, running threshold): the saved
+/// results are shown against it ([`crate::benchmark::current`]).
+fn models_now(
+    state: &AppState,
+    cfg: &Config,
+    snap: &DevicesSnapshot,
+) -> HashMap<String, crate::benchmark::current::ModelNow> {
+    let running = |name: &str| {
+        let key = crate::registry::normalize_name(name);
+        state
+            .running
+            .models
+            .iter()
+            .find(|m| crate::registry::normalize_name(&m.effective_name()) == key)
+            // A disabled model runs with nothing.
+            .filter(|m| m.enabled)
+            .map(|m| {
+                m.confidence_threshold
+                    .unwrap_or(state.running.confidence_threshold)
+            })
+    };
+    crate::benchmark::current::from_config(
+        cfg,
+        &|m| configured_device(cfg, m, &snap.selection),
+        &running,
+    )
+}
+
+/// (modified, length) of a file; None when it does not exist.
+fn file_stamp(p: &std::path::Path) -> Option<(Option<std::time::SystemTime>, u64)> {
+    std::fs::metadata(p)
+        .ok()
+        .map(|m| (m.modified().ok(), m.len()))
+}
+
+/// `results` and `ranking` of `GET /v1/benchmark`: the saved results rebased on the config now.
+#[derive(Debug, Clone, Default)]
+struct SavedView {
+    results: serde_json::Value,
+    ranking: serde_json::Value,
+}
+
+/// The last [`SavedView`] and what it was computed from: the results and stored-predictions
+/// files' stamps and the config revision with what it says about each model. Polling reads
+/// neither file (tens of MB) again until one of them or the config changes.
+type SavedCache = Option<(String, Arc<SavedView>)>;
+static SAVED_CACHE: std::sync::Mutex<SavedCache> = std::sync::Mutex::new(None);
+
+/// How many times [`saved_view`] computed (tests: polling does not recompute).
+static SAVED_COMPUTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn saved_view(
+    state: &AppState,
+    revision: u64,
+    now: &HashMap<String, crate::benchmark::current::ModelNow>,
+) -> Arc<SavedView> {
+    use crate::benchmark::search::{StoredPreds, preds_path};
+    let path = results_path(&state.config_path);
+    let preds = preds_path(&state.config_path);
+    let mut sorted: Vec<_> = now.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let key = format!(
+        "{}|{:?}|{:?}|{revision}|{sorted:?}",
+        path.display(),
+        file_stamp(&path),
+        file_stamp(&preds)
+    );
+    let mut cache = SAVED_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, v)) = cache.as_ref()
+        && *k == key
+    {
+        return v.clone();
+    }
+    SAVED_COMPUTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let view = match BenchmarkResults::load_or_warn(&path) {
+        Some(mut r) => {
+            let ranking = serde_json::to_value(r.ranking()).unwrap_or_default();
+            let stored = StoredPreds::load(&preds)
+                .map_err(|e| warn!("{e:#}"))
+                .ok()
+                .flatten();
+            crate::benchmark::current::rebase(&mut r, stored.as_ref(), now);
+            SavedView {
+                results: serde_json::to_value(r.summary()).unwrap_or_default(),
+                ranking,
+            }
+        }
+        None => SavedView::default(),
+    };
+    let view = Arc::new(view);
+    *cache = Some((key, view.clone()));
+    view
+}
+
 /// `GET /v1/benchmark`: the current/last run (state, progress, partial results), the saved
-/// results (without per-image details), the ranking and the config's per-model devices.
+/// results (without per-image details), the ranking and the config's per-model devices. Results
+/// are shown against the config now: each threshold advice carries `now` (the effective
+/// threshold in the config, the counts there, exact from the stored predictions) and each
+/// model's `configured` is the device the config resolves to now.
 pub(super) async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let snap = devices_snapshot(&state);
     let path = results_path(&state.config_path);
-    let results = BenchmarkResults::load_or_warn(&path);
-    let ranking = results.as_ref().map(BenchmarkResults::ranking);
-    let run = state.benchmark.status();
+    let config = config_view(&state, &snap);
+    let (revision, cfg) = state.config.snapshot();
+    let now = models_now(&state, &cfg, &snap);
+    let saved = saved_view(&state, revision, &now);
+    let mut run = state.benchmark.status();
+    for m in &mut run.models {
+        if let Some(n) = now.get(&crate::registry::normalize_name(&m.model)) {
+            crate::benchmark::current::rebase_model(m, &[], None, n);
+        }
+    }
     Json(serde_json::json!({
         "success": true,
         "state": run.state,
         "running": run.running,
         "run": run,
-        "results": results.as_ref().map(BenchmarkResults::summary),
-        "ranking": ranking,
+        "results": saved.results,
+        "ranking": saved.ranking,
         "resultsFile": path.display().to_string(),
-        "config": config_view(&state, &snap),
+        "config": config,
         "warning": LIVE_WARNING,
     }))
 }
@@ -1489,6 +1594,128 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert!(v["changes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn status_and_search_follow_the_configured_threshold_now() {
+        use std::sync::atomic::Ordering;
+        let st = state();
+        let cfg_path = st.config_path.clone();
+        let (results, preds) = crate::benchmark::current::tests::advised_fixture();
+        results.save(&results_path(&cfg_path)).unwrap();
+        preds
+            .save(&crate::benchmark::search::preds_path(&cfg_path))
+            .unwrap();
+        st.config
+            .update("test", |c| {
+                c.models.push(ModelConfig {
+                    name: Some("m".into()),
+                    path: cfg_path.with_file_name("m.onnx"),
+                    enabled: false,
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+        let advice = |v: &serde_json::Value| v["results"]["models"][0]["threshold"].clone();
+
+        // Before: the configured 0.50 (the run's), gain vs it.
+        let (_, v) = call(&st, get("/v1/benchmark")).await;
+        let a = advice(&v);
+        assert_eq!(a["now"]["threshold"].as_f64().unwrap() as f32, 0.5);
+        assert_eq!(a["now"]["source"], "run");
+        assert_eq!(a["now"]["point"]["fp"], a["configured"]["fp"]);
+        let rec = v["results"]["models"][0]["recommendation"]
+            .as_str()
+            .unwrap();
+        assert!(rec.contains("at the configured 0.50"), "{rec}");
+        // Polling with nothing changed does not recompute.
+        let computed = SAVED_COMPUTED.load(Ordering::Relaxed);
+        let (_, v2) = call(&st, get("/v1/benchmark")).await;
+        assert_eq!(advice(&v2), a);
+
+        // Apply all thresholds: Now is the new value, P/R/F1 evaluated there exactly.
+        let (s, j) = call(&st, post("/v1/benchmark/apply-threshold", "all=1")).await;
+        assert_eq!(s, StatusCode::OK, "{j}");
+        let (_, v) = call(&st, get("/v1/benchmark")).await;
+        assert!(SAVED_COMPUTED.load(Ordering::Relaxed) > computed);
+        let a = advice(&v);
+        let best = a["best"]["threshold"].as_f64().unwrap() as f32;
+        assert_eq!(best, 0.35);
+        assert_eq!(a["now"]["threshold"].as_f64().unwrap() as f32, 0.35);
+        assert_eq!(a["now"]["source"], "preds");
+        assert_eq!(
+            (
+                &a["now"]["point"]["tp"],
+                &a["now"]["point"]["fp"],
+                &a["now"]["point"]["fn"]
+            ),
+            (
+                &serde_json::json!(3),
+                &serde_json::json!(0),
+                &serde_json::json!(0)
+            )
+        );
+        assert_eq!(a["now"]["point"]["f1"], a["best"]["point"]["f1"]);
+        // The run's own threshold is kept as history.
+        assert_eq!(a["configured"]["threshold"].as_f64().unwrap() as f32, 0.5);
+        assert!(a["by_dataset"][0]["now"]["f1"].is_number());
+        let rec = v["results"]["models"][0]["recommendation"]
+            .as_str()
+            .unwrap();
+        assert!(rec.contains("(the configured threshold)"), "{rec}");
+        // The per-model config view shows it too.
+        let cm = v["config"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "m")
+            .unwrap()
+            .clone();
+        assert_eq!(cm["confidenceThreshold"].as_f64().unwrap() as f32, 0.35);
+
+        // Another config change (a different threshold): recomputed at that value.
+        st.config
+            .update("test", |c| {
+                c.models
+                    .iter_mut()
+                    .find(|m| m.name.as_deref() == Some("m"))
+                    .unwrap()
+                    .confidence_threshold = Some(0.42);
+                Ok(())
+            })
+            .unwrap();
+        let (_, v) = call(&st, get("/v1/benchmark")).await;
+        let a = advice(&v);
+        assert_eq!(a["now"]["threshold"].as_f64().unwrap() as f32, 0.42);
+        assert_eq!(a["now"]["point"]["tp"], 2);
+
+        // The search's "configured" columns are at the current value too.
+        let (s, v) = call(&st, post("/v1/benchmark/threshold-search", "")).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let r = &v["results"][0];
+        assert_eq!(r["now"]["threshold"].as_f64().unwrap() as f32, 0.42);
+        assert_eq!(r["now"]["tp"], 2);
+        assert_eq!(r["configured"]["threshold"].as_f64().unwrap() as f32, 0.5);
+        assert_eq!(
+            r["by_dataset"][0]["now"]["threshold"].as_f64().unwrap() as f32,
+            0.42
+        );
+        assert!(
+            v["csv"]
+                .as_str()
+                .unwrap()
+                .contains("\nm,ort:coreml,f1,0.42,"),
+            "{}",
+            v["csv"]
+        );
+
+        // The page renders the live view.
+        let (s, page) = call(&st, get("/benchmark")).await;
+        assert_eq!(s, StatusCode::OK);
+        let page = page.as_str().unwrap();
+        assert!(page.contains("function nowOf(a)"));
+        assert!(page.contains("L.keep($(\"thresholds\")"));
     }
 
     #[tokio::test]

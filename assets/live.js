@@ -36,19 +36,56 @@
   }
   listeners.push(header);
 
+  // ---- reloads that keep the scroll position --------------------------------------------------
+  // A reload the page triggers itself (a restart finished, a model finished loading) comes
+  // back where the user was: the position is kept in sessionStorage for this path and restored
+  // once, after load (and again while asynchronously rendered content is still growing).
+  var SCROLL_KEY = "prism:scroll:" + location.pathname;
+  function reloadKeep(url) {
+    try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify({x: window.scrollX, y: window.scrollY, t: Date.now()})); } catch (e) { /* private mode */ }
+    if (url) location.replace(url); else location.reload();
+  }
+  (function restoreScroll() {
+    var saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "null"); sessionStorage.removeItem(SCROLL_KEY); } catch (e) { saved = null; }
+    if (!saved || Date.now() - saved.t > 10 * 60 * 1000) return;
+    if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+    var tries = 0, user = false;
+    ["wheel", "touchstart", "keydown", "mousedown"].forEach(function (t) { window.addEventListener(t, function () { user = true; }, {once: true, passive: true}); });
+    function go() {
+      if (user) return;
+      window.scrollTo(saved.x, saved.y);
+      if (Math.abs(window.scrollY - saved.y) > 2 && ++tries < 20) setTimeout(go, 150);
+    }
+    if (document.readyState === "complete") go(); else window.addEventListener("load", go);
+  })();
+
+  // ---- restart ----------------------------------------------------------------------------------
+  // A banner pinned to the top of the window while the server restarts (it does not move the
+  // page).
+  function restarting(text) {
+    var b = document.getElementById("restart-banner");
+    if (!b) { b = document.createElement("div"); b.id = "restart-banner"; b.className = "restart-banner"; b.setAttribute("role", "status"); b.setAttribute("aria-live", "polite"); document.body.appendChild(b); }
+    b.textContent = text || "Restarting\u2026 the page reloads (at the same place) when the server answers again.";
+    return b;
+  }
+  // Wait for the next registry generation, then reload in place.
+  function waitRestart(gen, epoch) {
+    setTimeout(function again() {
+      fetch("/v1/config", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
+        if (j.generation !== gen || j.epoch !== epoch) reloadKeep(); else setTimeout(again, 700);
+      }, function () { setTimeout(again, 700); });
+    }, 700);
+  }
+  function afterRestart() { waitRestart(last ? last.generation : null, last ? last.epoch : null); }
   // Restart (existing POST /config/restart flow), then reload once the next generation answers.
   function restart(btn) {
     if (!confirm("Restart the server now? It reloads the config file and recompiles the enabled models.")) return;
     var gen = last ? last.generation : null, epoch = last ? last.epoch : null;
     if (btn) { btn.disabled = true; btn.textContent = "Restarting…"; }
-    var done = function () {
-      setTimeout(function again() {
-        fetch("/v1/config", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
-          if (j.generation !== gen || j.epoch !== epoch) location.reload(); else setTimeout(again, 700);
-        }, function () { setTimeout(again, 700); });
-      }, 700);
-    };
-    fetch("/config/restart", {method: "POST"}).then(done, done);
+    restarting();
+    var done = function () { waitRestart(gen, epoch); };
+    fetch("/config/restart", {method: "POST", headers: {"Accept": "application/json"}}).then(done, done);
   }
   document.addEventListener("click", function (e) {
     var b = e.target.closest && e.target.closest("[data-restart]");
@@ -134,11 +171,176 @@
     form.addEventListener("change", function (e) { if (e.target.name) e.target.classList.toggle("edited", edited(e.target)); });
   }
 
+  // ---- view state across re-renders ------------------------------------------------------------
+  // Pages that poll re-render tables; without care every poll resets what the user did with
+  // them. `keep(root, sig, render)` skips the render when the section's data signature `sig` is
+  // unchanged, defers it while the user is busy in it (selecting text, pressing the mouse, e.g.
+  // dragging a scrollbar, pointing at a chart), and otherwise carries over, by stable key, the
+  // scroll offsets of every `.scroll` wrapper (and any element with `data-keep`), the open state
+  // of every <details>, each table's sort column and direction, and the focused control.
+  // Keys: `data-keep`, else the id, else the element's kind and position in the section.
+  // `patch(box, items)` does the same per child (keyed cards): only changed children are
+  // rebuilt, in place.
+  var pointerIn = null;
+  document.addEventListener("pointerdown", function (e) { pointerIn = e.target; }, true);
+  ["pointerup", "pointercancel", "dragend"].forEach(function (t) { document.addEventListener(t, function () { pointerIn = null; }, true); });
+  var KEPT = ".scroll, details, table, [data-keep]";
+  function keyed(root) {
+    var out = {}, seen = {};
+    root.querySelectorAll(KEPT).forEach(function (e) {
+      var k = e.dataset.keep || (e.id ? "#" + e.id : null);
+      if (!k) { var kind = e.tagName.toLowerCase() + (e.classList.contains("scroll") ? ".scroll" : ""); seen[kind] = (seen[kind] || 0) + 1; k = kind + ":" + seen[kind]; }
+      if (!(k in out)) out[k] = e;
+    });
+    return out;
+  }
+  function busyIn(root) {
+    if (pointerIn && root.contains(pointerIn)) return true;
+    var s = window.getSelection && window.getSelection();
+    if (s && !s.isCollapsed && s.rangeCount && root.contains(s.getRangeAt(0).commonAncestorContainer)) return true;
+    return !!root.querySelector("svg:hover, .keep-hover:hover");
+  }
+  function capture(root) {
+    var st = {els: {}, focus: null};
+    var map = keyed(root);
+    Object.keys(map).forEach(function (k) {
+      var e = map[k], v = {};
+      if (e.scrollLeft || e.scrollTop) { v.left = e.scrollLeft; v.top = e.scrollTop; }
+      if (e.tagName === "DETAILS") v.open = e.open;
+      if (e.tagName === "TABLE") {
+        var hs = e.tHead ? e.tHead.rows[0].cells : [];
+        for (var i = 0; i < hs.length; i++) if (hs[i].dataset.dir) v.sort = [i, hs[i].dataset.dir];
+      }
+      st.els[k] = v;
+    });
+    var a = document.activeElement;
+    if (a && a !== document.body && root.contains(a)) {
+      var all = root.querySelectorAll(a.tagName);
+      st.focus = {tag: a.tagName, name: a.name || null, text: a.textContent, index: Array.prototype.indexOf.call(all, a)};
+    }
+    return st;
+  }
+  // Sort a table's body by column `col` (numeric when the cells carry data-v).
+  function sortTable(table, col, asc) {
+    var tb = table.tBodies[0]; if (!tb) return;
+    var rows = Array.prototype.slice.call(tb.rows);
+    table.querySelectorAll("th").forEach(function (h) { delete h.dataset.dir; });
+    var th = table.tHead && table.tHead.rows[0].cells[col]; if (th) th.dataset.dir = asc ? "asc" : "desc";
+    rows.sort(function (a, b) {
+      var x = a.cells[col], y = b.cells[col]; if (!x || !y) return 0;
+      var vx = x.dataset.v, vy = y.dataset.v;
+      if (vx !== undefined && vy !== undefined) { vx = parseFloat(vx); vy = parseFloat(vy); if (isNaN(vx)) vx = Infinity; if (isNaN(vy)) vy = Infinity; return asc ? vx - vy : vy - vx; }
+      return asc ? x.textContent.localeCompare(y.textContent) : y.textContent.localeCompare(x.textContent);
+    });
+    rows.forEach(function (r) { tb.appendChild(r); });
+  }
+  function restore(root, st) {
+    var map = keyed(root);
+    Object.keys(st.els).forEach(function (k) {
+      var e = map[k], v = st.els[k]; if (!e) return;
+      if (v.sort) sortTable(e, v.sort[0], v.sort[1] === "asc");
+      if (v.open !== undefined && e.open !== v.open) e.open = v.open;
+    });
+    // Scroll after every <details> is open again (closed ones have no layout).
+    Object.keys(st.els).forEach(function (k) {
+      var e = map[k], v = st.els[k]; if (!e || v.left === undefined) return;
+      e.scrollLeft = v.left; e.scrollTop = v.top;
+    });
+    var f = st.focus;
+    if (f && (!document.activeElement || document.activeElement === document.body)) {
+      var cands = Array.prototype.filter.call(root.querySelectorAll(f.tag), function (e) { return (e.name || null) === f.name && e.textContent === f.text; });
+      var pick = cands.length ? cands[0] : root.querySelectorAll(f.tag)[f.index];
+      if (pick && pick.focus) try { pick.focus({preventScroll: true}); } catch (e) { pick.focus(); }
+    }
+  }
+  // Re-render `root` with `render()` keeping its view state. `sig` (any string; undefined =
+  // always render) skips unchanged data. Returns true when it rendered; false when skipped or
+  // deferred (a deferred render is retried with the next call, its signature not taken).
+  function keep(root, sig, render) {
+    if (!root) return false;
+    if (sig !== undefined && root._keepSig === sig) return false;
+    if (root._keepSig !== undefined && busyIn(root)) return false;
+    var st = capture(root);
+    render();
+    restore(root, st);
+    root._keepSig = sig;
+    return true;
+  }
+  // Keyed children of `box`: items [{key, sig, build}] in order; `build()` returns the new
+  // element. Unchanged children (same sig) are left alone, changed ones replaced in place with
+  // their view state, missing ones added, the rest removed.
+  function patch(box, items) {
+    var old = {};
+    Array.prototype.forEach.call(box.children, function (c) { if (c.dataset.patchKey !== undefined) old[c.dataset.patchKey] = c; });
+    var prev = null;
+    items.forEach(function (it) {
+      var cur = old[it.key]; delete old[it.key];
+      if (!cur || (cur._keepSig !== it.sig && !busyIn(cur))) {
+        var n = it.build(); n.dataset.patchKey = it.key; n._keepSig = it.sig;
+        if (cur) { var st = capture(cur); cur.replaceWith(n); restore(n, st); }
+        cur = n;
+      }
+      var want = prev ? prev.nextSibling : box.firstChild;
+      if (want !== cur) box.insertBefore(cur, want);
+      prev = cur;
+    });
+    Object.keys(old).forEach(function (k) { old[k].remove(); });
+  }
+
+  // ---- forms without leaving the page ----------------------------------------------------------
+  // `<form data-ajax>`: submitted with fetch (Accept: application/json) instead of navigating,
+  // so the page keeps its scroll position; the clicked button is disabled while the request
+  // runs and the answer is shown next to it. The page then updates the section in place: it
+  // gets a "prism:action" event on the form ({ok, json, button}). Without JS the form posts
+  // normally (its action carries the section's #fragment). `data-confirm` on a button asks
+  // first.
+  function inlineMsg(form, by) {
+    var at = (by && by.closest(".actions, td, .inline-row")) || form, m = at.querySelector(".form-msg, .action-msg");
+    if (!m) { m = document.createElement("span"); m.className = "action-msg"; m.setAttribute("aria-live", "polite"); at.appendChild(m); }
+    return m;
+  }
+  function say(m, cls, text) { m.className = (m.classList.contains("form-msg") ? "form-msg " : "action-msg ") + cls; m.textContent = text; }
+  function submitAjax(form, by) {
+    var data = new FormData(form);
+    if (by && by.name) data.append(by.name, by.value);
+    var url = (by && by.getAttribute("formaction")) || form.getAttribute("action") || location.pathname;
+    url = url.split("#")[0];
+    var m = inlineMsg(form, by), label = by ? by.textContent : null;
+    if (by) by.disabled = true;
+    say(m, "muted", "working…");
+    var fire = function (ok, j) { form.dispatchEvent(new CustomEvent("prism:action", {bubbles: true, detail: {ok: ok, json: j, button: by, message: m}})); };
+    return fetch(url, {method: "POST", body: new URLSearchParams(data), headers: {"Accept": "application/json"}})
+      .then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); })
+      .then(function (j) {
+        if (by) { by.disabled = false; by.textContent = label; }
+        say(m, j.success ? "ok-text" : "error-text", j.message || (j.success ? "done" : "failed"));
+        poll(true);
+        fire(!!j.success, j);
+      })
+      .catch(function (e) { if (by) by.disabled = false; say(m, "error-text", "failed: " + e); fire(false, null); });
+  }
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (e.defaultPrevented || !form.matches || !form.matches("form[data-ajax]")) return;
+    var by = e.submitter;
+    e.preventDefault();
+    if (by && by.hasAttribute("data-restart")) { restart(by); return; }
+    submitAjax(form, by);
+  });
+
   window.PrismLive = {
     onConfig: function (fn) { listeners.push(fn); if (last) fn(last, null); },
     poll: poll,
     restart: restart,
+    restarting: restarting,
+    afterRestart: afterRestart,
+    reloadKeep: reloadKeep,
+    submit: submitAjax,
     last: function () { return last; },
+    keep: keep,
+    patch: patch,
+    sortTable: sortTable,
+    view: {capture: capture, restore: restore, busy: busyIn},
     ui: {edited: edited, current: current, baseline: baseline, same: same, set: set, flash: flash, note: note, refresh: refresh, markEdits: markEdits}
   };
   poll();

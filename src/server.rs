@@ -913,6 +913,7 @@ fn action_fields(form: &HashMap<String, String>) -> (String, bool) {
 fn action_response(
     state: &AppState,
     headers: &HeaderMap,
+    id: &str,
     result: Result<String, crate::resources::status::ActionError>,
 ) -> Response {
     if let Err(e) = &result {
@@ -923,7 +924,22 @@ fn action_response(
             Ok(m) => (Some(m), None),
             Err(e) => (None, Some(e.to_string())),
         };
-        return render(&config_template(state, msg, err, None));
+        // Shown in the resource's row (the form posts to `#resource-<id>`), else at the top of
+        // the Resources section (with that anchor) when the row is gone (added, removed).
+        let mut t = config_template(state, msg, err, None);
+        let has_row = t
+            .resource_groups
+            .iter()
+            .flat_map(|g| g.rows.iter())
+            .any(|r| r.id == id)
+            || t.local_models.iter().any(|l| l.id == id);
+        t.at = if has_row {
+            "resources-row"
+        } else {
+            "resources"
+        };
+        t.at_row = id.to_string();
+        return render(&t);
     }
     match result {
         Ok(m) => Json(serde_json::json!({"success": true, "message": m})).into_response(),
@@ -955,7 +971,7 @@ async fn resources_download(
         Some(ctx) => crate::resources::status::download(ctx, &cfg, &id, confirm),
         None => Err(no_manager()),
     };
-    action_response(&state, &headers, result)
+    action_response(&state, &headers, &id, result)
 }
 
 /// `POST /v1/resources/remove` (`id`).
@@ -968,7 +984,7 @@ async fn resources_remove(
     let (id, _) = action_fields(&form);
     let cfg = state.config_read().clone();
     let result = crate::resources::status::remove(state.resources.as_ref(), &cfg, &id);
-    action_response(&state, &headers, result)
+    action_response(&state, &headers, &id, result)
 }
 
 /// `POST /v1/resources/add-to-config` (`id` of an installed model): appends it to `models` and
@@ -998,7 +1014,7 @@ async fn resources_add_to_config(
             ))),
         },
     };
-    action_response(&state, &headers, result)
+    action_response(&state, &headers, &id, result)
 }
 
 /// `POST /v1/resources/export` (`id` of a YOLO26 model, `confirm_large` when the export
@@ -1035,7 +1051,7 @@ async fn resources_export(
         }),
         None => Err(no_manager()),
     };
-    action_response(&state, &headers, result)
+    action_response(&state, &headers, &id, result)
 }
 
 /// After an export: append the model to the config (through the config store, which first
@@ -1065,7 +1081,7 @@ async fn resources_export_cancel(
         Some(ctx) => crate::resources::status::cancel_export(ctx, &id),
         None => Err(no_manager()),
     };
-    action_response(&state, &headers, result)
+    action_response(&state, &headers, &id, result)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1435,7 +1451,10 @@ fn model_choices(
                 };
                 BenchHint {
                     text,
-                    title: r.recommendation.clone(),
+                    title: r.recommendation_now(
+                        m.confidence_threshold.unwrap_or(c.confidence_threshold),
+                        run.threshold,
+                    ),
                     href: format!("/benchmark#m-{}", encode_uri_component(&r.model)),
                 }
             });
@@ -1526,6 +1545,13 @@ struct ConfigTemplate {
     pending: Vec<String>,
     /// A save that conflicted with changes made elsewhere (no-JS answer).
     conflict: Option<live::ConflictView>,
+    /// Where `message` / `error` are shown: "" (top), "models", "server", "resources" or
+    /// "resources-row" (in the row of resource `at_row`). The forms post to their section's
+    /// `#fragment`, so a no-JS answer lands there.
+    at: &'static str,
+    at_row: String,
+    /// The form `conflict` belongs to ("models" or "server").
+    conflict_at: &'static str,
 }
 
 /// One `<option>` of the Device select.
@@ -1704,7 +1730,23 @@ fn config_template(
         ),
         pending,
         conflict: None,
+        at: "",
+        at_row: String::new(),
+        conflict_at: "",
     }
+}
+
+/// [`config_template`] with the message shown in section `at` (see [`ConfigTemplate::at`]).
+fn config_template_at(
+    state: &AppState,
+    message: Option<String>,
+    error: Option<String>,
+    submitted: Option<&HashMap<String, String>>,
+    at: &'static str,
+) -> ConfigTemplate {
+    let mut t = config_template(state, message, error, submitted);
+    t.at = at;
+    t
 }
 
 async fn config_page(State(state): State<Arc<AppState>>) -> Response {
@@ -1822,7 +1864,7 @@ async fn config_submit(
             if json {
                 return live::saved_json(&state, msg, false);
             }
-            render(&config_template(&state, Some(msg), None, None))
+            render(&config_template_at(&state, Some(msg), None, None, "server"))
         }
         Err(e) => {
             if let Some(conflicts) = live::conflicts_of(&e) {
@@ -1830,7 +1872,7 @@ async fn config_submit(
                 return if json {
                     live::conflict_json(&state, conflicts)
                 } else {
-                    live::conflict_page(&state, "/config", conflicts, &pairs)
+                    live::conflict_page(&state, "/config", "server", conflicts, &pairs)
                 };
             }
             warn!("rejected config form: {e:#}");
@@ -1838,7 +1880,13 @@ async fn config_submit(
             if json {
                 return live::error_json(StatusCode::BAD_REQUEST, msg);
             }
-            render(&config_template(&state, None, Some(msg), Some(&form)))
+            render(&config_template_at(
+                &state,
+                None,
+                Some(msg),
+                Some(&form),
+                "server",
+            ))
         }
     }
 }
@@ -1875,17 +1923,17 @@ async fn config_models(
                 schedule_restart(&state);
                 return live::saved_json(&state, msg, true);
             }
-            restart_response(&state)
+            restart_response(&state, "models")
         }
         Ok(msg) if json => live::saved_json(&state, msg, false),
-        Ok(msg) => render(&config_template(&state, Some(msg), None, None)),
+        Ok(msg) => render(&config_template_at(&state, Some(msg), None, None, "models")),
         Err(e) => {
             if let Some(conflicts) = live::conflicts_of(&e) {
                 warn!("Models card conflicts with newer changes: {e}");
                 return if json {
                     live::conflict_json(&state, conflicts)
                 } else {
-                    live::conflict_page(&state, "/config/models", conflicts, &form)
+                    live::conflict_page(&state, "/config/models", "models", conflicts, &form)
                 };
             }
             warn!("rejected models selection: {e:#}");
@@ -1893,7 +1941,7 @@ async fn config_models(
             if json {
                 return live::error_json(StatusCode::BAD_REQUEST, msg);
             }
-            render(&config_template(&state, None, Some(msg), None))
+            render(&config_template_at(&state, None, Some(msg), None, "models"))
         }
     }
 }
@@ -1921,18 +1969,34 @@ struct MessageTemplate {
 
 /// Stops the HTTP server and the workers of this generation; the main binary then reloads the
 /// config file and starts again.
-async fn config_restart(State(state): State<Arc<AppState>>) -> Response {
-    restart_response(&state)
+/// `back` (query): the Config page section to return to (`models`, `server`, `restart`).
+async fn config_restart(
+    State(state): State<Arc<AppState>>,
+    query: Result<Query<HashMap<String, String>>, QueryRejection>,
+) -> Response {
+    let back = query
+        .ok()
+        .and_then(|Query(q)| q.get("back").cloned())
+        .unwrap_or_default();
+    restart_response(&state, &back)
 }
 
 /// Cancel this generation's restart token shortly (so the reply gets out) and render the
-/// "Restarting" page.
-fn restart_response(state: &AppState) -> Response {
-    restart_response_with(
+/// "Restarting" page, which returns to the Config page's section `back` (when known).
+fn restart_response(state: &AppState, back: &str) -> Response {
+    let mut url = "/config".to_string();
+    if matches!(back, "models" | "server" | "restart" | "resources") {
+        url.push_str(&format!("#at-{back}"));
+        if back == "resources" {
+            url = "/config#resources".into();
+        }
+    }
+    restart_response_to(
         state,
         "The server is reloading its config and recompiling the enabled models. This page \
          reloads as soon as the server answers again."
             .into(),
+        url,
     )
 }
 
@@ -1948,6 +2012,11 @@ fn schedule_restart(state: &AppState) {
 
 /// Restart like `POST /config/restart`, showing `message`.
 fn restart_response_with(state: &AppState, message: String) -> Response {
+    restart_response_to(state, message, "/config".into())
+}
+
+/// Restart, showing `message`, then go to `url`.
+fn restart_response_to(state: &AppState, message: String, url: String) -> Response {
     schedule_restart(state);
     render(&MessageTemplate {
         nav: "config",
@@ -1955,7 +2024,7 @@ fn restart_response_with(state: &AppState, message: String) -> Response {
         heading: "Restarting\u{2026}".into(),
         message,
         refresh_secs: 5,
-        refresh_url: "/config".into(),
+        refresh_url: url,
         restarting: true,
     })
 }
@@ -2600,7 +2669,7 @@ mod tests {
         let evil = urlencode("<b>evil</b>");
 
         let (_, cfg) = get_text(&state, "/config").await;
-        assert!(cfg.contains("action=\"/config/models\""), "{cfg}");
+        assert!(cfg.contains("action=\"/config/models#at-models\""), "{cfg}");
         assert!(cfg.contains(
             "name=\"enabled\" value=\"ipcam-general\" aria-label=\"Load ipcam-general\" checked"
         ));
@@ -2998,7 +3067,7 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         assert!(html.contains("<h2>Resources</h2>"), "{html}");
         assert!(html.contains("model:fixture-model"));
-        assert!(html.contains("action=\"/v1/resources/download\""));
+        assert!(html.contains("action=\"/v1/resources/download#resource-"));
         assert!(
             html.contains("Download 629 MB (large)"),
             "large button shows the size"
@@ -3015,6 +3084,16 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let b = String::from_utf8(b).unwrap();
         assert!(b.contains("confirm the large download"), "{b}");
+        // ... shown in the resource's row (the form posts to that row's #fragment), not at the
+        // top of the page.
+        let row = b
+            .find("id=\"resource-model:big-model\"")
+            .expect("row anchor");
+        let note = b.find("confirm the large download").unwrap();
+        let next_row = b[row + 1..].find("<tr ").map_or(b.len(), |i| row + 1 + i);
+        assert!(row < note && note < next_row, "message in the row");
+        assert!(b.contains("action=\"/v1/resources/download#resource-model:big-model\""));
+        assert!(b.contains("data-ajax"));
         // Without a manager (plain test state) the card says so and downloads are refused.
         let plain = test_state();
         let (_, html) = get_text(&plain, "/config").await;
@@ -3023,6 +3102,58 @@ mod tests {
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
         let _ = std::fs::remove_dir_all(&root);
     }
+    #[tokio::test]
+    async fn no_js_answers_land_in_their_section() {
+        let state = test_state();
+        let (_, html) = get_text(&state, "/config").await;
+        for a in [
+            "action=\"/config/models#at-models\"",
+            "action=\"/config#at-server\"",
+            "action=\"/config/restart?back=restart\"",
+            "formaction=\"/config/restart?back=models\"",
+        ] {
+            assert!(html.contains(a), "{a}");
+        }
+        let between = |b: &str, msg: &str, from: &str, to: &str| {
+            let m = b.find(msg).unwrap_or_else(|| panic!("{msg} missing: {b}"));
+            b.find(from).unwrap() < m && m < b.find(to).unwrap()
+        };
+        // Server form save: the notice right above the Server form.
+        let body = format!(
+            "base_revision=0&port={}&request_timeout_secs=15&worker_queue_size=0&device=auto&gpu_index=0&confidence_threshold=0.5&nms_iou=0.4&intra_threads=0&log_level=info",
+            state.config_read().port
+        );
+        let (s, _, b) = call(&state, post_form("/config", &body, true)).await;
+        assert_eq!(s, StatusCode::OK);
+        let b = String::from_utf8(b).unwrap();
+        assert!(
+            between(&b, "class=\"notice\"", "id=\"at-server\"", "id=\"server\""),
+            "{b}"
+        );
+        // Models card save: above the card.
+        let (s, _, b) = call(
+            &state,
+            post_form(
+                "/config/models",
+                "base_revision=0&enabled=ipcam-general&action=save",
+                true,
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let b = String::from_utf8(b).unwrap();
+        let m = b.find("id=\"at-models\"").unwrap();
+        let card = b.find("id=\"models\"").unwrap();
+        assert!(
+            b[m..card].contains("class=\"notice\"") || b[m..card].contains("class=\"error\""),
+            "{b}"
+        );
+        // Restart returns to the section it came from.
+        let (_, _, b) = call(&state, post_form("/config/restart?back=models", "", true)).await;
+        let b = String::from_utf8(b).unwrap();
+        assert!(b.contains("/config#at-models"), "{b}");
+    }
+
     #[tokio::test]
     async fn force_cpu_note_on_home_and_config() {
         let state = test_state();
@@ -3433,7 +3564,7 @@ mod tests {
             html.contains("YOLO26 (exported locally, AGPL-3.0)"),
             "{html}"
         );
-        assert!(html.contains("action=\"/v1/resources/export/cancel\""));
+        assert!(html.contains("action=\"/v1/resources/export/cancel#resource-"));
         assert!(html.contains("needs export"), "Models card marks yolo26s");
         assert!(html.contains("href=\"#res-models-yolo26\""));
         assert!(html.contains("Remove export toolchain") || html.contains("an export is running"));
@@ -3453,7 +3584,7 @@ mod tests {
         assert!(!root.join("models/yolo26n.onnx").exists());
         // The page renders the Export button with the AGPL confirm.
         let (_, html) = get_text(&state, "/config").await;
-        assert!(html.contains("action=\"/v1/resources/export\""));
+        assert!(html.contains("action=\"/v1/resources/export#resource-model:yolo26n\""));
         assert!(
             html.contains("data-confirm=\"Export YOLO26 nano?"),
             "{html}"

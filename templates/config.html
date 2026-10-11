@@ -1,16 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Config{% endblock %}
-{% block content %}
-<h1 id="cfg-title" data-revision="{{ revision }}">Configuration</h1>
-<p class="muted">File: <code>{{ config_path }}</code> &middot; revision <span id="cfg-rev">{{ revision }}</span></p>
-<nav class="toc" aria-label="Sections">
-  <a href="#models">Models</a><a href="#benchmark">Benchmark</a><a href="#resources">Resources</a><a href="#server">Server</a><a href="#inference">Inference</a><a href="#logging">Logging</a><a href="#restart">Restart</a>
-</nav>
-<div id="live-banner" class="live-banner" role="status" aria-live="polite" hidden></div>
-{% if let Some(m) = message %}<p class="notice">{{ m }}</p>{% endif %}
-{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
-{% if let Some(x) = conflict %}
-<form method="post" action="{{ x.action }}" class="card conflict" id="conflict">
+{% macro notices(here) %}{% if at == here %}{% if let Some(m) = message %}<p class="notice">{{ m }}</p>{% endif %}{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}{% endif %}{% endmacro %}
+{% macro conflict_card(here) %}{% if let Some(x) = conflict %}{% if conflict_at == here %}
+<form method="post" action="{{ x.action }}#at-{{ here }}" class="card conflict" id="conflict">
   <h2>Not saved: changed elsewhere</h2>
   <p class="error">{{ x.message }}</p>
   <p class="muted">Your other changes in that form were not saved yet either. Choose a value per field and save again; the page below shows the current config.</p>
@@ -35,12 +27,23 @@
     <button type="submit">Save with these choices</button>
     <button type="submit" name="resolve_all" value="mine">Use mine for all</button>
     <button type="submit" name="resolve_all" value="current">Use current for all</button>
-    <a href="/config">Discard my changes</a>
+    <a href="/config#at-{{ here }}">Discard my changes</a>
   </div>
 </form>
-{% endif %}
+{% endif %}{% endif %}{% endmacro %}
+{% block content %}
+<h1 id="cfg-title" data-revision="{{ revision }}">Configuration</h1>
+<p class="muted">File: <code>{{ config_path }}</code> &middot; revision <span id="cfg-rev">{{ revision }}</span></p>
+<nav class="toc" aria-label="Sections">
+  <a href="#models">Models</a><a href="#benchmark">Benchmark</a><a href="#resources">Resources</a><a href="#server">Server</a><a href="#inference">Inference</a><a href="#logging">Logging</a><a href="#restart">Restart</a>
+</nav>
+<div id="live-banner" class="live-banner" role="status" aria-live="polite" hidden></div>
+{% call notices("") %}{% endcall %}
 
-<form method="post" action="/config/models" class="card primary" id="models">
+<div id="at-models" class="anchor"></div>
+{% call notices("models") %}{% endcall %}
+{% call conflict_card("models") %}{% endcall %}
+<form method="post" action="/config/models#at-models" class="card primary" id="models">
   <h2>Models <span class="tag restart">needs restart</span></h2>
   <input type="hidden" name="base" value="{{ card_base }}">
   <input type="hidden" name="base_revision" value="{{ revision }}">
@@ -72,7 +75,7 @@
   <div class="actions">
     <button type="submit" name="action" value="save">Save</button>
     <button type="submit" name="action" value="restart" class="danger">Save and restart</button>
-    <button type="submit" formaction="/config/restart" class="danger restart-now" data-restart{% if pending.is_empty() %} hidden{% endif %}>Restart now</button>
+    <button type="submit" formaction="/config/restart?back=models" class="danger restart-now" data-restart{% if pending.is_empty() %} hidden{% endif %}>Restart now</button>
     <span class="form-msg" aria-live="polite"></span>
   </div>
   <p class="muted">More models: download them under <a href="#resources">Resources</a>, or add the files found in the models directory under <a href="#local-models">Local models</a>. Other per-model settings (classes, object filter, lazy, GPU precision) are in the Models JSON under <a href="#server">Advanced</a>; it stays in sync with this card.</p>
@@ -85,6 +88,8 @@
 
 <section class="card" id="resources">
   <h2>Resources</h2>
+  {% if at == "resources" && !at_row.is_empty() %}<span id="resource-{{ at_row }}" class="anchor"></span>{% endif %}
+  {% call notices("resources") %}{% endcall %}
   <p class="muted">Pinned, SHA-256 checked downloads for this platform. With <em>auto download</em> on, whatever the config needs is fetched at startup. A new runtime is used after a restart (automatic when a model waits for it). Live JSON: <a href="/v1/resources"><code>/v1/resources</code></a>.</p>
   {% if !resources_enabled %}<p class="muted">This server has no download manager; use <code>blue-onyx-prism fetch</code>.</p>{% endif %}
   {% for g in resource_groups %}
@@ -95,40 +100,41 @@
   <thead><tr><th>Resource</th><th>Size</th><th>State</th><th>Action</th></tr></thead>
   <tbody>
   {% for r in g.rows %}
-  <tr data-id="{{ r.id }}" data-busy="{{ r.busy }}" data-state="{{ r.state }}">
+  <tr id="resource-{{ r.id }}" data-id="{{ r.id }}" data-busy="{{ r.busy }}" data-state="{{ r.state }}">
     <td>{{ r.title }} <code>{{ r.id }}</code><br><span class="muted">{{ r.description }}{% if r.kind == "cuda-libs" %} &middot; {{ r.license }}{% endif %}</span></td>
     <td class="num">{{ r.size_text }}{% if let Some(n) = r.size_note %}<br><span class="muted">{{ n }}</span>{% else if r.large %}<br><span class="muted">large</span>{% endif %}</td>
     <td class="res-state"><span class="res-text">{{ r.state_text }}</span>{% if r.busy %}<br><progress max="100"{% if let Some(p) = r.progress %} value="{{ p }}"{% endif %}></progress>{% endif %}{% if r.active %} <span class="tag">active</span>{% endif %}{% if r.loaded %} <span class="tag">loaded</span>{% endif %}{% if !r.blocking.is_empty() %}<br><span class="muted">needed by {{ r.blocking.join(", ") }}</span>{% endif %}{% if !r.log.is_empty() %}<details class="res-log"><summary>output</summary><pre>{% for l in r.log %}{{ l }}
 {% endfor %}</pre></details>{% endif %}</td>
     <td>
     {% if r.action == "export" %}
-      {% if r.busy %}<form method="post" action="/v1/resources/export/cancel" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Cancel the export of {{ r.title }}?">Cancel</button></form>
+      {% if r.busy %}<form method="post" action="/v1/resources/export/cancel#resource-{{ r.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Cancel the export of {{ r.title }}?">Cancel</button></form>
       {% else if r.state == "installed" %}
-        {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove the exported {{ r.title }} files?">Remove</button></form>
+        {% if r.removable %}<form method="post" action="/v1/resources/remove#resource-{{ r.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove the exported {{ r.title }} files?">Remove</button></form>
         {% else if let Some(why) = r.remove_blocked %}<span class="muted">{{ why }}</span>{% endif %}
-        {% if r.can_add_to_config %}<form method="post" action="/v1/resources/add-to-config" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit">Add to config</button></form>{% endif %}
+        {% if r.can_add_to_config %}<form method="post" action="/v1/resources/add-to-config#resource-{{ r.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ r.id }}"><button type="submit">Add to config</button></form>{% endif %}
       {% else if resources_enabled %}
-        <form method="post" action="/v1/resources/export" class="inline export"><input type="hidden" name="id" value="{{ r.id }}"><input type="hidden" name="confirm_large" value="1">
+        <form method="post" action="/v1/resources/export#resource-{{ r.id }}" class="inline export" data-ajax><input type="hidden" name="id" value="{{ r.id }}"><input type="hidden" name="confirm_large" value="1">
         <button type="submit"{% if let Some(c) = r.confirm %} data-confirm="{{ c }}"{% endif %}>{% if r.state == "failed" %}Retry export{% else %}Export{% endif %}</button>
         <label class="check"><input type="checkbox" name="add_to_config" value="1" checked> and add to config</label>
         </form>
       {% endif %}
     {% else if r.action == "toolchain" %}
-      {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger"{% if let Some(c) = r.confirm %} data-confirm="{{ c }}"{% endif %}>Remove export toolchain</button></form>
+      {% if r.removable %}<form method="post" action="/v1/resources/remove#resource-{{ r.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger"{% if let Some(c) = r.confirm %} data-confirm="{{ c }}"{% endif %}>Remove export toolchain</button></form>
       {% else if r.busy %}<span class="muted">in progress</span>
       {% else if let Some(why) = r.remove_blocked %}<span class="muted">{{ why }}</span>{% endif %}
     {% else if r.action == "none" %}<span class="muted">not available here</span>
     {% else if r.state == "installed" %}
-      {% if r.removable %}<form method="post" action="/v1/resources/remove" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove {{ r.title }}?">Remove</button></form>
+      {% if r.removable %}<form method="post" action="/v1/resources/remove#resource-{{ r.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger" data-confirm="Remove {{ r.title }}?">Remove</button></form>
       {% else if let Some(why) = r.remove_blocked %}<span class="muted">{{ why }}</span>{% endif %}
-      {% if r.can_add_to_config %}<form method="post" action="/v1/resources/add-to-config" class="inline"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit">Add to config</button></form>{% endif %}
+      {% if r.can_add_to_config %}<form method="post" action="/v1/resources/add-to-config#resource-{{ r.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ r.id }}"><button type="submit">Add to config</button></form>{% endif %}
     {% else if r.busy %}<span class="muted">in progress</span>
     {% else if resources_enabled %}
-      <form method="post" action="/v1/resources/download" class="inline"><input type="hidden" name="id" value="{{ r.id }}">
+      <form method="post" action="/v1/resources/download#resource-{{ r.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ r.id }}">
       {% if r.large %}<input type="hidden" name="confirm_large" value="1"><button type="submit" data-confirm="{{ r.title }} is {{ r.size_text }} ({{ r.license }}). Download it?">Download {{ r.size_text }} (large)</button>
       {% else %}<button type="submit">Download</button>{% endif %}
       </form>
     {% endif %}
+    {% if at_row == r.id %}{% call notices("resources-row") %}{% endcall %}{% endif %}
     </td>
   </tr>
   {% endfor %}
@@ -146,11 +152,11 @@
   <thead><tr><th>File</th><th>Size</th><th>Family</th><th>Action</th></tr></thead>
   <tbody>
   {% for l in local_models %}
-  <tr data-id="{{ l.id }}">
+  <tr id="resource-{{ l.id }}" data-id="{{ l.id }}">
     <td><code>{{ l.file }}</code>{% if let Some(a) = l.also %} <span class="muted">(also <code>{{ a }}</code>)</span>{% endif %}<br><span class="muted">{{ l.note }}</span></td>
     <td class="num">{{ l.size_text }}</td>
     <td>{{ l.family }}</td>
-    <td><form method="post" action="/v1/resources/add-to-config" class="inline"><input type="hidden" name="id" value="{{ l.id }}"><button type="submit">Add to config</button></form></td>
+    <td><form method="post" action="/v1/resources/add-to-config#resource-{{ l.id }}" class="inline" data-ajax><input type="hidden" name="id" value="{{ l.id }}"><button type="submit">Add to config</button></form>{% if at_row == l.id %}{% call notices("resources-row") %}{% endcall %}{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>
@@ -160,7 +166,10 @@
   <p class="muted">YOLO26 is not downloadable (the weights are AGPL-3.0): use Export in the <a href="#res-models-yolo26">YOLO26</a> section, or export by hand with <code>scripts/export_yolo26.py --out-dir "{{ models_dir }}"</code> (see the README); other model files show up under Local models. The NVIDIA CUDA/cuDNN libraries (for <code>ort:cuda</code> without a CUDA 12 / cuDNN 9 install) are covered by NVIDIA's license.</p>
 </section>
 
-<form method="post" action="/config" class="card grid" id="server">
+<div id="at-server" class="anchor"></div>
+{% call notices("server") %}{% endcall %}
+{% call conflict_card("server") %}{% endcall %}
+<form method="post" action="/config#at-server" class="card grid" id="server">
   <h2>Server <span class="tag restart">needs restart</span></h2>
   <input type="hidden" name="base" value="{{ server_base }}">
   <input type="hidden" name="base_revision" value="{{ revision }}">
@@ -208,16 +217,19 @@
   <div class="actions"><button type="submit">Save</button> <span class="form-msg" aria-live="polite"></span></div>
 </form>
 
-<form method="post" action="/config/restart" class="card" id="restart">
-  <div class="inline-row"><button type="submit" class="danger">Restart server</button>
+<div id="at-restart" class="anchor"></div>
+<form method="post" action="/config/restart?back=restart" class="card" id="restart" data-ajax>
+  <div class="inline-row"><button type="submit" class="danger" data-restart>Restart server</button>
   <span class="muted">Reloads the config file, recompiles the enabled models and rebinds the port.</span></div>
   <div id="pending-box"{% if pending.is_empty() %} hidden{% endif %}><p class="muted">Saved but not running yet (a restart applies):</p>
   <ul id="pending-list">{% for p in pending %}<li>{{ p }}</li>{% endfor %}</ul></div>
 </form>
 <script>
 // Confirmation for large downloads and removals (without JS the button label shows the size).
-document.querySelectorAll("button[data-confirm]").forEach(function (b) {
-  b.addEventListener("click", function (e) { if (!confirm(b.dataset.confirm)) e.preventDefault(); });
+// Delegated: the Resources section is re-rendered in place.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest && e.target.closest("button[data-confirm]");
+  if (b && !confirm(b.dataset.confirm)) e.preventDefault();
 });
 // Force CPU disables the Device select (a disabled select is not submitted: the saved device stays).
 (function () {
@@ -230,17 +242,42 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
   var err = document.querySelector("p.error");
   if (err && /models/.test(err.textContent)) document.querySelector("details.advanced").open = true;
 })();
-// Live progress: poll /v1/resources while something downloads; update in place and reload only
-// when a row changes state (busy -> installed / failed, ...).
+// Resources: actions (Download, Remove, Add to config, Export, Cancel) post in place
+// (PrismLive data-ajax forms); the section is then re-rendered from a fresh /config without
+// moving the page, and /v1/resources is polled while something downloads or exports: progress
+// updates in place, a row that changes state re-renders the section (no page reload).
 (function () {
+  var L = window.PrismLive, box = document.getElementById("resources");
+  if (!L || !window.fetch || !box) return;
   var key = function (r) { return r.busy ? "busy" : r.state; };
-  var rowsBusy = function () { return document.querySelector('#resources tr[data-busy="true"]'); };
-  if (!rowsBusy()) return;
-  var timer = setInterval(function () {
+  var timer = null, swapping = null;
+  function rowOf(id) { return box.querySelector('tr[data-id="' + CSS.escape(id) + '"]'); }
+  // Replace the section's content with the fresh page's, keeping scroll offsets, open
+  // <details> and the answers shown next to the buttons.
+  function swap() {
+    if (swapping) return swapping;
+    swapping = fetch("/config", {cache: "no-store"}).then(function (r) { return r.text(); }).then(function (html) {
+      var fresh = new DOMParser().parseFromString(html, "text/html").getElementById("resources");
+      if (!fresh) return;
+      var msgs = [];
+      box.querySelectorAll(".action-msg").forEach(function (m) { var tr = m.closest("tr[data-id]"); msgs.push([tr ? tr.dataset.id : null, m]); });
+      var st = L.view.capture(box), y = window.scrollY;
+      box.replaceChildren.apply(box, Array.prototype.slice.call(document.adoptNode(fresh).childNodes));
+      L.view.restore(box, st);
+      msgs.forEach(function (p) {
+        var row = p[0] && rowOf(p[0]);
+        if (row) row.lastElementChild.appendChild(p[1]);
+        else { p[1].classList.add("section-msg"); box.querySelector("h2").after(p[1]); }
+      });
+      if (Math.abs(window.scrollY - y) > 1 && !(document.activeElement && box.contains(document.activeElement))) window.scrollTo(window.scrollX, y);
+    }).catch(function () {}).then(function () { swapping = null; watch(); });
+    return swapping;
+  }
+  function tick() {
     fetch("/v1/resources", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
       var changed = false;
       j.resources.forEach(function (r) {
-        var row = document.querySelector('#resources tr[data-id="' + r.id + '"]');
+        var row = rowOf(r.id);
         if (!row) return;
         var was = row.dataset.busy === "true" ? "busy" : row.dataset.state;
         if (was !== key(r)) { changed = true; return; }
@@ -250,10 +287,16 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
           if (bar) { if (r.progress !== null && r.progress !== undefined) bar.value = r.progress; else bar.removeAttribute("value"); }
         }
       });
-      // Load /config afresh (the page may be the answer to a POST, which a reload would resend).
-      if (changed) { clearInterval(timer); location.replace("/config?t=" + Date.now() + "#resources"); }
-    }).catch(function () {});
-  }, 2000);
+      if (changed) swap(); else watch();
+    }).catch(function () { watch(); });
+  }
+  // Poll while a row is busy.
+  function watch() {
+    clearTimeout(timer); timer = null;
+    if (box.querySelector('tr[data-busy="true"]')) timer = setTimeout(tick, 1500);
+  }
+  box.addEventListener("prism:action", function () { swap(); });
+  watch();
 })();
 // ---- Live config: refresh fields from GET /v1/config, keep and mark unsaved edits, merge saves.
 (function () {
@@ -356,7 +399,9 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
         if (k in oldBase) nb[k] = oldBase[k]; else delete nb[k];
       });
       fresh.querySelector("input[name=base]").value = JSON.stringify(nb);
+      var st = L.view.capture(card);
       card.replaceChildren.apply(card, Array.prototype.slice.call(document.adoptNode(fresh).childNodes));
+      L.view.restore(card, st);
       card.querySelectorAll("tbody tr[data-model]").forEach(function (r) { if (!oldRows[r.dataset.model]) U.flash(r); });
     }).catch(function () {});
   }
@@ -413,29 +458,26 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
   // Save without leaving the page: JSON answers, conflicts shown inline.
   function msgOf(form) { return form.querySelector(".form-msg"); }
   function say(form, cls, text) { var m = msgOf(form); m.className = "form-msg " + cls; m.textContent = text; }
-  function send(form, data) {
+  // `by`: the clicked button, disabled while the request runs.
+  function send(form, data, by) {
     say(form, "muted", "saving…");
-    return fetch(form.getAttribute("action"), {method: "POST", body: new URLSearchParams(data), headers: {"Accept": "application/json"}})
+    var btns = by ? [by] : Array.prototype.slice.call(form.querySelectorAll(".conflict-panel button"));
+    btns.forEach(function (b) { b.disabled = true; });
+    var done = function () { btns.forEach(function (b) { b.disabled = false; }); };
+    return fetch(form.getAttribute("action").split("#")[0], {method: "POST", body: new URLSearchParams(data), headers: {"Accept": "application/json"}})
       .then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); })
       .then(function (j) {
+        done();
         var old = form.querySelector(".conflict-panel"); if (old) old.remove();
         if (j._status === 409 && j.conflict) { say(form, "", ""); conflictPanel(form, data, j); return; }
         if (!j.success) { say(form, "error-text", j.message); return; }
         own[j.revision] = true;
         say(form, "ok-text", j.message);
-        if (j.restarting) { say(form, "ok-text", j.message + " Restarting…"); waitRestart(); return; }
+        if (j.restarting) { say(form, "ok-text", j.message + " Restarting…"); L.restarting(); L.afterRestart(); return; }
         resetAfter = {form: form, rev: j.revision};
         L.poll(true);
       })
-      .catch(function (e) { say(form, "error-text", "Not saved: " + e); });
-  }
-  function waitRestart() {
-    var last = L.last(), gen = last && last.generation, ep = last && last.epoch;
-    setTimeout(function again() {
-      fetch("/v1/config", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
-        if (j.generation !== gen || j.epoch !== ep) location.reload(); else setTimeout(again, 700);
-      }, function () { setTimeout(again, 700); });
-    }, 700);
+      .catch(function (e) { done(); say(form, "error-text", "Not saved: " + e); });
   }
   function conflictPanel(form, data, j) {
     var panel = el("div", "conflict-panel"), choices = {};
@@ -474,7 +516,7 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
     e.preventDefault();
     var data = new FormData(form);
     if (by && by.name) data.append(by.name, by.value);
-    send(form, data);
+    send(form, data, by);
   });
 })();
 </script>
