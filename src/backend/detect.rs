@@ -6,6 +6,10 @@
 //!   `card0-HDMI-A-1` are skipped), names from `/proc/driver/nvidia/gpus/*/information` when the
 //!   NVIDIA driver is loaded, VRAM from amdgpu's `mem_info_vram_total`.
 //! - **macOS arm64**: one Apple GPU entry (unified memory, so no VRAM figure).
+//! - **NVIDIA** (Windows, Linux): the CUDA driver API (`nvcuda.dll` / `libcuda.so.1`, loaded at
+//!   run time) adds each GPU's CUDA ordinal and compute capability, matched to the adapters by
+//!   LUID (Windows) or PCI bus id (Linux), then by name. No driver, or any failing call, leaves
+//!   them unknown.
 //!
 //! The result is computed once per process ([`hardware`]). The parsers are pure functions so they
 //! are unit-tested with literal file contents.
@@ -74,6 +78,43 @@ pub struct GpuAdapter {
     pub index: u32,
     /// Discrete card (own VRAM) rather than integrated; a heuristic, see [`guess_discrete`].
     pub discrete: bool,
+    /// What the CUDA driver reports for this (NVIDIA) GPU; None when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cuda: Option<CudaInfo>,
+}
+
+/// CUDA compute capability, e.g. 6.1 (Pascal GP104) or 8.6 (Ampere GA106).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ComputeCapability {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl ComputeCapability {
+    pub const fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
+}
+
+impl fmt::Display for ComputeCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+impl Serialize for ComputeCapability {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+/// An NVIDIA GPU as the CUDA driver sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CudaInfo {
+    /// CUDA device ordinal: what `ort:cuda:N` and ONNX Runtime's `device_id` mean (the driver's
+    /// order, which honours `CUDA_VISIBLE_DEVICES` / `CUDA_DEVICE_ORDER`; not the DXGI index).
+    pub ordinal: u32,
+    pub compute_capability: ComputeCapability,
 }
 
 /// Detected hardware.
@@ -135,6 +176,13 @@ impl fmt::Display for GpuAdapter {
         if self.vram_mb > 0 {
             write!(f, ", {} MB VRAM", self.vram_mb)?;
         }
+        if let Some(c) = &self.cuda {
+            write!(
+                f,
+                ", CUDA device {} compute capability {}",
+                c.ordinal, c.compute_capability
+            )?;
+        }
         f.write_str(")")
     }
 }
@@ -149,7 +197,12 @@ pub fn hardware() -> &'static HardwareInfo {
 /// level and yield fewer GPUs.
 pub fn detect() -> HardwareInfo {
     let t = std::time::Instant::now();
-    let hw = HardwareInfo::new(std::env::consts::OS, std::env::consts::ARCH, detect_gpus());
+    let (mut gpus, keys) = detect_gpus();
+    if gpus.iter().any(|g| g.vendor == GpuVendor::Nvidia) {
+        let cuda = cuda_driver::devices();
+        attach_cuda(&mut gpus, &keys, &cuda);
+    }
+    let hw = HardwareInfo::new(std::env::consts::OS, std::env::consts::ARCH, gpus);
     tracing::debug!(
         gpus = ?hw.gpus,
         ms = t.elapsed().as_millis() as u64,
@@ -158,28 +211,46 @@ pub fn detect() -> HardwareInfo {
     hw
 }
 
+/// GPUs plus, per GPU, the key that identifies it to the CUDA driver.
+type Detected = (Vec<GpuAdapter>, Vec<AdapterKey>);
+
 #[cfg(windows)]
-fn detect_gpus() -> Vec<GpuAdapter> {
+fn detect_gpus() -> Detected {
     match dxgi::adapters() {
-        Ok(v) => v,
+        Ok(v) => v
+            .into_iter()
+            .map(|(g, luid)| (g, AdapterKey::Luid(luid)))
+            .unzip(),
         Err(e) => {
             tracing::debug!("DXGI adapter enumeration failed: {e:#}");
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-fn detect_gpus() -> Vec<GpuAdapter> {
-    linux::adapters(
+fn detect_gpus() -> Detected {
+    linux::adapters_with_slots(
         std::path::Path::new("/sys/class/drm"),
         std::path::Path::new("/proc/driver/nvidia/gpus"),
     )
+    .into_iter()
+    .map(|(g, slot)| {
+        let key = slot
+            .as_deref()
+            .and_then(PciAddress::parse)
+            .map_or(AdapterKey::None, AdapterKey::Pci);
+        (g, key)
+    })
+    .unzip()
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn detect_gpus() -> Vec<GpuAdapter> {
-    vec![apple_gpu(&crate::system_info::cpu_name())]
+fn detect_gpus() -> Detected {
+    (
+        vec![apple_gpu(&crate::system_info::cpu_name())],
+        vec![AdapterKey::None],
+    )
 }
 
 #[cfg(not(any(
@@ -187,8 +258,106 @@ fn detect_gpus() -> Vec<GpuAdapter> {
     target_os = "linux",
     all(target_os = "macos", target_arch = "aarch64")
 )))]
-fn detect_gpus() -> Vec<GpuAdapter> {
-    Vec::new()
+fn detect_gpus() -> Detected {
+    (Vec::new(), Vec::new())
+}
+
+/// PCI location (domain, bus, device, function).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciAddress {
+    pub domain: u32,
+    pub bus: u32,
+    pub device: u32,
+    pub function: u32,
+}
+
+impl PciAddress {
+    /// `0000:01:00.0` (sysfs) or `00000000:01:00.0` (CUDA/NVML, 8-digit domain); case-insensitive.
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim().trim_end_matches('\0');
+        let (rest, function) = s.rsplit_once('.')?;
+        let mut it = rest.split(':');
+        let (domain, bus, device) = (it.next()?, it.next()?, it.next()?);
+        if it.next().is_some() {
+            return None;
+        }
+        let hex = |p: &str| (!p.is_empty()).then(|| u32::from_str_radix(p, 16).ok())?;
+        Some(Self {
+            domain: hex(domain)?,
+            bus: hex(bus)?,
+            device: hex(device)?,
+            function: hex(function)?,
+        })
+    }
+}
+
+/// How the platform identifies an adapter to the CUDA driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterKey {
+    /// Windows adapter LUID (`DXGI_ADAPTER_DESC1::AdapterLuid`, LowPart in the low 32 bits).
+    Luid(u64),
+    /// Linux PCI slot.
+    Pci(PciAddress),
+    None,
+}
+
+/// One device the CUDA driver lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaDevice {
+    pub ordinal: u32,
+    /// `cuDeviceGetName`, e.g. "NVIDIA GeForce GTX 1070 Ti".
+    pub name: String,
+    pub compute_capability: ComputeCapability,
+    /// `cuDeviceGetLuid` (Windows only).
+    pub luid: Option<u64>,
+    /// `cuDeviceGetPCIBusId`.
+    pub pci: Option<PciAddress>,
+}
+
+/// Set [`GpuAdapter::cuda`] on the NVIDIA adapters in `gpus` (`keys[i]` identifies `gpus[i]`).
+/// Matching, each CUDA device used at most once: by LUID / PCI address; then, in platform
+/// order, by name; then a single adapter left with a single device left. Adapters that do not
+/// match stay unknown. Pure.
+pub fn attach_cuda(gpus: &mut [GpuAdapter], keys: &[AdapterKey], cuda: &[CudaDevice]) {
+    let nvidia: Vec<usize> = (0..gpus.len())
+        .filter(|&i| gpus[i].vendor == GpuVendor::Nvidia)
+        .collect();
+    let mut used = vec![false; cuda.len()];
+    let mut pick = vec![None::<usize>; gpus.len()];
+    // First unused device matching `f`, marked used.
+    let mut claim = |f: &dyn Fn(&CudaDevice) -> bool| {
+        let j = (0..cuda.len()).find(|&j| !used[j] && f(&cuda[j]))?;
+        used[j] = true;
+        Some(j)
+    };
+    for &i in &nvidia {
+        pick[i] = match keys.get(i).copied().unwrap_or(AdapterKey::None) {
+            AdapterKey::Luid(l) => claim(&|c| c.luid == Some(l)),
+            AdapterKey::Pci(p) => claim(&|c| c.pci == Some(p)),
+            AdapterKey::None => None,
+        };
+    }
+    for &i in &nvidia {
+        if pick[i].is_none() {
+            let name = gpus[i].name.trim();
+            pick[i] = claim(&|c| c.name.trim().eq_ignore_ascii_case(name));
+        }
+    }
+    let open: Vec<usize> = nvidia
+        .iter()
+        .copied()
+        .filter(|&i| pick[i].is_none())
+        .collect();
+    let free: Vec<usize> = (0..cuda.len()).filter(|&j| !used[j]).collect();
+    if let ([i], [j]) = (open.as_slice(), free.as_slice()) {
+        pick[*i] = Some(*j);
+    }
+    for (g, j) in gpus.iter_mut().zip(pick) {
+        g.cuda = j.map(|j| CudaInfo {
+            ordinal: cuda[j].ordinal,
+            compute_capability: cuda[j].compute_capability,
+        });
+    }
 }
 
 /// The single Apple silicon GPU, named after the chip ("Apple M2 Pro" -> "Apple M2 Pro GPU").
@@ -205,6 +374,7 @@ pub fn apple_gpu(chip: &str) -> GpuAdapter {
         vram_mb: 0,
         index: 0,
         discrete: false,
+        cuda: None,
     }
 }
 
@@ -258,6 +428,7 @@ pub fn adapter_from_ids(
         vram_mb,
         index,
         discrete: guess_discrete(vendor, device_id, vram_mb),
+        cuda: None,
     }
 }
 
@@ -351,10 +522,23 @@ pub(crate) mod linux {
         v
     }
 
-    /// GPUs from `drm_root` (`/sys/class/drm`) plus names from `nvidia_root`
-    /// (`/proc/driver/nvidia/gpus`). NVIDIA GPUs the driver lists without a DRM card (nvidia-drm
-    /// not loaded) are appended after the cards.
+    /// [`adapters_with_slots`] without the slots.
+    #[cfg(test)]
     pub fn adapters(drm_root: &Path, nvidia_root: &Path) -> Vec<GpuAdapter> {
+        adapters_with_slots(drm_root, nvidia_root)
+            .into_iter()
+            .map(|(g, _)| g)
+            .collect()
+    }
+
+    /// GPUs from `drm_root` (`/sys/class/drm`) plus names from `nvidia_root`
+    /// (`/proc/driver/nvidia/gpus`), each with its PCI slot ("0000:01:00.0") when known. NVIDIA
+    /// GPUs the driver lists without a DRM card (nvidia-drm not loaded) are appended after the
+    /// cards.
+    pub fn adapters_with_slots(
+        drm_root: &Path,
+        nvidia_root: &Path,
+    ) -> Vec<(GpuAdapter, Option<String>)> {
         let mut nvidia = nvidia_infos(nvidia_root);
         let mut cards: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(drm_root)
             .map(|d| {
@@ -399,29 +583,23 @@ pub(crate) mod linux {
                 .and_then(|s| s.trim().parse::<u64>().ok())
                 .map(|b| b / (1024 * 1024))
                 .unwrap_or(0);
-            out.push(adapter_from_ids(
-                idx,
-                vendor_id,
-                device_id,
-                name.as_deref(),
-                vram_mb,
+            out.push((
+                adapter_from_ids(idx, vendor_id, device_id, name.as_deref(), vram_mb),
+                slot,
             ));
         }
-        let first = out.iter().map(|g| g.index + 1).max().unwrap_or(0);
+        let first = out.iter().map(|(g, _)| g.index + 1).max().unwrap_or(0);
         for (index, (_, info)) in (first..).zip(nvidia) {
-            out.push(adapter_from_ids(
-                index,
-                VENDOR_NVIDIA,
-                0,
-                Some(&info.model),
-                0,
+            out.push((
+                adapter_from_ids(index, VENDOR_NVIDIA, 0, Some(&info.model), 0),
+                info.bus,
             ));
         }
         out
     }
 }
 
-/// DXGI adapter enumeration (Windows only; the one place in this module with `unsafe`).
+/// DXGI adapter enumeration (Windows only; one of the two places in this module with `unsafe`).
 #[cfg(windows)]
 mod dxgi {
     use super::*;
@@ -429,7 +607,8 @@ mod dxgi {
         CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, IDXGIFactory1,
     };
 
-    pub fn adapters() -> anyhow::Result<Vec<GpuAdapter>> {
+    /// Hardware adapters with their LUIDs (`LowPart | HighPart << 32`).
+    pub fn adapters() -> anyhow::Result<Vec<(GpuAdapter, u64)>> {
         // SAFETY: plain COM factory creation; the returned interface is reference counted.
         let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }?;
         let mut out = Vec::new();
@@ -455,15 +634,169 @@ mod dxgi {
             }
             let vram_mb = desc.DedicatedVideoMemory as u64 / (1024 * 1024);
             let name = utf16_name(&desc.Description);
-            out.push(adapter_from_ids(
-                i,
-                desc.VendorId,
-                desc.DeviceId,
-                Some(&name),
-                vram_mb,
+            let luid =
+                (desc.AdapterLuid.HighPart as u32 as u64) << 32 | desc.AdapterLuid.LowPart as u64;
+            out.push((
+                adapter_from_ids(i, desc.VendorId, desc.DeviceId, Some(&name), vram_mb),
+                luid,
             ));
         }
         Ok(out)
+    }
+}
+
+/// CUDA driver API queries (`nvcuda.dll` / `libcuda.so.1`, loaded at run time; the other place
+/// in this module with `unsafe`). Read-only: no context is created.
+#[cfg(any(windows, target_os = "linux"))]
+mod cuda_driver {
+    use super::*;
+    use std::ffi::{CStr, c_char, c_int, c_uint};
+
+    type CuResult = c_int;
+    type CuDevice = c_int;
+    const CUDA_SUCCESS: CuResult = 0;
+    const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: c_int = 75;
+    const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: c_int = 76;
+
+    #[cfg(windows)]
+    const LIBRARY: &str = "nvcuda.dll";
+    #[cfg(not(windows))]
+    const LIBRARY: &str = "libcuda.so.1";
+
+    // CUDAAPI is __stdcall on Windows (the C convention on x64), cdecl elsewhere: "system".
+    type CuInit = unsafe extern "system" fn(c_uint) -> CuResult;
+    type CuDeviceGetCount = unsafe extern "system" fn(*mut c_int) -> CuResult;
+    type CuDeviceGet = unsafe extern "system" fn(*mut CuDevice, c_int) -> CuResult;
+    type CuDeviceGetAttribute = unsafe extern "system" fn(*mut c_int, c_int, CuDevice) -> CuResult;
+    type CuDeviceGetString = unsafe extern "system" fn(*mut c_char, c_int, CuDevice) -> CuResult;
+    #[cfg(windows)]
+    type CuDeviceGetLuid =
+        unsafe extern "system" fn(*mut c_char, *mut c_uint, CuDevice) -> CuResult;
+
+    /// Every device the driver lists; empty (logged at debug level) when there is no driver or
+    /// any call fails.
+    pub fn devices() -> Vec<CudaDevice> {
+        match query() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("CUDA driver query failed, compute capability unknown: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    fn check(what: &str, r: CuResult) -> Result<(), String> {
+        if r == CUDA_SUCCESS {
+            Ok(())
+        } else {
+            Err(format!("{what} returned CUresult {r}"))
+        }
+    }
+
+    fn c_string(buf: &[c_char]) -> String {
+        let bytes: Vec<u8> = buf.iter().map(|&c| c as u8).collect();
+        CStr::from_bytes_until_nul(&bytes)
+            .map(|s| s.to_string_lossy().trim().to_string())
+            .unwrap_or_default()
+    }
+
+    fn query() -> Result<Vec<CudaDevice>, String> {
+        // SAFETY: loads the NVIDIA driver library, the same one ONNX Runtime's CUDA provider
+        // loads; its initializers have no preconditions.
+        let lib =
+            unsafe { libloading::Library::new(LIBRARY) }.map_err(|e| format!("{LIBRARY}: {e}"))?;
+        // Never unloaded: unloading the driver after cuInit is not supported, and the CUDA
+        // provider uses it later anyway.
+        let lib: &'static libloading::Library = Box::leak(Box::new(lib));
+        // SAFETY: the symbol types match the CUDA driver API (cuda.h) declarations.
+        let sym = |name: &[u8]| -> Result<*const (), String> {
+            unsafe { lib.get::<*const ()>(name) }
+                .map(|s| *s)
+                .map_err(|e| format!("{LIBRARY}: {e}"))
+        };
+        // SAFETY: each pointer comes from the symbol of that name and is transmuted to its
+        // cuda.h signature.
+        let (init, count, get, attr, name, bus) = unsafe {
+            (
+                std::mem::transmute::<*const (), CuInit>(sym(b"cuInit\0")?),
+                std::mem::transmute::<*const (), CuDeviceGetCount>(sym(b"cuDeviceGetCount\0")?),
+                std::mem::transmute::<*const (), CuDeviceGet>(sym(b"cuDeviceGet\0")?),
+                std::mem::transmute::<*const (), CuDeviceGetAttribute>(sym(
+                    b"cuDeviceGetAttribute\0",
+                )?),
+                std::mem::transmute::<*const (), CuDeviceGetString>(sym(b"cuDeviceGetName\0")?),
+                std::mem::transmute::<*const (), CuDeviceGetString>(sym(b"cuDeviceGetPCIBusId\0")?),
+            )
+        };
+        #[cfg(windows)]
+        // SAFETY: as above.
+        let luid_fn = sym(b"cuDeviceGetLuid\0")
+            .ok()
+            .map(|p| unsafe { std::mem::transmute::<*const (), CuDeviceGetLuid>(p) });
+
+        // SAFETY (all calls below): plain driver queries writing into local out-parameters of
+        // the documented sizes.
+        check("cuInit", unsafe { init(0) })?;
+        let mut n: c_int = 0;
+        check("cuDeviceGetCount", unsafe { count(&mut n) })?;
+        let mut out = Vec::new();
+        for ordinal in 0..n.max(0) {
+            let mut dev: CuDevice = 0;
+            check("cuDeviceGet", unsafe { get(&mut dev, ordinal) })?;
+            let (mut major, mut minor): (c_int, c_int) = (0, 0);
+            check("cuDeviceGetAttribute(major)", unsafe {
+                attr(
+                    &mut major,
+                    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                    dev,
+                )
+            })?;
+            check("cuDeviceGetAttribute(minor)", unsafe {
+                attr(
+                    &mut minor,
+                    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                    dev,
+                )
+            })?;
+            let mut name_buf = [0 as c_char; 256];
+            check("cuDeviceGetName", unsafe {
+                name(name_buf.as_mut_ptr(), name_buf.len() as c_int, dev)
+            })?;
+            let mut bus_buf = [0 as c_char; 64];
+            let pci = (unsafe { bus(bus_buf.as_mut_ptr(), bus_buf.len() as c_int, dev) }
+                == CUDA_SUCCESS)
+                .then(|| PciAddress::parse(&c_string(&bus_buf)))
+                .flatten();
+            #[cfg(windows)]
+            let luid = luid_fn.and_then(|f| {
+                let mut raw = [0 as c_char; 8];
+                let mut mask: c_uint = 0;
+                (unsafe { f(raw.as_mut_ptr(), &mut mask, dev) } == CUDA_SUCCESS)
+                    .then(|| u64::from_le_bytes(raw.map(|c| c as u8)))
+            });
+            #[cfg(not(windows))]
+            let luid = None;
+            out.push(CudaDevice {
+                ordinal: ordinal as u32,
+                name: c_string(&name_buf),
+                compute_capability: ComputeCapability::new(
+                    major.max(0) as u32,
+                    minor.max(0) as u32,
+                ),
+                luid,
+                pci,
+            });
+        }
+        tracing::debug!(devices = ?out, "CUDA driver devices");
+        Ok(out)
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+mod cuda_driver {
+    /// No CUDA on this platform.
+    pub fn devices() -> Vec<super::CudaDevice> {
+        Vec::new()
     }
 }
 
@@ -555,6 +888,7 @@ mod tests {
                 vram_mb: 12288,
                 index: 1,
                 discrete: true,
+                cuda: None,
             }
         );
         let g = adapter_from_ids(0, 0x8086, 0x3E92, None, 0);
@@ -639,6 +973,137 @@ mod tests {
         // Missing roots: nothing, no panic.
         assert!(linux::adapters(&root.join("none"), &root.join("none")).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pci_addresses() {
+        let p = PciAddress {
+            domain: 0,
+            bus: 1,
+            device: 0,
+            function: 0,
+        };
+        assert_eq!(PciAddress::parse("0000:01:00.0"), Some(p));
+        assert_eq!(PciAddress::parse("00000000:01:00.0\0\0"), Some(p));
+        assert_eq!(
+            PciAddress::parse("0001:AF:1f.7").map(|a| (a.domain, a.bus, a.device, a.function)),
+            Some((1, 0xAF, 0x1F, 7))
+        );
+        assert_eq!(PciAddress::parse("01:00.0"), None);
+        assert_eq!(PciAddress::parse("0000:01:00"), None);
+        assert_eq!(PciAddress::parse("0000::00.0"), None);
+        assert_eq!(PciAddress::parse(""), None);
+    }
+
+    fn cuda_dev(ordinal: u32, name: &str, cc: (u32, u32), luid: Option<u64>) -> CudaDevice {
+        CudaDevice {
+            ordinal,
+            name: name.into(),
+            compute_capability: ComputeCapability::new(cc.0, cc.1),
+            luid,
+            pci: None,
+        }
+    }
+
+    fn ordinals(gpus: &[GpuAdapter]) -> Vec<Option<(u32, String)>> {
+        gpus.iter()
+            .map(|g| {
+                g.cuda
+                    .map(|c| (c.ordinal, c.compute_capability.to_string()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cuda_devices_attach_by_key_name_or_last_one() {
+        let intel = || {
+            adapter_from_ids(
+                1,
+                VENDOR_INTEL,
+                0x3E92,
+                Some("Intel(R) UHD Graphics 630"),
+                128,
+            )
+        };
+        let nv = |i: u32, name: &str| adapter_from_ids(i, VENDOR_NVIDIA, 0x1B82, Some(name), 8060);
+
+        // LUID wins over name and order: identical names, the driver lists them the other way.
+        let mut gpus = vec![nv(0, "NVIDIA X"), intel(), nv(2, "NVIDIA X")];
+        let keys = [
+            AdapterKey::Luid(10),
+            AdapterKey::Luid(11),
+            AdapterKey::Luid(12),
+        ];
+        let cuda = [
+            cuda_dev(0, "NVIDIA X", (8, 6), Some(12)),
+            cuda_dev(1, "NVIDIA X", (6, 1), Some(10)),
+        ];
+        attach_cuda(&mut gpus, &keys, &cuda);
+        assert_eq!(
+            ordinals(&gpus),
+            [Some((1, "6.1".into())), None, Some((0, "8.6".into()))]
+        );
+
+        // PCI address (Linux).
+        let addr = |bus| PciAddress {
+            domain: 0,
+            bus,
+            device: 0,
+            function: 0,
+        };
+        let mut gpus = vec![nv(0, "A"), nv(1, "B")];
+        let keys = [AdapterKey::Pci(addr(1)), AdapterKey::Pci(addr(2))];
+        let mut c0 = cuda_dev(0, "B", (8, 9), None);
+        c0.pci = Some(addr(2));
+        let mut c1 = cuda_dev(1, "A", (7, 5), None);
+        c1.pci = Some(addr(1));
+        attach_cuda(&mut gpus, &keys, &[c0, c1]);
+        assert_eq!(
+            ordinals(&gpus),
+            [Some((1, "7.5".into())), Some((0, "8.9".into()))]
+        );
+
+        // No keys: by name; the one left over pairs with the one device left.
+        let mut gpus = vec![
+            nv(0, "NVIDIA GeForce GTX 1070 Ti"),
+            nv(1, "Odd name"),
+            intel(),
+        ];
+        let cuda = [
+            cuda_dev(0, "Other", (8, 6), None),
+            cuda_dev(1, "nvidia geforce gtx 1070 ti", (6, 1), None),
+        ];
+        attach_cuda(&mut gpus, &[], &cuda);
+        assert_eq!(
+            ordinals(&gpus),
+            [Some((1, "6.1".into())), Some((0, "8.6".into())), None]
+        );
+
+        // Ambiguous leftovers stay unknown; no driver devices -> unknown.
+        let mut gpus = vec![nv(0, "P"), nv(1, "Q")];
+        let cuda = [
+            cuda_dev(0, "R", (8, 6), None),
+            cuda_dev(1, "S", (8, 6), None),
+        ];
+        attach_cuda(&mut gpus, &[], &cuda);
+        assert_eq!(ordinals(&gpus), [None, None]);
+        let mut gpus = vec![nv(0, "P")];
+        attach_cuda(&mut gpus, &[AdapterKey::Luid(1)], &[]);
+        assert_eq!(ordinals(&gpus), [None]);
+        assert!(!gpus[0].to_string().contains("compute capability"));
+        gpus[0].cuda = Some(CudaInfo {
+            ordinal: 0,
+            compute_capability: ComputeCapability::new(6, 1),
+        });
+        assert!(
+            gpus[0]
+                .to_string()
+                .ends_with("8060 MB VRAM, CUDA device 0 compute capability 6.1)")
+        );
+        assert_eq!(
+            serde_json::to_value(gpus[0].cuda).unwrap(),
+            serde_json::json!({"ordinal": 0, "compute_capability": "6.1"})
+        );
     }
 
     #[test]

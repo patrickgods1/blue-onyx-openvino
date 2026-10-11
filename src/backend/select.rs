@@ -3,11 +3,14 @@
 //! model has an `.onnx` file; no runtime library is touched here.
 //!
 //! `auto` is the runnable options in this order:
-//! 1. NVIDIA GPU with a usable CUDA EP -> `ort:cuda:<ordinal of the largest-VRAM NVIDIA GPU>`
+//! 1. NVIDIA GPU with a usable CUDA EP -> `ort:cuda:<ordinal of the largest-VRAM NVIDIA GPU>`;
+//!    a GPU whose compute capability the pinned ONNX Runtime CUDA build has no kernels for
+//!    (e.g. Pascal 6.1 on Windows, see [`ort_cuda_unsupported`]) is not runnable on
+//!    CUDA/TensorRT and falls to 3
 //! 2. Intel GPUs listed by OpenVINO -> `openvino:gpu` (a single GPU), or the discrete ones
 //!    (`DEVICE_TYPE=discrete`, Arc) first and then the integrated ones as `openvino:gpu.N`
-//! 3. Windows only: DirectML on GPUs not already covered by 1 or 2 (AMD and others), discrete
-//!    and larger VRAM first -> `ort:directml:<DXGI index>`
+//! 3. Windows only: DirectML on GPUs not already covered by 1 or 2 (AMD, NVIDIA without CUDA,
+//!    others), discrete and larger VRAM first -> `ort:directml:<DXGI index>`
 //! 4. macOS arm64 with the CoreML EP -> `ort:coreml`
 //! 5. CPU: `openvino:cpu`, else `ort:cpu`
 //!
@@ -17,6 +20,7 @@
 
 use super::detect::{GpuAdapter, GpuVendor, HardwareInfo};
 use super::spec::{Device, Runtime, Target};
+use crate::resources::catalog;
 use serde::{Serialize, Serializer};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -373,10 +377,19 @@ impl Builder<'_> {
     }
 
     fn push_ort(&mut self, target: Target, index: Option<u32>, label: String) {
-        let reason = self
-            .probe
-            .ort
-            .ep_error(target)
+        self.push_ort_unless(target, index, label, None);
+    }
+
+    /// `push_ort`, with `hw_reason` (the hardware cannot run it) taking precedence.
+    fn push_ort_unless(
+        &mut self,
+        target: Target,
+        index: Option<u32>,
+        label: String,
+        hw_reason: Option<String>,
+    ) {
+        let reason = hw_reason
+            .or_else(|| self.probe.ort.ep_error(target))
             .or_else(|| (!self.has_onnx).then(|| NEEDS_ONNX.to_string()));
         self.push(device(Runtime::Ort, target, index), label, reason);
     }
@@ -402,23 +415,17 @@ pub fn select(hw: &HardwareInfo, probe: &RuntimeProbe, has_onnx: bool) -> Select
     };
     let ov = &probe.openvino;
 
-    // NVIDIA: CUDA and TensorRT per GPU. The CUDA ordinal is the GPU's position among the NVIDIA
-    // adapters in platform order (exact with one NVIDIA GPU, the common case).
-    let mut nvidia: Vec<&GpuAdapter> = hw.gpus_of(GpuVendor::Nvidia).collect();
-    nvidia.sort_by_key(|g| g.index);
-    for (ordinal, g) in nvidia.iter().enumerate() {
-        b.push_ort(
-            Target::Cuda,
-            Some(ordinal as u32),
-            gpu_label(Target::Cuda, g),
-        );
-    }
-    for (ordinal, g) in nvidia.iter().enumerate() {
-        b.push_ort(
-            Target::TensorRt,
-            Some(ordinal as u32),
-            gpu_label(Target::TensorRt, g),
-        );
+    // NVIDIA: CUDA and TensorRT per GPU, as (CUDA ordinal, GPU) in ordinal order.
+    let nvidia = cuda_ordinals(hw);
+    for target in [Target::Cuda, Target::TensorRt] {
+        for (ordinal, g) in &nvidia {
+            b.push_ort_unless(
+                target,
+                Some(*ordinal),
+                gpu_label(target, g),
+                ort_cuda_unsupported(hw, g),
+            );
+        }
     }
 
     // OpenVINO GPUs as listed; if none is listed but an Intel GPU exists, say why it can't run.
@@ -497,8 +504,7 @@ pub fn select(hw: &HardwareInfo, probe: &RuntimeProbe, has_onnx: bool) -> Select
     // 1. CUDA on the NVIDIA GPU with the most VRAM (first one on ties).
     let cuda = nvidia
         .iter()
-        .enumerate()
-        .map(|(ordinal, g)| (device(Runtime::Ort, Target::Cuda, Some(ordinal as u32)), g))
+        .map(|(ordinal, g)| (device(Runtime::Ort, Target::Cuda, Some(*ordinal)), *g))
         .filter(|(d, _)| b.runnable(d))
         .fold(None::<(Device, &GpuAdapter)>, |best, (d, g)| match best {
             Some((_, bg)) if bg.vram_mb >= g.vram_mb => best,
@@ -559,6 +565,49 @@ pub fn select(hw: &HardwareInfo, probe: &RuntimeProbe, has_onnx: bool) -> Select
         options: b.options,
         auto,
     }
+}
+
+/// The NVIDIA GPUs with their CUDA ordinals (what `ort:cuda:N` means), in ordinal order. The
+/// driver's ordinals when it reported every NVIDIA GPU ([`GpuAdapter::cuda`]); otherwise the
+/// position among the NVIDIA adapters in platform order (exact with one NVIDIA GPU).
+pub fn cuda_ordinals(hw: &HardwareInfo) -> Vec<(u32, &GpuAdapter)> {
+    let mut nvidia: Vec<&GpuAdapter> = hw.gpus_of(GpuVendor::Nvidia).collect();
+    nvidia.sort_by_key(|g| g.index);
+    if nvidia.iter().all(|g| g.cuda.is_some()) {
+        let mut v: Vec<(u32, &GpuAdapter)> = nvidia
+            .into_iter()
+            .filter_map(|g| Some((g.cuda?.ordinal, g)))
+            .collect();
+        v.sort_by_key(|(o, _)| *o);
+        v
+    } else {
+        (0u32..).zip(nvidia).collect()
+    }
+}
+
+/// Why the pinned ONNX Runtime CUDA build (CUDA and TensorRT providers) cannot run on NVIDIA GPU
+/// `g`: it has no kernels for the GPU's compute capability (see `catalog::ort_cuda_archs`).
+/// None when it can, or when the compute capability is unknown (no CUDA driver).
+pub fn ort_cuda_unsupported(hw: &HardwareInfo, g: &GpuAdapter) -> Option<String> {
+    let cc = g.cuda?.compute_capability;
+    let archs = catalog::ort_cuda_archs(&hw.os)?;
+    if archs.runs_on(cc) {
+        return None;
+    }
+    let needs = match archs.min() {
+        Some(min) if cc < min => format!("needs {min}+"),
+        _ => format!("has kernels for {} only", archs.describe()),
+    };
+    let instead = if hw.is_windows() {
+        "use ort:directml or OpenVINO"
+    } else {
+        "use OpenVINO or ort:cpu"
+    };
+    Some(format!(
+        "{} is compute capability {cc}; the ONNX Runtime {} CUDA build {needs}; {instead}",
+        g.name,
+        catalog::ONNXRUNTIME_VERSION
+    ))
 }
 
 /// Plain-text table of `sel` (for `list-devices`): spec, status, label and reason.
@@ -648,6 +697,156 @@ mod tests {
                 .unwrap()
                 .contains("(gpu) has no DirectML")
         );
+    }
+
+    fn nvidia(name: &str, index: u32, cuda: Option<(u32, u32, u32)>) -> GpuAdapter {
+        GpuAdapter {
+            vendor: GpuVendor::Nvidia,
+            name: name.into(),
+            vram_mb: 8060,
+            index,
+            discrete: true,
+            cuda: cuda.map(|(ordinal, major, minor)| super::super::detect::CudaInfo {
+                ordinal,
+                compute_capability: super::super::detect::ComputeCapability::new(major, minor),
+            }),
+        }
+    }
+
+    fn uhd630(index: u32) -> GpuAdapter {
+        GpuAdapter {
+            vendor: GpuVendor::Intel,
+            name: "Intel(R) UHD Graphics 630".into(),
+            vram_mb: 128,
+            index,
+            discrete: false,
+            cuda: None,
+        }
+    }
+
+    /// OpenVINO with CPU + the Intel GPU, ONNX Runtime with every EP usable.
+    fn everything() -> RuntimeProbe {
+        RuntimeProbe {
+            openvino: OpenVinoProbe::with_device_names(&["CPU".into(), "GPU".into()]),
+            ort: OrtProbe::installed(
+                "cuda",
+                [
+                    Target::Cuda,
+                    Target::TensorRt,
+                    Target::DirectMl,
+                    Target::Cpu,
+                ]
+                .into_iter()
+                .map(EpStatus::usable)
+                .collect(),
+            ),
+        }
+    }
+
+    fn auto_text(sel: &Selection) -> String {
+        format_auto(sel)
+    }
+
+    #[test]
+    fn cuda_needs_a_supported_compute_capability() {
+        let probe = everything();
+        let cuda0 = device(Runtime::Ort, Target::Cuda, Some(0));
+        let trt0 = device(Runtime::Ort, Target::TensorRt, Some(0));
+
+        // GTX 1070 Ti (6.1) on Windows: CUDA and TensorRT not runnable, DirectML takes the GPU.
+        let gpu = nvidia("NVIDIA GeForce GTX 1070 Ti", 0, Some((0, 6, 1)));
+        let hw = HardwareInfo::new("windows", "x86_64", vec![gpu, uhd630(1)]);
+        let sel = select(&hw, &probe, true);
+        for spec in [cuda0, trt0] {
+            let o = sel.option(&spec).unwrap();
+            assert!(!o.runnable, "{spec}");
+            assert_eq!(
+                o.reason.as_deref(),
+                Some(
+                    "NVIDIA GeForce GTX 1070 Ti is compute capability 6.1; the ONNX Runtime \
+                     1.24.4 CUDA build needs 7.5+; use ort:directml or OpenVINO"
+                )
+            );
+        }
+        assert_eq!(
+            auto_text(&sel),
+            "openvino:gpu -> ort:directml:0 -> openvino:cpu"
+        );
+
+        // 8.6 and unknown: CUDA first, as before.
+        for cuda in [Some((0, 8, 6)), Some((0, 7, 5)), Some((0, 12, 0)), None] {
+            let gpu = nvidia("NVIDIA GeForce RTX 3060", 0, cuda);
+            let hw = HardwareInfo::new("windows", "x86_64", vec![gpu, uhd630(1)]);
+            let sel = select(&hw, &probe, true);
+            assert!(sel.option(&cuda0).unwrap().runnable, "{cuda:?}");
+            assert!(sel.option(&trt0).unwrap().runnable, "{cuda:?}");
+            assert_eq!(
+                auto_text(&sel),
+                "ort:cuda:0 -> openvino:gpu -> openvino:cpu",
+                "{cuda:?}"
+            );
+        }
+
+        // 8.0 (A100) on Windows: above the minimum but in a gap of the Windows build.
+        let hw = HardwareInfo::new(
+            "windows",
+            "x86_64",
+            vec![nvidia("NVIDIA A100", 0, Some((0, 8, 0)))],
+        );
+        let reason = ort_cuda_unsupported(&hw, &hw.gpus[0]).unwrap();
+        assert!(
+            reason.contains("has kernels for 7.5, 8.6, 8.9 (PTX 9.0) only"),
+            "{reason}"
+        );
+
+        // Linux: the CUDA build has sm_60 code, so Pascal runs; Maxwell (5.2) does not.
+        let linux = |cc: (u32, u32, u32)| {
+            HardwareInfo::new("linux", "x86_64", vec![nvidia("NVIDIA GPU", 0, Some(cc))])
+        };
+        let hw = linux((0, 6, 1));
+        assert_eq!(ort_cuda_unsupported(&hw, &hw.gpus[0]), None);
+        let hw = linux((0, 5, 2));
+        let reason = ort_cuda_unsupported(&hw, &hw.gpus[0]).unwrap();
+        assert!(
+            reason.contains("needs 6.0+; use OpenVINO or ort:cpu"),
+            "{reason}"
+        );
+        assert!(!select(&hw, &probe, true).option(&cuda0).unwrap().runnable);
+    }
+
+    #[test]
+    fn cuda_ordinals_follow_the_driver() {
+        // DXGI lists the 3060 first, the driver (fastest first) the 4090.
+        let a = nvidia("NVIDIA GeForce RTX 3060", 0, Some((1, 8, 6)));
+        let b = nvidia("NVIDIA GeForce RTX 4090", 2, Some((0, 8, 9)));
+        let hw = HardwareInfo::new("windows", "x86_64", vec![a, uhd630(1), b]);
+        let v: Vec<(u32, &str)> = cuda_ordinals(&hw)
+            .into_iter()
+            .map(|(o, g)| (o, g.name.as_str()))
+            .collect();
+        assert_eq!(
+            v,
+            [
+                (0, "NVIDIA GeForce RTX 4090"),
+                (1, "NVIDIA GeForce RTX 3060")
+            ]
+        );
+        let sel = select(&hw, &everything(), true);
+        let label = &sel
+            .option(&device(Runtime::Ort, Target::Cuda, Some(1)))
+            .unwrap()
+            .label;
+        assert!(label.contains("RTX 3060"), "{label}");
+
+        // Any GPU unknown to the driver: positions in platform order, as before.
+        let a = nvidia("NVIDIA GeForce RTX 3060", 0, Some((1, 8, 6)));
+        let b = nvidia("NVIDIA GeForce RTX 4090", 2, None);
+        let hw = HardwareInfo::new("windows", "x86_64", vec![a, b]);
+        let v: Vec<(u32, u32)> = cuda_ordinals(&hw)
+            .into_iter()
+            .map(|(o, g)| (o, g.index))
+            .collect();
+        assert_eq!(v, [(0, 0), (1, 2)]);
     }
 
     #[test]

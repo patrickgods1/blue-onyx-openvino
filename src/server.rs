@@ -158,7 +158,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Bind `0.0.0.0:port` and serve until `shutdown` or `state.restart` is cancelled.
+/// Bind `0.0.0.0:port` (and `[::1]:port`, best effort) and serve until `shutdown` or
+/// `state.restart` is cancelled.
 pub async fn serve(
     state: Arc<AppState>,
     port: u16,
@@ -179,16 +180,35 @@ pub async fn serve(
             }
         }
     };
-    info!("listening on http://{addr}");
+    // `localhost` may resolve to ::1 first, and some clients do not fall back to 127.0.0.1.
+    let loopback6 = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+    let listener6 = match tokio::net::TcpListener::bind(loopback6).await {
+        Ok(l) => Some(l),
+        Err(e) => {
+            warn!("not listening on {loopback6}: {e}");
+            None
+        }
+    };
+    info!("listening on {addr}; open http://localhost:{port}/");
     let restart = state.restart.clone();
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(async move {
+    let stopped = move || {
+        let (shutdown, restart) = (shutdown.clone(), restart.clone());
+        async move {
             tokio::select! {
                 _ = shutdown.cancelled() => {}
                 _ = restart.cancelled() => {}
             }
-        })
-        .await?;
+        }
+    };
+    let app = router(state);
+    let v4 = axum::serve(listener, app.clone()).with_graceful_shutdown(stopped());
+    match listener6 {
+        Some(l6) => {
+            let v6 = axum::serve(l6, app).with_graceful_shutdown(stopped());
+            tokio::try_join!(v4.into_future(), v6.into_future())?;
+        }
+        None => v4.await?,
+    }
     info!("HTTP server stopped");
     Ok(())
 }
@@ -2354,6 +2374,7 @@ mod tests {
                     vram_mb: 0,
                     index: 0,
                     discrete: false,
+                    cuda: None,
                 },
                 GpuAdapter {
                     vendor: GpuVendor::Nvidia,
@@ -2361,6 +2382,7 @@ mod tests {
                     vram_mb: 12288,
                     index: 1,
                     discrete: true,
+                    cuda: None,
                 },
             ],
         );

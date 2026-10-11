@@ -14,6 +14,7 @@ fn gpu(vendor: GpuVendor, name: &str, vram_mb: u64, index: u32, discrete: bool) 
         vram_mb,
         index,
         discrete,
+        cuda: None,
     }
 }
 

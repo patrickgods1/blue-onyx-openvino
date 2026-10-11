@@ -1490,11 +1490,42 @@ pub const REFERENCE_DEVICES: [Device; 2] = [
     },
 ];
 
-/// The first runnable CPU device of `sel` (pseudo ground truth runs there).
+/// The first runnable CPU device of `sel` (pseudo ground truth runs there unless
+/// `benchmark.devices` limits it, see [`pseudo_gt_device`]).
 pub fn reference_device(sel: &Selection) -> Option<Device> {
     REFERENCE_DEVICES
         .into_iter()
         .find(|d| sel.option(d).is_some_and(|o| o.runnable))
+}
+
+/// The device pseudo ground truth runs on. `allowed` (`benchmark.devices`; None or empty = no
+/// limit) keeps it within the user's devices, so a GPU-only list never runs anything on a CPU:
+/// a listed runnable [`REFERENCE_DEVICES`] entry, else the first listed runnable device in the
+/// list's order. Without a limit, [`reference_device`]. None when nothing allowed can run.
+pub fn pseudo_gt_device(sel: &Selection, allowed: Option<&[Device]>) -> Option<Device> {
+    let allowed = match allowed {
+        Some(a) if !a.is_empty() => a,
+        _ => return reference_device(sel),
+    };
+    let runnable = |d: &Device| sel.option(d).is_some_and(|o| o.runnable);
+    REFERENCE_DEVICES
+        .into_iter()
+        .find(|d| allowed.contains(d) && runnable(d))
+        .or_else(|| allowed.iter().copied().find(|d| runnable(d)))
+}
+
+/// Why [`pseudo_gt_device`] found no device.
+pub fn no_pseudo_gt_device(allowed: Option<&[Device]>) -> String {
+    match allowed {
+        Some(a) if !a.is_empty() => format!(
+            "none of the benchmark devices ({}) can run the reference model for pseudo ground truth",
+            a.iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => "no CPU device can run the reference model for pseudo ground truth".to_string(),
+    }
 }
 
 /// Which devices a sweep runs.
@@ -1761,6 +1792,105 @@ mod tests {
             Some("openvino:cpu")
         );
         assert_eq!(reference_device(&sel), Some(Device::OPENVINO_CPU));
+    }
+
+    /// A selection with these (spec, runnable) options.
+    fn selection_of(opts: &[(&str, bool)]) -> Selection {
+        let options: Vec<_> = opts
+            .iter()
+            .map(|&(s, runnable)| crate::backend::select::DeviceOption {
+                spec: dev(s),
+                label: s.to_string(),
+                runnable,
+                reason: (!runnable).then(|| "not runnable".to_string()),
+                download: None,
+            })
+            .collect();
+        let auto = options
+            .iter()
+            .filter(|o| o.runnable)
+            .map(|o| o.spec)
+            .collect();
+        Selection { options, auto }
+    }
+
+    fn dev(s: &str) -> Device {
+        *spec::parse(s).unwrap().device().unwrap()
+    }
+
+    fn machine() -> Selection {
+        selection_of(&[
+            ("openvino:gpu.0", false),
+            ("openvino:gpu.1", true),
+            ("ort:directml:0", true),
+            ("openvino:cpu", true),
+            ("ort:cpu", true),
+        ])
+    }
+
+    #[test]
+    fn pseudo_gt_device_without_limit_is_cpu() {
+        let sel = machine();
+        assert_eq!(pseudo_gt_device(&sel, None), Some(Device::OPENVINO_CPU));
+        assert_eq!(
+            pseudo_gt_device(&sel, Some(&[])),
+            Some(Device::OPENVINO_CPU)
+        );
+        // No runnable CPU and no limit: nothing (never a GPU by surprise).
+        let gpu_only = selection_of(&[("openvino:gpu.1", true), ("openvino:cpu", false)]);
+        assert_eq!(pseudo_gt_device(&gpu_only, None), None);
+    }
+
+    #[test]
+    fn pseudo_gt_device_gpu_only_list_takes_first_runnable_listed() {
+        let sel = machine();
+        let list = [
+            dev("openvino:gpu.0"),
+            dev("ort:directml:0"),
+            dev("openvino:gpu.1"),
+        ];
+        assert_eq!(
+            pseudo_gt_device(&sel, Some(&list)),
+            Some(dev("ort:directml:0"))
+        );
+        let list = [dev("openvino:gpu.1"), dev("ort:directml:0")];
+        assert_eq!(
+            pseudo_gt_device(&sel, Some(&list)),
+            Some(dev("openvino:gpu.1"))
+        );
+    }
+
+    #[test]
+    fn pseudo_gt_device_prefers_a_listed_cpu() {
+        let sel = machine();
+        let list = [dev("openvino:gpu.1"), dev("ort:cpu")];
+        assert_eq!(pseudo_gt_device(&sel, Some(&list)), Some(dev("ort:cpu")));
+        let list = [dev("ort:cpu"), dev("openvino:cpu")];
+        assert_eq!(
+            pseudo_gt_device(&sel, Some(&list)),
+            Some(Device::OPENVINO_CPU)
+        );
+        // A listed CPU that cannot run falls back to the listed GPU, not another CPU.
+        let sel = selection_of(&[
+            ("openvino:gpu.1", true),
+            ("openvino:cpu", false),
+            ("ort:cpu", true),
+        ]);
+        let list = [dev("openvino:cpu"), dev("openvino:gpu.1")];
+        assert_eq!(
+            pseudo_gt_device(&sel, Some(&list)),
+            Some(dev("openvino:gpu.1"))
+        );
+    }
+
+    #[test]
+    fn pseudo_gt_device_nothing_runnable_is_none() {
+        let sel = machine();
+        let list = [dev("openvino:gpu.0"), dev("ort:cuda:0")];
+        assert_eq!(pseudo_gt_device(&sel, Some(&list)), None);
+        let msg = no_pseudo_gt_device(Some(&list));
+        assert!(msg.contains("openvino:gpu.0, ort:cuda:0"), "{msg}");
+        assert!(no_pseudo_gt_device(None).contains("CPU"));
     }
 
     #[test]

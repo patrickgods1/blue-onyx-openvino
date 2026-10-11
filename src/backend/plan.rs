@@ -307,6 +307,7 @@ mod tests {
             vram_mb: 12288,
             index: 0,
             discrete: true,
+            cuda: None,
         };
         let hw = HardwareInfo::new("linux", "x86_64", vec![nvidia]);
         let ov = devs(&["CPU", "GPU"]);
@@ -404,6 +405,7 @@ mod tests {
             vram_mb: 0,
             index: 0,
             discrete: false,
+            cuda: None,
         };
         let hw = HardwareInfo::new("macos", "aarch64", vec![apple]);
         let ort = OrtProbe::installed(

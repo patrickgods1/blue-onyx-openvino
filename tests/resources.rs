@@ -1,7 +1,9 @@
 //! Resource catalog and resolver (docs/PLAN.md, "On-demand resources"). Synthetic hardware and
 //! install snapshots; no network, no runtime libraries.
 
-use blue_onyx_prism::backend::detect::{GpuAdapter, GpuVendor, HardwareInfo};
+use blue_onyx_prism::backend::detect::{
+    ComputeCapability, CudaInfo, GpuAdapter, GpuVendor, HardwareInfo,
+};
 use blue_onyx_prism::backend::select::{EpStatus, OpenVinoProbe, OrtProbe, RuntimeProbe};
 use blue_onyx_prism::backend::spec::Target;
 use blue_onyx_prism::config::{Config, ModelConfig};
@@ -10,7 +12,9 @@ use blue_onyx_prism::resources::catalog::{
     self, CUDA_LIBS_ID, Flavor, Layout, OPENVINO_RUNTIME_ID, Platform, ResourceKind,
     SHIPPED_PLATFORMS,
 };
-use blue_onyx_prism::resources::resolve::{FETCH_FOR_CONFIG, Installed, Resolution, needed};
+use blue_onyx_prism::resources::resolve::{
+    FETCH_FOR_CONFIG, Installed, Resolution, downloadable_options, needed,
+};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -163,6 +167,7 @@ fn gpu(vendor: GpuVendor, name: &str, vram_mb: u64, index: u32, discrete: bool) 
         vram_mb,
         index,
         discrete,
+        cuda: None,
     }
 }
 
@@ -301,6 +306,82 @@ fn fresh_windows_nvidia_without_large_downloads_falls_to_openvino() {
     let r = needed(&cfg, &win(vec![rtx(0)]), &files_only(&cfg));
     assert_eq!(ids(&r), [OPENVINO_RUNTIME_ID]);
     assert_eq!(pick(&r, "IPcam-general"), "openvino:cpu");
+}
+
+/// An NVIDIA GPU the CUDA driver reports with compute capability `major.minor`.
+fn nvidia_cc(name: &str, index: u32, major: u32, minor: u32) -> GpuAdapter {
+    GpuAdapter {
+        cuda: Some(CudaInfo {
+            ordinal: 0,
+            compute_capability: ComputeCapability::new(major, minor),
+        }),
+        ..gpu(GpuVendor::Nvidia, name, 8060, index, true)
+    }
+}
+
+fn pascal(index: u32) -> GpuAdapter {
+    nvidia_cc("NVIDIA GeForce GTX 1070 Ti", index, 6, 1)
+}
+
+#[test]
+fn pascal_gpu_never_plans_the_cuda_download() {
+    let mut cfg = ipcam();
+    cfg.allow_large_downloads = true;
+    let no_cuda = |r: &Resolution| {
+        r.needs
+            .iter()
+            .chain(&r.optional)
+            .all(|n| n.id() != "onnxruntime-cuda" && n.id() != CUDA_LIBS_ID)
+    };
+
+    // GTX 1070 Ti + UHD 630: the Intel GPU via OpenVINO, nothing for CUDA.
+    let hw = win(vec![pascal(0), intel_igpu(1)]);
+    let inst = files_only(&cfg);
+    let r = needed(&cfg, &hw, &inst);
+    assert_eq!(pick(&r, "IPcam-general"), "openvino:gpu");
+    assert_eq!(ids(&r), [OPENVINO_RUNTIME_ID]);
+    assert!(no_cuda(&r), "{:?}", r.needs);
+    // Downloadable options: DirectML for the NVIDIA GPU, never CUDA/TensorRT.
+    let offers = downloadable_options(&cfg, &hw, &inst, true);
+    let specs: Vec<String> = offers.iter().map(|d| d.device.to_string()).collect();
+    assert!(specs.contains(&"ort:directml:0".to_string()), "{specs:?}");
+    assert!(
+        specs
+            .iter()
+            .all(|s| !s.starts_with("ort:cuda") && !s.starts_with("ort:tensorrt")),
+        "{specs:?}"
+    );
+
+    // GTX 1070 Ti alone: DirectML is the NVIDIA path.
+    let r = needed(&cfg, &win(vec![pascal(0)]), &files_only(&cfg));
+    assert_eq!(pick(&r, "IPcam-general"), "ort:directml:0");
+    assert_eq!(ids(&r)[0], "onnxruntime-directml");
+    assert!(no_cuda(&r), "{:?}", r.needs);
+
+    // Asked for explicitly: refused with the reason, no download.
+    cfg.models[0].device = Some("ort:cuda".into());
+    let r = needed(&cfg, &win(vec![pascal(0)]), &files_only(&cfg));
+    assert!(no_cuda(&r), "{:?}", r.needs);
+    let plan = r.model("IPcam-general").unwrap();
+    assert!(
+        plan.skipped[0]
+            .starts_with("ort:cuda: NVIDIA GeForce GTX 1070 Ti is compute capability 6.1"),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn supported_or_unknown_compute_capability_keeps_cuda() {
+    let mut cfg = ipcam();
+    cfg.allow_large_downloads = true;
+    for g in [nvidia_cc("NVIDIA GeForce RTX 3060", 1, 8, 6), rtx(1)] {
+        let r = needed(&cfg, &win(vec![intel_igpu(0), g]), &files_only(&cfg));
+        assert_eq!(pick(&r, "IPcam-general"), "ort:cuda:0");
+        assert_eq!(
+            ids(&r),
+            ["onnxruntime-cuda", CUDA_LIBS_ID, OPENVINO_RUNTIME_ID]
+        );
+    }
 }
 
 #[test]
