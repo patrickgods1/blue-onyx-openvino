@@ -310,3 +310,35 @@ table.bench tr.selected td:first-child { font-weight: 600; }
 /* Config page: YOLO26 export output tail and the export form. */
 .res-log pre { font-size: 0.75rem; max-height: 10rem; margin: 0.3rem 0 0; white-space: pre-wrap; }
 form.export label.check { font-size: 0.85rem; }
+
+/* Live config: header indicator, change banner, edited / changed-elsewhere fields */
+.pending-restart { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
+.pending-restart[hidden] { display: none; }
+.pending-restart a { color: var(--warn-fg); background: var(--warn-bg); padding: 0.15rem 0.6rem; border-radius: 6px; text-decoration: none; border: 1px solid var(--warn-fg); }
+.pending-restart button.small { margin: 0; }
+.live-banner { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--ok-fg); padding: 0.5rem 0.9rem; border-radius: 6px; margin: 0 0 1rem; }
+.live-banner ul { margin: 0.3rem 0 0.4rem; padding-left: 1.2rem; }
+@keyframes live-flash { from { background-color: var(--warn-bg); box-shadow: 0 0 0 3px var(--warn-fg); } to { background-color: transparent; box-shadow: none; } }
+.flash { animation: live-flash 2.5s ease-out; }
+tr.flash > td { animation: live-flash 2.5s ease-out; }
+input.edited, select.edited, textarea.edited { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.edited-conflict { border-color: var(--warn-fg) !important; box-shadow: 0 0 0 2px var(--warn-fg) !important; }
+.live-note { display: block; font-size: 0.8rem; color: var(--warn-fg); }
+.form-msg { align-self: center; font-size: 0.9rem; }
+.ok-text { color: var(--ok-fg); }
+.conflict-panel { margin-top: 0.75rem; grid-column: 1 / -1; }
+.conflict-panel button.chosen { outline: 3px solid var(--warn-fg); }
+.card.conflict { border-color: var(--warn-fg); border-width: 2px; }
+table.model-card td.model-thr input { width: 6rem; }
+table.model-card td.running { font-size: 0.85rem; max-width: 16rem; }
+table.model-card td.running.st-ok { color: var(--ok-fg); }
+table.model-card td.running.st-fail { color: var(--err-fg); }
+table.model-card td.running.st-loading, table.model-card td.running.st-wait { color: var(--warn-fg); }
+table.model-card td.running.st-off, table.model-card td.running.st-lazy { color: var(--muted); }
+tr.pending > td:first-child { box-shadow: inset 3px 0 0 var(--warn-fg); }
+.inline-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+#pending-list { margin: 0.2rem 0 0; padding-left: 1.2rem; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+nav.toc a { color: var(--accent); opacity: 1; padding: 0; }
+nav.toc a:hover { background: none; text-decoration: underline; }
+table.model-card select { max-width: 22rem; }

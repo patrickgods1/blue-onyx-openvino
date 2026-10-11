@@ -21,8 +21,8 @@ use crate::resources::provision::{Provision, Provisioner};
 use crate::server::{self, AppState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -90,7 +90,20 @@ pub fn run_server_with(
     let mut loaded_ort: Option<crate::resources::catalog::Flavor> = None;
     // One benchmark runner for the process, so its last results survive a restart.
     let benchmark = crate::benchmark::service::BenchmarkService::new();
+    // The live config (revision, change log) is shared by every generation; a restart that
+    // reloads the file (or restores the previous config) adopts it as a logged change.
+    let store = Arc::new(crate::config_store::ConfigStore::new(
+        config.clone(),
+        config_path.clone(),
+    ));
+    let mut adopt: Option<&'static str> = None;
+    let mut first = true;
     loop {
+        if !first {
+            store.adopt(adopt.map(|_| config.clone()), adopt.unwrap_or("restart"));
+        }
+        first = false;
+        adopt = None;
         // One generation = one registry + one HTTP server. `POST /config/restart` (or an
         // installed runtime) cancels the generation token, which stops the server; the workers
         // have their own token so in-flight requests drain first. Cancelling `shutdown` cancels
@@ -112,6 +125,7 @@ pub fn run_server_with(
                         "restart with the new config failed: {e:#}; restoring the previous config"
                     );
                     config = prev;
+                    adopt = Some("restart failed: previous config restored");
                     continue;
                 }
                 None => return Err(e),
@@ -133,7 +147,12 @@ pub fn run_server_with(
         let state = Arc::new(AppState {
             registry: registry.clone(),
             metrics,
-            config: Arc::new(RwLock::new(config.clone())),
+            config: store.clone(),
+            running: Arc::new({
+                let mut c = config.clone();
+                c.normalize();
+                c
+            }),
             started,
             config_path: config_path.clone(),
             log_reload: Some(log.clone()),
@@ -179,6 +198,7 @@ pub fn run_server_with(
                 Some(prev) => {
                     error!("{e:#}; restoring the previous config");
                     config = prev;
+                    adopt = Some("restart failed: previous config restored");
                     continue;
                 }
                 None => return Err(e),
@@ -211,6 +231,7 @@ pub fn run_server_with(
             warn!("log_path changes take effect after the process is restarted");
         }
         previous = Some(std::mem::replace(&mut config, next));
+        adopt = Some("restart (config file reloaded)");
     }
 }
 

@@ -214,6 +214,7 @@
       b.addEventListener("click", restart); box.appendChild(b);
     }
     if (j.restarting) waitForRestart();
+    if (window.PrismLive) PrismLive.poll();
     refresh();
     loadSearch().then(function () { if (search.data) drawSearch(); });
   }
@@ -436,7 +437,7 @@
       cell(tr, tf(cp)); cell(tr, tf(b && b.point));
       var act = el("td", "actions-cell");
       if (applicable(a) && !(c.confidenceThreshold !== undefined && Math.abs(c.confidenceThreshold - b.threshold) < 1e-6)) { var u = el("button", "small", "Apply " + thr(b.threshold)); u.type = "button"; u.addEventListener("click", function () { useThreshold(m.model, b.threshold); }); act.appendChild(u); }
-      else if (applicable(a)) act.appendChild(el("span", "muted", "in use"));
+      else if (applicable(a)) act.appendChild(el("span", "muted", c.restartNeeded && c.runningThreshold !== null && c.runningThreshold !== undefined && Math.abs(c.runningThreshold - b.threshold) > 1e-6 ? "in config (restart to use)" : "in use"));
       tr.appendChild(act);
       t.tBodies[0].appendChild(tr);
     });
@@ -694,7 +695,7 @@
       var c = cfgByName[m.model.toLowerCase()] || {}, card = el("section", "card"); card.id = "m-" + encodeURIComponent(m.model);
       var h = el("h2", null, m.model + " "); h.appendChild(el("span", "muted small", (m.datasets || []).join(", ") + " · " + (m.images || 0) + " images · " + m.timestamp));
       card.appendChild(h);
-      card.appendChild(el("p", "muted", "Configured: " + (c.device ? c.device : "global (" + cfg.globalLabel + ")") + (c.provider ? " · now: " + c.provider : "") + (m.configured ? " · resolves to " + m.configured : "")));
+      card.appendChild(el("p", "muted", "Configured: " + (c.device ? c.device : "global (" + cfg.globalLabel + ")") + (c.provider ? " · now: " + c.provider : "") + (m.configured ? " · resolves to " + m.configured : "") + (c.restartNeeded ? " · restart needed (" + c.pending.join("; ") + ")" : "")));
       if (m.error) { card.appendChild(el("p", "error", m.error)); box.appendChild(card); return; }
       card.appendChild(el("p", m.recommended ? "notice" : "warn", m.recommended ? "Recommended: " + m.recommended + " — " + m.recommendation : "No recommendation: " + m.recommendation));
       var t = sortable(table("devices", ["Device", "Load ms", "Infer p50", "Infer mean", "Total p50", "Total p95", "req/s", "AP50", "AP50-95", "ROC AUC", "P", "R", "Grade", "Agreement", ""]));
@@ -798,6 +799,27 @@
   }
   refresh().then(function (running) { if (running) poll(); });
   loadSearch();
+
+  // Live config: another tab, the Config page or the CLI changed the config -> redraw the
+  // configured / in-use markers and Apply buttons, and refresh the settings the user has not
+  // edited (edited ones are kept and marked).
+  if (window.PrismLive) {
+    var U = PrismLive.ui, seenRev = null, seenEpoch = null;
+    U.markEdits(form);
+    PrismLive.onConfig(function (cfg) {
+      if (seenRev === null) { seenRev = cfg.revision; seenEpoch = cfg.epoch; return; }
+      if (cfg.revision === seenRev && cfg.epoch === seenEpoch) return;
+      seenRev = cfg.revision; seenEpoch = cfg.epoch;
+      var b = cfg.config.benchmark, w = b.weights || {}, share = (w.accuracy || 0) + (w.speed || 0) > 0 ? w.accuracy / (w.accuracy + w.speed) : 0.6;
+      var show = function (v) { return v === "" || v === null ? "automatic" : String(v); };
+      [["max_images", b.max_images_per_dataset], ["repeat", Math.max(1, b.repeat_per_image)], ["warmup", b.warmup], ["accuracy_weight", share.toFixed(2)],
+       ["threshold_objective", b.threshold_objective], ["accuracy_metric", b.accuracy_metric], ["reference_model", b.reference_model || ""]].forEach(function (p) {
+        var c = form.elements[p[0]]; if (c) U.refresh(c, p[1], show);
+      });
+      refresh();
+      loadSearch().then(function () { if (search.data) drawSearch(); });
+    });
+  }
 })();
 </script>
 {% endblock %}

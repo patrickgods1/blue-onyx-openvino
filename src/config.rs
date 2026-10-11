@@ -70,6 +70,47 @@ impl std::str::FromStr for LogLevel {
     }
 }
 
+/// A confidence threshold rounded to 2 decimals (the precision the UI, the benchmark's
+/// "rounded down to 0.01" picks and the config file use), as the nearest `f32`.
+pub fn round_threshold(t: f32) -> f32 {
+    round_threshold_f64(t) as f32
+}
+
+/// [`round_threshold`] as the `f64` to put in JSON: `0.35`, not `0.3499999940395355` (what an
+/// `f32` widened to `f64` prints).
+pub fn round_threshold_f64(t: f32) -> f64 {
+    if !t.is_finite() {
+        return t as f64;
+    }
+    (t as f64 * 100.0).round() / 100.0
+}
+
+/// An `f32` as the `f64` with the same shortest decimal form (`0.45f32` -> `0.45`), so values
+/// that pass through `serde_json::Value` (which stores `f64`) print as typed.
+pub fn clean_f32(x: f32) -> f64 {
+    if !x.is_finite() {
+        return x as f64;
+    }
+    format!("{x}").parse::<f64>().unwrap_or(x as f64)
+}
+
+/// Serializers for threshold fields (see [`round_threshold_f64`] and [`clean_f32`]).
+pub mod thr {
+    use serde::Serializer;
+    pub fn ser<S: Serializer>(t: &f32, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(super::round_threshold_f64(*t))
+    }
+    pub fn ser_opt<S: Serializer>(t: &Option<f32>, s: S) -> Result<S::Ok, S::Error> {
+        match t {
+            Some(t) => s.serialize_some(&super::round_threshold_f64(*t)),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn ser_clean<S: Serializer>(t: &f32, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(super::clean_f32(*t))
+    }
+}
+
 /// One model entry. Relative paths resolve against the executable directory.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -84,6 +125,8 @@ pub struct ModelConfig {
     /// Per-model device override, same syntax as the global `device` ("GPU", "openvino:cpu",
     /// ...). None = global setting.
     pub device: Option<String>,
+    /// Per-model confidence threshold (None = global). Kept rounded to 2 decimals.
+    #[serde(serialize_with = "thr::ser_opt")]
     pub confidence_threshold: Option<f32>,
     pub object_filter: Option<Vec<String>>,
     /// Compile on first request instead of at startup.
@@ -145,7 +188,10 @@ pub struct Config {
     /// Directory holding the ONNX Runtime library (or the library file itself). None =
     /// `ORT_DYLIB_PATH`, then `<exe_dir>/onnxruntime`.
     pub onnxruntime_dir: Option<PathBuf>,
+    /// Kept rounded to 2 decimals ([`round_threshold`]).
+    #[serde(serialize_with = "thr::ser")]
     pub confidence_threshold: f32,
+    #[serde(serialize_with = "thr::ser_clean")]
     pub nms_iou: f32,
     /// Only report these labels (case-insensitive). Empty = all.
     pub object_filter: Vec<String>,
@@ -305,7 +351,7 @@ impl Config {
             .with_context(|| format!("reading config {}", path.display()))?;
         let mut config: Config = serde_json::from_str(&text)
             .with_context(|| format!("parsing config {}", path.display()))?;
-        config.fill_model_names();
+        config.normalize();
         Ok(config)
     }
 
@@ -329,6 +375,18 @@ impl Config {
             SERVICE_CONFIG_FILE,
             LEGACY_SERVICE_CONFIG_FILE,
         )
+    }
+
+    /// The in-memory form of a config as it is saved and loaded: every model named
+    /// ([`Self::fill_model_names`]) and the confidence thresholds rounded to 2 decimals
+    /// ([`round_threshold`]). The config store keeps configs normalized so a reloaded file
+    /// compares equal to what was saved.
+    pub fn normalize(&mut self) {
+        self.fill_model_names();
+        self.confidence_threshold = round_threshold(self.confidence_threshold);
+        for m in &mut self.models {
+            m.confidence_threshold = m.confidence_threshold.map(round_threshold);
+        }
     }
 
     /// Give every model entry without a `name` its [`ModelConfig::effective_name`] (the file
@@ -520,8 +578,21 @@ pub fn apply_config_form(
     config: &mut Config,
     form: &std::collections::HashMap<String, String>,
 ) -> Result<()> {
-    use anyhow::bail;
     let mut c = config.clone();
+    parse_config_form(&mut c, form)?;
+    validate_config(&c)?;
+    *config = c;
+    Ok(())
+}
+
+/// The field-by-field part of [`apply_config_form`]: parse and range-check every submitted
+/// field into `c` (absent fields keep their value). Cross-field checks are
+/// [`validate_config`]'s. On error `c` may be partly modified (callers pass a copy).
+pub fn parse_config_form(
+    c: &mut Config,
+    form: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    use anyhow::bail;
     let get = |k: &str| form.get(k).map(|v| v.trim());
     fn num<T: std::str::FromStr>(field: &str, v: &str) -> Result<T> {
         v.parse::<T>()
@@ -603,15 +674,19 @@ pub fn apply_config_form(
     if let Some(v) = get("default_model") {
         c.default_model = (!v.is_empty()).then(|| v.to_string());
     }
+    c.normalize();
+    Ok(())
+}
 
-    if c.models.is_empty() {
+/// The models list on its own: at least one entry, every entry with a `path`, distinct names
+/// and valid per-model device specs.
+pub fn validate_models(models: &[ModelConfig]) -> Result<()> {
+    use anyhow::bail;
+    if models.is_empty() {
         bail!("models: at least one model is required");
     }
-    if !c.models.iter().any(|m| m.enabled) {
-        bail!("models: at least one model must be enabled");
-    }
     let mut seen = std::collections::HashSet::new();
-    for m in &c.models {
+    for m in models {
         if m.path.as_os_str().is_empty() {
             bail!("models: every entry needs a `path`");
         }
@@ -623,13 +698,28 @@ pub fn apply_config_form(
             crate::backend::spec::parse(d)
                 .map_err(|e| anyhow::anyhow!("models: '{key}' device: {e}"))?;
         }
+        if let Some(t) = m.confidence_threshold
+            && !(t.is_finite() && (0.0..=1.0).contains(&t))
+        {
+            bail!("models: '{key}' confidence_threshold: must be between 0 and 1, got {t}");
+        }
+    }
+    Ok(())
+}
+
+/// Cross-field checks of a whole config: [`validate_models`], at least one enabled model and a
+/// `default_model` that names a configured model.
+pub fn validate_config(c: &Config) -> Result<()> {
+    use anyhow::bail;
+    validate_models(&c.models)?;
+    if !c.models.iter().any(|m| m.enabled) {
+        bail!("models: at least one model must be enabled");
     }
     if let Some(name) = &c.default_model
         && c.default_model_index().is_none()
     {
         bail!("default_model: '{name}' is not one of the configured models");
     }
-    *config = c;
     Ok(())
 }
 
@@ -749,9 +839,12 @@ pub fn apply_model_devices(
 pub struct ThresholdChange {
     pub model: String,
     /// Previous per-model threshold (None = global).
+    #[serde(serialize_with = "thr::ser_opt")]
     pub from: Option<f32>,
+    #[serde(serialize_with = "thr::ser")]
     pub to: f32,
     /// The global `confidence_threshold`.
+    #[serde(serialize_with = "thr::ser")]
     pub global: f32,
 }
 
@@ -781,6 +874,10 @@ pub fn apply_model_thresholds(
     for (name, t) in thresholds {
         if !(t.is_finite() && *t > 0.0 && *t <= 1.0) {
             anyhow::bail!("model '{name}': confidence threshold {t} is not in (0, 1]");
+        }
+        let t = &round_threshold(*t);
+        if *t <= 0.0 {
+            anyhow::bail!("model '{name}': confidence threshold rounds to 0");
         }
         let key = normalize_name(name);
         let Some(m) = c

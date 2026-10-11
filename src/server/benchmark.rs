@@ -369,7 +369,10 @@ fn loaded_devices(state: &AppState) -> HashMap<String, String> {
 /// The config's view for the page: global device, and per model its `device`, the device it
 /// runs on (loaded, else what the config resolves to) and its execution provider.
 fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
-    let cfg = state.config_read().clone();
+    state.config.check_disk();
+    let (revision, cfg) = state.config.snapshot();
+    let pending = crate::config_merge::pending(&state.running, &cfg);
+    let thr = crate::config::round_threshold_f64;
     let loaded = loaded_devices(state);
     let models: Vec<serde_json::Value> = cfg
         .models
@@ -387,22 +390,30 @@ fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
                 .then(|| state.registry.by_name(&name))
                 .flatten()
                 .map(|w| w.execution_provider());
+            let reasons = pending.for_model(&name);
+            let running = super::live::running_view(state, &name);
             serde_json::json!({
                 "name": name,
                 "enabled": m.enabled,
-                "confidenceThreshold": m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+                "confidenceThreshold": thr(m.confidence_threshold.unwrap_or(cfg.confidence_threshold)),
                 "ownThreshold": m.confidence_threshold.is_some(),
                 "device": m.device,
                 "effective": effective,
                 "provider": provider,
+                "runningThreshold": running.threshold,
+                "runningDevice": running.device,
+                "restartNeeded": !reasons.is_empty(),
+                "pending": reasons,
             })
         })
         .collect();
     serde_json::json!({
+        "revision": revision,
+        "restartNeeded": pending.restart_needed(),
         "forceCpu": cfg.force_cpu,
         "globalDevice": cfg.device,
         "globalLabel": global_device_label(&cfg, snap),
-        "confidenceThreshold": cfg.confidence_threshold,
+        "confidenceThreshold": thr(cfg.confidence_threshold),
         "models": models,
         "benchmark": cfg.benchmark,
     })
@@ -524,7 +535,7 @@ pub(super) async fn settings(
         Ok(r) => r,
         Err(e) => return json_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
     };
-    match save_config(&state, |c| {
+    match save_config(&state, "benchmark settings", |c| {
         req.to_config(&mut c.benchmark);
         Ok(())
     }) {
@@ -727,7 +738,7 @@ pub(super) async fn apply(
         }
     };
     let mut changes: Vec<DeviceChange> = Vec::new();
-    let saved = save_config(&state, |c| {
+    let saved = save_config(&state, "benchmark apply", |c| {
         changes = apply_model_devices(c, &picks)?;
         Ok(())
     });
@@ -803,14 +814,16 @@ fn search_data(
     }
 }
 
-/// Normalized model name -> its effective confidence threshold in the config.
-fn current_thresholds(cfg: &Config) -> HashMap<String, f32> {
+/// Normalized model name -> its effective confidence threshold in the config (2 decimals).
+fn current_thresholds(cfg: &Config) -> HashMap<String, f64> {
     cfg.models
         .iter()
         .map(|m| {
             (
                 crate::registry::normalize_name(&m.effective_name()),
-                m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+                crate::config::round_threshold_f64(
+                    m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+                ),
             )
         })
         .collect()
@@ -861,7 +874,11 @@ pub(super) async fn threshold_search(
         Err(r) => return r,
     };
     let current = current_thresholds(&cfg);
-    let lookup = |m: &str| current.get(&crate::registry::normalize_name(m)).copied();
+    let lookup = |m: &str| {
+        current
+            .get(&crate::registry::normalize_name(m))
+            .map(|t| *t as f32)
+    };
     match crate::benchmark::search::search(&results, &preds, &req, &lookup) {
         Ok(out) if out.results.is_empty() => json_error(
             StatusCode::BAD_REQUEST,
@@ -965,7 +982,7 @@ pub(super) async fn apply_threshold(
         picks
     };
     let mut changes: Vec<ThresholdChange> = Vec::new();
-    if let Err(e) = save_config(&state, |c| {
+    if let Err(e) = save_config(&state, "benchmark apply-threshold", |c| {
         changes = apply_model_thresholds(c, &picks)?;
         Ok(())
     }) {
@@ -1137,6 +1154,17 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
+        let last = st.config.changes(1).pop().expect("logged");
+        assert_eq!(
+            (last.source.as_str(), last.revision),
+            ("benchmark settings", 2)
+        );
+        assert!(
+            last.summary
+                .contains("Benchmark accuracy metric \u{2192} roc_auc"),
+            "{}",
+            last.summary
+        );
         let c = crate::config::Config::load(&st.config_path).unwrap();
         assert_eq!(
             c.benchmark.accuracy_metric,
@@ -1332,8 +1360,15 @@ mod tests {
         .unwrap();
         assert!(html.contains("name=\"device.ipcam-general\""), "{html}");
         assert!(html.contains("<option value=\"\">Global (auto"), "{html}");
-        assert!(html.contains("benchmark: openvino:cpu (in use)"), "{html}");
-        assert!(html.contains("benchmark: ort:coreml (in use)"), "{html}");
+        // Configured but not loaded on it (the test workers never load): restart to use.
+        assert!(
+            html.contains("benchmark: openvino:cpu (configured; restart to use)"),
+            "{html}"
+        );
+        assert!(
+            html.contains("benchmark: ort:coreml (configured; restart to use)"),
+            "{html}"
+        );
     }
 
     #[tokio::test]

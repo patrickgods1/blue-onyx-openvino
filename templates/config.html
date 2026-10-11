@@ -1,33 +1,68 @@
 {% extends "base.html" %}
 {% block title %}Config{% endblock %}
 {% block content %}
-<h1>Configuration</h1>
-<p class="muted">File: <code>{{ config_path }}</code></p>
+<h1 id="cfg-title" data-revision="{{ revision }}">Configuration</h1>
+<p class="muted">File: <code>{{ config_path }}</code> &middot; revision <span id="cfg-rev">{{ revision }}</span></p>
 <nav class="toc" aria-label="Sections">
   <a href="#models">Models</a><a href="#benchmark">Benchmark</a><a href="#resources">Resources</a><a href="#server">Server</a><a href="#inference">Inference</a><a href="#logging">Logging</a><a href="#restart">Restart</a>
 </nav>
+<div id="live-banner" class="live-banner" role="status" aria-live="polite" hidden></div>
 {% if let Some(m) = message %}<p class="notice">{{ m }}</p>{% endif %}
 {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+{% if let Some(x) = conflict %}
+<form method="post" action="{{ x.action }}" class="card conflict" id="conflict">
+  <h2>Not saved: changed elsewhere</h2>
+  <p class="error">{{ x.message }}</p>
+  <p class="muted">Your other changes in that form were not saved yet either. Choose a value per field and save again; the page below shows the current config.</p>
+  <div class="scroll">
+  <table>
+  <thead><tr><th>Field</th><th>Your value</th><th>Current value</th><th>Keep</th></tr></thead>
+  <tbody>
+  {% for r in x.rows %}
+  <tr>
+    <td>{{ r.label }}</td><td><code>{{ r.mine }}</code></td><td><code>{{ r.current }}</code></td>
+    <td><label class="check"><input type="radio" name="resolve.{{ r.key }}" value="mine" checked> Use mine</label>
+      <label class="check"><input type="radio" name="resolve.{{ r.key }}" value="current"> Use current</label>
+      <input type="hidden" name="resolve_cur.{{ r.key }}" value="{{ r.current_json }}"></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+  </div>
+  {% for h in x.replay %}<input type="hidden" name="{{ h.0 }}" value="{{ h.1 }}">
+  {% endfor %}
+  <div class="actions">
+    <button type="submit">Save with these choices</button>
+    <button type="submit" name="resolve_all" value="mine">Use mine for all</button>
+    <button type="submit" name="resolve_all" value="current">Use current for all</button>
+    <a href="/config">Discard my changes</a>
+  </div>
+</form>
+{% endif %}
 
 <form method="post" action="/config/models" class="card primary" id="models">
   <h2>Models <span class="tag restart">needs restart</span></h2>
-  <p class="muted">Checked models are compiled and served. The default model serves <code>/v1/vision/detection</code>. Each model can run on its own device (OpenVINO and ONNX Runtime models run side by side; one ONNX Runtime flavor per process); <a href="/benchmark">Benchmark</a> measures which device suits each model best.</p>
+  <input type="hidden" name="base" value="{{ card_base }}">
+  <input type="hidden" name="base_revision" value="{{ revision }}">
+  <p class="muted">Checked models are compiled and served. The default model serves <code>/v1/vision/detection</code>. Each model can run on its own device (OpenVINO and ONNX Runtime models run side by side; one ONNX Runtime flavor per process) and have its own confidence threshold (empty = the global {{ global_threshold }}); <a href="/benchmark">Benchmark</a> measures which device and threshold suit each model best. <em>Running</em> is what the loaded worker uses now; a <span class="tag restart">restart needed</span> badge means the saved config differs from it.</p>
   {% if c.force_cpu %}<p class="warn">Force CPU is on and overrides every per-model device. <a href="#inference">Change</a></p>{% endif %}
   <div class="scroll">
-  <table>
-  <thead><tr><th>Load</th><th>Default</th><th>Name</th><th>Family</th><th>Device</th><th>File</th></tr></thead>
+  <table class="model-card">
+  <thead><tr><th>Load</th><th>Default</th><th>Name</th><th>Family</th><th>Device</th><th>Threshold</th><th>Running</th><th>File</th></tr></thead>
   <tbody>
   {% for m in models %}
-  <tr>
-    <td><input type="checkbox" name="enabled" value="{{ m.name }}" aria-label="Load {{ m.name }}"{% if m.enabled %} checked{% endif %}></td>
-    <td><input type="radio" name="default_model" value="{{ m.name }}" aria-label="Default {{ m.name }}"{% if m.is_default %} checked{% endif %}></td>
-    <td>{{ m.name }}</td>
+  <tr data-model="{{ m.key }}"{% if !m.pending.is_empty() %} class="pending"{% endif %}>
+    <td><input type="checkbox" data-key="model:enabled:{{ m.key }}" name="enabled" value="{{ m.name }}" aria-label="Load {{ m.name }}"{% if m.enabled %} checked{% endif %}></td>
+    <td><input type="radio" data-key="default" name="default_model" value="{{ m.name }}" aria-label="Default {{ m.name }}"{% if m.is_default %} checked{% endif %}></td>
+    <td>{{ m.name }} <span class="tag restart pending-badge" title="{{ m.pending.join("; ") }}"{% if m.pending.is_empty() %} hidden{% endif %}>restart needed</span></td>
     <td>{{ m.family }}</td>
-    <td class="model-device"><select name="device.{{ m.name }}" aria-label="Device of {{ m.name }}">
+    <td class="model-device"><select data-key="model:device:{{ m.key }}" name="device.{{ m.name }}" aria-label="Device of {{ m.name }}">
       {% for d in m.devices %}<option value="{{ d.value }}"{% if d.selected %} selected{% endif %}{% if d.disabled %} disabled class="unavailable"{% endif %}>{{ d.label }}</option>{% endfor %}
       </select>
-      {% if let Some(p) = m.provider %}<br><span class="muted">now: {{ p }}</span>{% endif %}
-      {% if let Some(b) = m.bench %}<br><a href="{{ b.href }}" title="{{ b.title }}">{{ b.text }}</a>{% endif %}</td>
+      <span class="bench-hint">{% if let Some(b) = m.bench %}<br><a href="{{ b.href }}" title="{{ b.title }}">{{ b.text }}</a>{% endif %}</span></td>
+    <td class="model-thr"><input type="number" data-key="model:confidence_threshold:{{ m.key }}" name="threshold.{{ m.name }}" min="0" max="1" step="0.01" value="{{ m.threshold }}" placeholder="{{ global_threshold }}" aria-label="Confidence threshold of {{ m.name }} (empty = global)">
+      <span class="thr-hint">{% if let Some(t) = m.best_threshold %}<br><span class="muted">benchmark best {{ t.0 }} ({{ t.1 }})</span>{% if let Some(st) = t.2 %} <span class="muted">{{ st }}</span>{% else %} <button type="button" class="small" data-use-threshold="{{ t.0 }}" title="Put {{ t.0 }} in the threshold field (then save)">use</button>{% endif %}{% endif %}</span></td>
+    <td class="running st-{{ m.running_class }}">{{ m.running }}</td>
     <td><code>{{ m.path }}</code>{% if !m.exists %}{% if let Some(x) = m.needs_export %} <span class="tag restart">needs export</span> <a href="#res-models-yolo26" title="{{ x }}: exported on this machine on request (AGPL-3.0)">export it</a>{% else %} <span class="muted">(missing)</span>{% endif %}{% endif %}</td>
   </tr>
   {% endfor %}
@@ -37,8 +72,10 @@
   <div class="actions">
     <button type="submit" name="action" value="save">Save</button>
     <button type="submit" name="action" value="restart" class="danger">Save and restart</button>
+    <button type="submit" formaction="/config/restart" class="danger restart-now" data-restart{% if pending.is_empty() %} hidden{% endif %}>Restart now</button>
+    <span class="form-msg" aria-live="polite"></span>
   </div>
-  <p class="muted">More models: download them under <a href="#resources">Resources</a>, or add the files found in the models directory under <a href="#local-models">Local models</a>. Per-model settings (device, threshold, classes) are in the Models JSON under <a href="#server">Advanced</a>.</p>
+  <p class="muted">More models: download them under <a href="#resources">Resources</a>, or add the files found in the models directory under <a href="#local-models">Local models</a>. Other per-model settings (classes, object filter, lazy, GPU precision) are in the Models JSON under <a href="#server">Advanced</a>; it stays in sync with this card.</p>
 </form>
 
 <section class="card" id="benchmark">
@@ -125,6 +162,8 @@
 
 <form method="post" action="/config" class="card grid" id="server">
   <h2>Server <span class="tag restart">needs restart</span></h2>
+  <input type="hidden" name="base" value="{{ server_base }}">
+  <input type="hidden" name="base_revision" value="{{ revision }}">
   <label>Port <input type="number" name="port" min="1" max="65535" value="{{ c.port }}" required></label>
   <label>Request timeout (s) <input type="number" name="request_timeout_secs" min="1" value="{{ c.request_timeout_secs }}" required></label>
   <label>Worker queue size (0 = auto) <input type="number" name="worker_queue_size" min="0" value="{{ c.worker_queue_size }}" required></label>
@@ -162,16 +201,18 @@
   <details class="advanced">
     <summary>Advanced: Models (JSON)</summary>
     <textarea name="models_json" rows="14" spellcheck="false">{{ c.models_json }}</textarea>
-    <p class="muted">Saved with this form; save or discard Models card changes first. Each entry: <code>path</code> (required), <code>family</code>, <code>name</code>, <code>classes</code>, <code>device</code>,
+    <p class="muted">Saved with this form and merged per model and field with changes made elsewhere (the Models card, Benchmark apply). Each entry: <code>path</code> (required), <code>family</code>, <code>name</code>, <code>classes</code>, <code>device</code>,
     <code>confidence_threshold</code>, <code>object_filter</code>, <code>lazy</code>, <code>gpu_precision</code>, <code>enabled</code>.</p>
   </details>
 
-  <div class="actions"><button type="submit">Save</button></div>
+  <div class="actions"><button type="submit">Save</button> <span class="form-msg" aria-live="polite"></span></div>
 </form>
 
-<form method="post" action="/config/restart" class="card inline" id="restart">
-  <button type="submit" class="danger">Restart server</button>
-  <span class="muted">Reloads the config file, recompiles the enabled models and rebinds the port.</span>
+<form method="post" action="/config/restart" class="card" id="restart">
+  <div class="inline-row"><button type="submit" class="danger">Restart server</button>
+  <span class="muted">Reloads the config file, recompiles the enabled models and rebinds the port.</span></div>
+  <div id="pending-box"{% if pending.is_empty() %} hidden{% endif %}><p class="muted">Saved but not running yet (a restart applies):</p>
+  <ul id="pending-list">{% for p in pending %}<li>{{ p }}</li>{% endfor %}</ul></div>
 </form>
 <script>
 // Confirmation for large downloads and removals (without JS the button label shows the size).
@@ -213,6 +254,228 @@ document.querySelectorAll("button[data-confirm]").forEach(function (b) {
       if (changed) { clearInterval(timer); location.replace("/config?t=" + Date.now() + "#resources"); }
     }).catch(function () {});
   }, 2000);
+})();
+// ---- Live config: refresh fields from GET /v1/config, keep and mark unsaved edits, merge saves.
+(function () {
+  var L = window.PrismLive;
+  if (!L || !window.fetch) return;
+  var U = L.ui, $ = function (id) { return document.getElementById(id); };
+  var serverForm = $("server"), card = $("models");
+  var pageRev = +$("cfg-title").dataset.revision, epoch = null, own = {}, resetAfter = null;
+  U.markEdits(serverForm); U.markEdits(card);
+  function isModelKey(k) { return k.indexOf("model:") === 0 || k === "models:order"; }
+  function baseOf(form) { var h = form.querySelector("input[name=base]"); try { return JSON.parse(h.value); } catch (e) { return {}; } }
+  function setBase(form, b) { form.querySelector("input[name=base]").value = JSON.stringify(b); }
+  // Take the server's base values for `keys` (the field now shows the server value).
+  function adopt(base, nb, keys) { keys.forEach(function (k) { if (k in nb) base[k] = nb[k]; else delete base[k]; }); }
+  function show(v) { return v === "" || v === null || v === undefined ? "global" : v === true ? "on" : v === false ? "off" : String(v); }
+  function fmtThr(t) { return t === null || t === undefined ? "" : String(t); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+
+  // Main form: inputs/selects/checkboxes keyed by name, the models JSON as a whole.
+  function refreshServer(j, force) {
+    var view = j.forms.server.view, nb = j.forms.server.base, base = baseOf(serverForm);
+    Object.keys(view).forEach(function (name) {
+      var ctl = serverForm.elements[name];
+      if (!ctl || ctl.type === "hidden" || !ctl.tagName) return;
+      var keys = name === "models_json" ? Object.keys(nb).concat(Object.keys(base)).filter(isModelKey) : [name];
+      if (force) { U.set(ctl, view[name]); U.note(ctl, null); ctl.classList.remove("edited"); adopt(base, nb, keys); return; }
+      var describe = name === "models_json" ? function () { return "a newer models list (see the change banner)"; } : show;
+      if (U.refresh(ctl, view[name], describe)) adopt(base, nb, keys);
+    });
+    var adv = serverForm.querySelector("details.advanced"), ta = serverForm.elements.models_json;
+    if (ta && ta.classList.contains("edited-conflict")) adv.open = true;
+    var dev = $("device"), fc = $("force-cpu"); if (dev && fc) { dev.disabled = fc.checked; $("device-hint").hidden = !fc.checked; }
+    setBase(serverForm, base);
+  }
+
+  // Models card: rows keyed by model; a new or removed model re-renders the card.
+  function refreshCard(j, force) {
+    var rows = card.querySelectorAll("tbody tr[data-model]");
+    var names = Array.prototype.map.call(rows, function (r) { return r.dataset.model; }).join("\n");
+    if (names !== j.models.map(function (m) { return m.key; }).join("\n")) { reloadCard(force); return; }
+    var nb = j.forms.models.base, base = baseOf(card);
+    var upd = function (ctl, v, key) {
+      if (force) { U.set(ctl, v); U.note(ctl, null); ctl.classList.remove("edited"); adopt(base, nb, [key]); return; }
+      if (U.refresh(ctl, v, show)) adopt(base, nb, [key]);
+    };
+    j.models.forEach(function (m, i) {
+      var tr = rows[i];
+      upd(tr.querySelector("input[name=enabled]"), m.enabled, "model:enabled:" + m.key);
+      upd(tr.querySelector("select"), m.device || "", "model:device:" + m.key);
+      var thr = tr.querySelector("input[type=number]");
+      upd(thr, fmtThr(m.threshold), "model:confidence_threshold:" + m.key);
+      thr.placeholder = j.globalThreshold.toFixed(2);
+      var run = tr.querySelector("td.running"); run.textContent = m.running.text; run.className = "running st-" + m.running.stateClass;
+      var badge = tr.querySelector(".pending-badge"); badge.hidden = !m.restartNeeded; badge.title = m.reasons.join("; ");
+      tr.classList.toggle("pending", m.restartNeeded);
+      var bh = tr.querySelector(".bench-hint"); bh.replaceChildren();
+      if (m.bench) {
+        var rec = m.bench.recommended, used = rec && m.running.device === rec;
+        var a = el("a", null, rec ? (m.bench.inUse ? "benchmark: " + rec + (used ? " (in use)" : " (configured; restart to use)") : "benchmark recommends " + rec) : "benchmark: no recommendation");
+        a.href = m.bench.href; a.title = m.bench.recommendation; bh.append(el("br"), a);
+      }
+      var th = tr.querySelector(".thr-hint"); th.replaceChildren();
+      if (m.bench && m.bench.bestThreshold !== null && m.bench.bestThreshold !== undefined) {
+        var t = m.bench.bestThreshold.toFixed(2);
+        th.append(el("br"), el("span", "muted", "benchmark best " + t + " (" + m.bench.objective + ")"), " ");
+        if (m.bench.thresholdInUse) th.append(el("span", "muted", m.running.threshold === m.bench.bestThreshold ? "in use" : "configured; restart to use"));
+        else { var b = el("button", "small", "use"); b.type = "button"; b.dataset.useThreshold = t; b.title = "Put " + t + " in the threshold field (then save)"; th.append(b); }
+      }
+    });
+    // Default radio group (one control for the merge).
+    var radios = card.querySelectorAll("input[name=default_model]"), def = j.models.find(function (m) { return m.default; });
+    var groupEdited = Array.prototype.some.call(radios, function (r) { return r.checked !== r.defaultChecked; });
+    var defName = def ? def.name : null;
+    if (force || !groupEdited) {
+      var changed = false;
+      radios.forEach(function (r) { var on = r.value === defName; if (r.checked !== on) changed = true; r.checked = on; r.defaultChecked = on; });
+      if (changed && !force) radios.forEach(function (r) { if (r.checked) U.flash(r); });
+      adopt(base, nb, ["default"]);
+    } else {
+      var mine = Array.prototype.find.call(radios, function (r) { return r.checked; });
+      if (mine && mine.value === defName) { radios.forEach(function (r) { r.defaultChecked = r.checked; }); adopt(base, nb, ["default"]); }
+    }
+    card.querySelector(".restart-now").hidden = !j.restartNeeded;
+    setBase(card, base);
+  }
+
+  // Re-render the Models card from a fresh /config, carrying the user's unsaved edits over.
+  function reloadCard(force) {
+    fetch("/config", {cache: "no-store"}).then(function (r) { return r.text(); }).then(function (html) {
+      var doc = new DOMParser().parseFromString(html, "text/html"), fresh = doc.getElementById("models");
+      if (!fresh) return;
+      var oldBase = baseOf(card), nb = JSON.parse(fresh.querySelector("input[name=base]").value), oldRows = {};
+      card.querySelectorAll("tbody tr[data-model]").forEach(function (r) { oldRows[r.dataset.model] = r; });
+      if (!force) card.querySelectorAll("[data-key]").forEach(function (c) {
+        if (!U.edited(c)) return;
+        var k = c.dataset.key, target = c.type === "radio" ? fresh.querySelector('[data-key="default"][value="' + CSS.escape(c.value) + '"]') : fresh.querySelector('[data-key="' + CSS.escape(k) + '"]');
+        if (!target) return;
+        if (c.type === "checkbox" || c.type === "radio") target.checked = c.checked; else target.value = c.value;
+        target.classList.add("edited");
+        if (k in oldBase) nb[k] = oldBase[k]; else delete nb[k];
+      });
+      fresh.querySelector("input[name=base]").value = JSON.stringify(nb);
+      card.replaceChildren.apply(card, Array.prototype.slice.call(document.adoptNode(fresh).childNodes));
+      card.querySelectorAll("tbody tr[data-model]").forEach(function (r) { if (!oldRows[r.dataset.model]) U.flash(r); });
+    }).catch(function () {});
+  }
+
+  function sourceLabel(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function banner(j, since) {
+    var news = (j.changes || []).filter(function (c) { return c.revision > since && !own[c.revision]; });
+    if (!news.length) return;
+    var box = $("live-banner"), list = box.querySelector("ul");
+    if (!list || box.hidden) { box.replaceChildren(); box.append(el("strong", null, "Changed elsewhere \u2014 the page now shows the new values (your unsaved edits are kept and marked):")); list = el("ul"); box.append(list);
+      var x = el("button", "small", "Dismiss"); x.type = "button"; x.addEventListener("click", function () { box.hidden = true; }); box.append(x); }
+    news.forEach(function (c) {
+      list.append(el("li", null, sourceLabel(c.source) + ": " + (c.summary || "no visible change") + " (revision " + c.revision + ", " + new Date(c.time).toLocaleTimeString() + ")"));
+      (c.fields || []).forEach(function (f) {
+        var m = /^model:[^:]*:(.*)$/.exec(f.key);
+        var row = m && card.querySelector('tr[data-model="' + CSS.escape(m[1]) + '"]');
+        if (row) U.flash(row);
+      });
+    });
+    box.hidden = false;
+  }
+
+  function pendingBox(j) {
+    var box = $("pending-box"), ul = $("pending-list");
+    ul.replaceChildren(); (j.pending.all || []).forEach(function (p) { ul.append(el("li", null, p)); });
+    box.hidden = !j.restartNeeded;
+  }
+
+  L.onConfig(function (j) {
+    var reset = resetAfter && j.revision >= resetAfter.rev ? resetAfter.form : null;
+    if (epoch !== null && j.epoch !== epoch) pageRev = 0;
+    epoch = j.epoch;
+    if (j.revision !== pageRev || reset) {
+      refreshServer(j, reset === serverForm);
+      refreshCard(j, reset === card);
+      banner(j, pageRev);
+      pageRev = j.revision; $("cfg-rev").textContent = j.revision;
+      if (reset) resetAfter = null;
+    } else {
+      // Same config: only the running state may have changed.
+      refreshCard(j, false);
+    }
+    pendingBox(j);
+  });
+
+  // "use" next to the benchmark's best threshold.
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("[data-use-threshold]");
+    if (!b) return;
+    var input = b.closest("tr").querySelector("input[type=number]");
+    input.value = b.dataset.useThreshold; input.classList.toggle("edited", U.edited(input)); U.flash(input);
+  });
+
+  // Save without leaving the page: JSON answers, conflicts shown inline.
+  function msgOf(form) { return form.querySelector(".form-msg"); }
+  function say(form, cls, text) { var m = msgOf(form); m.className = "form-msg " + cls; m.textContent = text; }
+  function send(form, data) {
+    say(form, "muted", "saving…");
+    return fetch(form.getAttribute("action"), {method: "POST", body: new URLSearchParams(data), headers: {"Accept": "application/json"}})
+      .then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); })
+      .then(function (j) {
+        var old = form.querySelector(".conflict-panel"); if (old) old.remove();
+        if (j._status === 409 && j.conflict) { say(form, "", ""); conflictPanel(form, data, j); return; }
+        if (!j.success) { say(form, "error-text", j.message); return; }
+        own[j.revision] = true;
+        say(form, "ok-text", j.message);
+        if (j.restarting) { say(form, "ok-text", j.message + " Restarting…"); waitRestart(); return; }
+        resetAfter = {form: form, rev: j.revision};
+        L.poll(true);
+      })
+      .catch(function (e) { say(form, "error-text", "Not saved: " + e); });
+  }
+  function waitRestart() {
+    var last = L.last(), gen = last && last.generation, ep = last && last.epoch;
+    setTimeout(function again() {
+      fetch("/v1/config", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
+        if (j.generation !== gen || j.epoch !== ep) location.reload(); else setTimeout(again, 700);
+      }, function () { setTimeout(again, 700); });
+    }, 700);
+  }
+  function conflictPanel(form, data, j) {
+    var panel = el("div", "conflict-panel"), choices = {};
+    panel.append(el("p", "error", j.message));
+    var t = el("table"), head = el("tr"); ["Field", "Your value", "Current value", ""].forEach(function (h) { head.append(el("th", null, h)); });
+    var th = el("thead"); th.append(head); t.append(th); var tb = el("tbody"); t.append(tb);
+    var save = el("button", null, "Save with these choices"); save.type = "button"; save.disabled = true;
+    j.conflicts.forEach(function (c) {
+      var tr = el("tr"), mine = el("button", "small", "Use mine"), cur = el("button", "small", "Use current"), act = el("td");
+      mine.type = cur.type = "button";
+      var pick = function (v) { choices[c.key] = v; mine.classList.toggle("chosen", v === "mine"); cur.classList.toggle("chosen", v === "current"); save.disabled = j.conflicts.some(function (x) { return !choices[x.key]; }); };
+      mine.addEventListener("click", function () { pick("mine"); }); cur.addEventListener("click", function () { pick("current"); });
+      tr.append(el("td", null, c.label)); var a = el("td"); a.append(el("code", null, c.mine_text)); tr.append(a);
+      var b = el("td"); b.append(el("code", null, c.current_text)); tr.append(b); act.append(mine, cur); tr.append(act); tb.append(tr);
+    });
+    var wrap = el("div", "scroll"); wrap.append(t); panel.append(wrap);
+    var submit = function (all) {
+      var d = new FormData(); data.forEach(function (v, k) { if (k.indexOf("resolve") !== 0) d.append(k, v); });
+      j.conflicts.forEach(function (c) { d.append("resolve." + c.key, all || choices[c.key]); d.append("resolve_cur." + c.key, "current" in c ? JSON.stringify(c.current) : ""); });
+      send(form, d);
+    };
+    save.addEventListener("click", function () { submit(null); });
+    var allMine = el("button", null, "Use mine for all"), allCur = el("button", null, "Use current for all"), cancel = el("button", null, "Cancel");
+    allMine.type = allCur.type = cancel.type = "button";
+    allMine.addEventListener("click", function () { submit("mine"); }); allCur.addEventListener("click", function () { submit("current"); });
+    cancel.addEventListener("click", function () { panel.remove(); });
+    var bar = el("div", "actions"); bar.append(save, allMine, allCur, cancel); panel.append(bar);
+    form.querySelector(".actions").before(panel);
+    panel.scrollIntoView({block: "nearest"});
+  }
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (form !== serverForm && form !== card) return;
+    var by = e.submitter;
+    if (by && by.hasAttribute("data-restart")) { e.preventDefault(); L.restart(by); return; }
+    e.preventDefault();
+    var data = new FormData(form);
+    if (by && by.name) data.append(by.name, by.value);
+    send(form, data);
+  });
 })();
 </script>
 {% endblock %}
