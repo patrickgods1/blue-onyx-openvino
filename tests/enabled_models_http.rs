@@ -226,7 +226,7 @@ async fn disabled_models_are_not_served() {
     let home = get_text(&client, &format!("{}/", run.base)).await;
     assert!(home.contains("No models are enabled"), "{home}");
     let cfg = get_text(&client, &format!("{}/config", run.base)).await;
-    assert!(cfg.contains("action=\"/config/models\""));
+    assert!(cfg.contains("action=\"/config/models#at-models\""));
     let r = post_image(
         &client,
         &format!("{}/v1/vision/detection", run.base),
@@ -569,7 +569,7 @@ async fn restart_into_zero_enabled_models_keeps_http_up() {
     let r = post_image(&client, &format!("{base}/v1/vision/detection"), &image).await;
     assert!(!r.success, "{r:?}");
     let cfg = get_text(&client, &format!("{base}/config")).await;
-    assert!(cfg.contains("action=\"/config/models\""), "{cfg}");
+    assert!(cfg.contains("action=\"/config/models#at-models\""), "{cfg}");
     assert!(cfg.contains("aria-label=\"Load IPcam-general\">"), "{cfg}");
 
     served.stop();

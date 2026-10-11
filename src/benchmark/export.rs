@@ -158,6 +158,15 @@ fn fpr(p: Option<&ThresholdPoint>) -> String {
     pct(p.and_then(|p| p.frame).and_then(|f| f.fpr))
 }
 
+/// "0.35", or "0.35 (running 0.50 until a restart)" while a restart is pending.
+fn now_cell(a: &ThresholdAdvice) -> String {
+    let t = a.now_threshold();
+    match a.now.as_ref().and_then(|n| n.running) {
+        Some(r) => format!("{t:.2} (running {r:.2} until a restart)"),
+        None => format!("{t:.2}"),
+    }
+}
+
 fn delta(a: Option<f64>, b: Option<f64>) -> String {
     match (a, b) {
         (Some(a), Some(b)) => format!("{:+.1}", (a - b) * 100.0),
@@ -223,7 +232,8 @@ fn threshold_summary(r: &BenchmarkResults) -> Option<Section> {
             rows: rows
                 .iter()
                 .map(|(m, a)| {
-                    let c = &a.configured;
+                    // At the threshold configured now (see `super::current`).
+                    let c = a.now_point();
                     let b = a.best.as_ref();
                     vec![
                         if a.relative {
@@ -233,20 +243,20 @@ fn threshold_summary(r: &BenchmarkResults) -> Option<Section> {
                         },
                         a.device.clone(),
                         a.objective.clone(),
-                        format!("{:.2}", c.threshold),
-                        pct(c.precision),
-                        pct(c.recall),
-                        pct(c.f1),
+                        now_cell(a),
+                        pct(c.and_then(|c| c.precision)),
+                        pct(c.and_then(|c| c.recall)),
+                        pct(c.and_then(|c| c.f1)),
                         pick_cell(b),
                         pct(b.and_then(|b| b.point.precision)),
                         pct(b.and_then(|b| b.point.recall)),
                         pct(b.and_then(|b| b.point.f1)),
-                        delta(b.and_then(|b| b.point.f1), c.f1),
+                        delta(b.and_then(|b| b.point.f1), c.and_then(|c| c.f1)),
                         alt(a, "f2"),
                         alt(a, "precision:0.9"),
                         alt(a, "youden"),
                         pct(a.roc.as_ref().and_then(|r| r.auc)),
-                        format!("{} / {}", tpr(Some(c)), fpr(Some(c))),
+                        format!("{} / {}", tpr(c), fpr(c)),
                         format!(
                             "{} / {}",
                             tpr(b.map(|b| &b.point)),
@@ -260,7 +270,7 @@ fn threshold_summary(r: &BenchmarkResults) -> Option<Section> {
     })
 }
 
-fn group_table(title: &str, groups: &[GroupPick]) -> Table {
+fn group_table(title: &str, a: &ThresholdAdvice, groups: &[GroupPick]) -> Table {
     Table {
         title: title.to_string(),
         head: [
@@ -292,7 +302,7 @@ fn group_table(title: &str, groups: &[GroupPick]) -> Table {
                     pct(b.and_then(|b| b.point.precision)),
                     pct(b.and_then(|b| b.point.recall)),
                     pct(b.and_then(|b| b.point.f1)),
-                    pct(g.configured.f1),
+                    pct(a.group_now(g).and_then(|p| p.f1)),
                     pct(g.roc_auc),
                 ]
             })
@@ -305,25 +315,26 @@ fn threshold_tables(a: &ThresholdAdvice, paragraphs: &mut Vec<String>, tables: &
     let obj = a.objective().describe();
     match &a.best {
         Some(b) => {
+            let c = a.now_point();
             let mut p = format!(
-                "Confidence threshold ({obj}, on {}): best {:.2} with P {} R {} F1 {}, configured {:.2} with P {} R {} F1 {} (F1 {}).",
+                "Confidence threshold ({obj}, on {}): best {:.2} with P {} R {} F1 {}, configured {} with P {} R {} F1 {} (F1 {}).",
                 a.device,
                 b.threshold,
                 pct(b.point.precision),
                 pct(b.point.recall),
                 pct(b.point.f1),
-                a.configured.threshold,
-                pct(a.configured.precision),
-                pct(a.configured.recall),
-                pct(a.configured.f1),
-                delta(b.point.f1, a.configured.f1),
+                now_cell(a),
+                pct(c.and_then(|c| c.precision)),
+                pct(c.and_then(|c| c.recall)),
+                pct(c.and_then(|c| c.f1)),
+                delta(b.point.f1, c.and_then(|c| c.f1)),
             );
             if let (Some(e), Some([lo, hi])) = (b.exact_threshold, b.plateau) {
                 p.push_str(&format!(
                     " Exact optimum at {e:.3}; near-optimal range {lo:.3}..{hi:.3}."
                 ));
             }
-            if let (Some(c), Some(f)) = (a.configured.frame, b.point.frame) {
+            if let (Some(c), Some(f)) = (c.and_then(|c| c.frame), b.point.frame) {
                 p.push_str(&format!(
                     " Frame TPR / FPR: {} / {} at the best, {} / {} at the configured.",
                     pct(f.tpr),
@@ -343,7 +354,8 @@ fn threshold_tables(a: &ThresholdAdvice, paragraphs: &mut Vec<String>, tables: &
         )),
     }
     let best = a.best.as_ref().map(|b| b.threshold);
-    let mut extra = vec![a.configured];
+    let now = a.now_threshold();
+    let mut extra: Vec<ThresholdPoint> = a.now_point().copied().into_iter().collect();
     if let Some(b) = &a.best {
         extra.push(b.point);
     }
@@ -359,7 +371,7 @@ fn threshold_tables(a: &ThresholdAdvice, paragraphs: &mut Vec<String>, tables: &
                 if best.is_some_and(|b| (b - p.threshold).abs() < 1e-6) {
                     marks.push("best");
                 }
-                if (a.configured.threshold - p.threshold).abs() < 1e-6 {
+                if (now - p.threshold).abs() < 1e-6 {
                     marks.push("configured");
                 }
                 vec![
@@ -376,10 +388,10 @@ fn threshold_tables(a: &ThresholdAdvice, paragraphs: &mut Vec<String>, tables: &
     });
     let groups: Vec<GroupPick> = a.by_dataset.iter().chain(&a.by_tag).cloned().collect();
     if !groups.is_empty() {
-        tables.push(group_table("Best threshold by dataset and tag", &groups));
+        tables.push(group_table("Best threshold by dataset and tag", a, &groups));
     }
     if !a.per_class.is_empty() {
-        tables.push(group_table("Best threshold by class", &a.per_class));
+        tables.push(group_table("Best threshold by class", a, &a.per_class));
     }
     if a.by_device.len() > 1 {
         tables.push(Table {
@@ -910,6 +922,7 @@ mod tests {
                 configured: pt(0.5),
                 best: Some(pick(0.25, "f1", true)),
                 roc_auc: Some(0.912),
+                now: None,
             }],
             by_tag: vec![],
             per_class: vec![],
@@ -918,6 +931,7 @@ mod tests {
                 auc: Some(0.934),
                 ..Default::default()
             }),
+            now: None,
         });
         let r = BenchmarkResults::new(Default::default(), Default::default(), vec![m]);
         let md = markdown(&r);

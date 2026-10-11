@@ -70,7 +70,20 @@
         });
         frag.appendChild(tr);
       });
-      body.replaceChildren(frag);
+      // Same models in the same order: update the cells that changed in place (keeps a text
+      // selection and focus elsewhere in the table); otherwise replace the rows.
+      var fresh = Array.prototype.slice.call(frag.children), rows = body.rows;
+      var same = rows.length === fresh.length && fresh.every(function (tr, i) { return rows[i].cells.length === tr.cells.length && rows[i].cells[0].textContent === tr.cells[0].textContent; });
+      if (!same) body.replaceChildren(frag);
+      else fresh.forEach(function (tr, i) {
+        var old = rows[i];
+        if (old.className !== tr.className) old.className = tr.className;
+        for (var k = 0; k < tr.cells.length; k++) {
+          var a = old.cells[k], b = tr.cells[k];
+          if (a.innerHTML !== b.innerHTML) a.replaceWith(b.cloneNode(true));
+          else if (a.title !== b.title) a.title = b.title;
+        }
+      });
       live.textContent = "updated " + new Date().toLocaleTimeString();
     }).catch(function () { live.textContent = "server not answering"; });
   }

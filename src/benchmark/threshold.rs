@@ -610,6 +610,10 @@ pub struct GroupPick {
     /// Frame ROC AUC of the group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roc_auc: Option<f64>,
+    /// At the threshold in the config now ([`ThresholdAdvice::now`]); filled when results are
+    /// served or exported ([`super::current`]), never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<ThresholdPoint>,
 }
 
 impl GroupPick {
@@ -622,6 +626,7 @@ impl GroupPick {
             configured: c.configured,
             best: c.best(objective),
             roc_auc: c.roc_auc,
+            now: None,
         }
     }
 }
@@ -666,6 +671,39 @@ pub struct ThresholdAdvice {
     /// Frame-level ROC on [`ThresholdAdvice::device`] (AUCs and the curve).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roc: Option<FrameRoc>,
+    /// The threshold in the config now and the counts there; filled when results are served or
+    /// exported ([`super::current`]), never stored. [`ThresholdAdvice::configured`] stays the
+    /// threshold of the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<NowThreshold>,
+}
+
+/// How [`NowThreshold::point`] was evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NowSource {
+    /// The run's own configured threshold (unchanged since the run).
+    Run,
+    /// The stored predictions (`benchmark-preds.json`): exact at any threshold.
+    Preds,
+    /// A point the results store at exactly this threshold (0.05 grid, best, alternatives).
+    Curve,
+    /// Not evaluated (no stored predictions; P/R unknown).
+    None,
+}
+
+/// A model's threshold advice at the confidence threshold in the config now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NowThreshold {
+    /// Effective confidence threshold in the config (the model's own, else the global one).
+    pub threshold: f32,
+    /// What the loaded model runs with, when that differs (a restart is pending).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<f32>,
+    /// Overall counts at [`NowThreshold::threshold`]; None when they could not be evaluated
+    /// exactly.
+    pub point: Option<ThresholdPoint>,
+    pub source: NowSource,
 }
 
 fn pct(v: Option<f64>) -> String {
@@ -703,7 +741,43 @@ impl ThresholdAdvice {
         self.objective.parse().unwrap_or_default()
     }
 
-    /// "best confidence threshold 0.35 (F1): P 82.1% R 74.0% F1 78.0%; configured 0.50: P ..".
+    /// The threshold configured now: [`ThresholdAdvice::now`] when filled, else the run's.
+    pub fn now_threshold(&self) -> f32 {
+        self.now
+            .as_ref()
+            .map_or(self.configured.threshold, |n| n.threshold)
+    }
+
+    /// The overall counts at [`ThresholdAdvice::now_threshold`] (None: not evaluated).
+    pub fn now_point(&self) -> Option<&ThresholdPoint> {
+        match &self.now {
+            Some(n) => n.point.as_ref(),
+            None => Some(&self.configured),
+        }
+    }
+
+    /// A group's counts at [`ThresholdAdvice::now_threshold`] (None: not evaluated).
+    pub fn group_now<'a>(&self, g: &'a GroupPick) -> Option<&'a ThresholdPoint> {
+        match &self.now {
+            Some(_) => g.now.as_ref(),
+            None => Some(&g.configured),
+        }
+    }
+
+    /// A stored overall point at exactly `t` (the run's configured threshold, the best and the
+    /// alternative picks, the 0.05 grid); exact, as every stored point is.
+    pub fn known_point_at(&self, t: f32) -> Option<ThresholdPoint> {
+        let near = |p: &ThresholdPoint| (p.threshold - t).abs() < 1e-6;
+        std::iter::once(&self.configured)
+            .chain(self.best.iter().map(|b| &b.point))
+            .chain(self.alternatives.iter().map(|b| &b.point))
+            .chain(&self.curve)
+            .find(|p| near(p))
+            .map(|p| ThresholdPoint { threshold: t, ..*p })
+    }
+
+    /// "best confidence threshold 0.35 (F1): P 82.1% R 74.0% F1 78.0%; configured 0.50: P ..",
+    /// compared with the threshold configured now ([`ThresholdAdvice::now`]) when filled.
     pub fn summary(&self) -> Option<String> {
         let b = self.best.as_ref()?;
         let mut s = format!(
@@ -712,14 +786,22 @@ impl ThresholdAdvice {
             self.objective().describe(),
             prf_frame(&b.point)
         );
-        if (b.threshold - self.configured.threshold).abs() > 1e-6 {
-            s.push_str(&format!(
-                " vs {} at the configured {:.2}",
-                prf_frame(&self.configured),
-                self.configured.threshold
-            ));
+        let now = self.now_threshold();
+        let running = self
+            .now
+            .as_ref()
+            .and_then(|n| n.running)
+            .filter(|r| (r - now).abs() > 1e-6);
+        if (b.threshold - now).abs() > 1e-6 {
+            match self.now_point() {
+                Some(p) => s.push_str(&format!(" vs {} at the configured {now:.2}", prf_frame(p))),
+                None => s.push_str(&format!(" (configured {now:.2}, not evaluated)")),
+            }
         } else {
             s.push_str(" (the configured threshold)");
+        }
+        if let Some(r) = running {
+            s.push_str(&format!(" (running {r:.2} until a restart)"));
         }
         if let Some(n) = &b.note {
             s.push_str(&format!(" ({n})"));
@@ -799,6 +881,7 @@ pub fn advise(
             })
             .collect(),
         roc: sweep.roc.clone(),
+        now: None,
     })
 }
 
@@ -862,6 +945,7 @@ pub(crate) fn test_advice(t: f32) -> ThresholdAdvice {
         per_class: vec![],
         by_device: vec![],
         roc: None,
+        now: None,
     }
 }
 

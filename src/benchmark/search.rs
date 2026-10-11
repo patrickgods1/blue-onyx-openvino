@@ -355,6 +355,9 @@ pub struct SearchResult {
     pub classes: Vec<String>,
     /// At the threshold the run was configured with.
     pub configured: ThresholdPoint,
+    /// At the threshold configured now (the model's in the config, else the run's): what the
+    /// summary's "configured" columns and the gain compare against.
+    pub now: ThresholdPoint,
     /// At the model's threshold in the config now (when it differs from the run's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current: Option<ThresholdPoint>,
@@ -533,6 +536,129 @@ pub fn search(
     Ok(out)
 }
 
+/// (set, image info, eval input, scored classes the set annotates) of one stored image.
+type Input<'a> = (&'a ImageSetInfo, &'a ImageInfo, EvalImage, Vec<String>);
+
+/// The scored images of a stored run matching the request's datasets and tags, restricted to
+/// the `wanted` classes.
+fn scored_inputs<'a>(
+    run: &StoredRun,
+    sets: &HashMap<&str, &'a ImageSetInfo>,
+    map: &ClassMap,
+    req: &SearchRequest,
+    wanted: &[String],
+) -> Vec<Input<'a>> {
+    let mut inputs: Vec<Input<'a>> = Vec::new();
+    for (k, img) in run.images.iter().enumerate() {
+        if !req.datasets.is_empty() && !req.datasets.contains(&img.set) {
+            continue;
+        }
+        let Some(set) = sets.get(img.set.as_str()).copied() else {
+            continue;
+        };
+        let Some(info) = set.images.iter().find(|i| i.file == img.file) else {
+            continue;
+        };
+        if !req.tags.iter().all(|t| info.tags.iter().any(|x| x == t)) {
+            continue;
+        }
+        let Some(gt) = &info.objects else { continue };
+        let (_, mut eval, allowed) =
+            super::eval_input(map, set.scored_labels.as_deref(), gt, &run.preds(k));
+        eval.gt.retain(|g| wanted.contains(&g.label));
+        eval.preds.retain(|p| wanted.contains(&p.label));
+        let mut fc = super::frame_classes(map, allowed.as_deref());
+        fc.retain(|c| wanted.contains(c));
+        inputs.push((set, info, eval, fc));
+    }
+    inputs
+}
+
+/// A stored run evaluated at one threshold, grouped like the run's own threshold sweep (see
+/// [`super::threshold::ThresholdAdvice`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointsAt {
+    /// Over the images of the overall score (real ground truth, else all).
+    pub overall: ThresholdPoint,
+    /// Overall at the run's configured threshold: equal to the advice's `configured` when the
+    /// stored predictions and ground truth are the ones the run scored.
+    pub at_run: ThresholdPoint,
+    /// Per dataset id, per tag ([`super::threshold::SWEEP_TAGS`] and
+    /// [`super::threshold::SMALL_KEY`]) and per class.
+    pub by_dataset: HashMap<String, ThresholdPoint>,
+    pub by_tag: HashMap<String, ThresholdPoint>,
+    pub per_class: HashMap<String, ThresholdPoint>,
+}
+
+/// The exact counts of a stored run at `t` (every class, every dataset, IoU 0.5; ground truth
+/// from `image_sets` of the results), overall and per group. None when nothing of the run is
+/// scored.
+pub fn points_at(image_sets: &[ImageSetInfo], run: &StoredRun, t: f32) -> Option<PointsAt> {
+    use super::threshold::{SMALL_KEY, SWEEP_TAGS};
+    let sets: HashMap<&str, &ImageSetInfo> =
+        image_sets.iter().map(|s| (s.id.as_str(), s)).collect();
+    let map = ClassMap::for_model(&run.classes);
+    let wanted = map.classes.clone();
+    let inputs = scored_inputs(run, &sets, &map, &SearchRequest::default(), &wanted);
+    if inputs.is_empty() {
+        return None;
+    }
+    let matched: Vec<SweepImage> = inputs
+        .iter()
+        .map(|(_, _, e, fc)| SweepImage::of(e).with_frames(e, fc))
+        .collect();
+    let real: Vec<usize> = (0..inputs.len())
+        .filter(|&k| inputs[k].0.ground_truth.is_real())
+        .collect();
+    let chosen: Vec<usize> = if real.is_empty() {
+        (0..inputs.len()).collect()
+    } else {
+        real
+    };
+    let refs = |ks: &[usize]| -> Vec<&SweepImage> { ks.iter().map(|&k| &matched[k]).collect() };
+    let overall = Breakpoints::new(&refs(&chosen), SweepScope::All);
+    let mut by_dataset = HashMap::new();
+    for (s, _, _, _) in &inputs {
+        if by_dataset.contains_key(&s.id) {
+            continue;
+        }
+        let ks: Vec<usize> = (0..inputs.len())
+            .filter(|&k| inputs[k].0.id == s.id)
+            .collect();
+        let bp = Breakpoints::new(&refs(&ks), SweepScope::All);
+        by_dataset.insert(s.id.clone(), bp.point_at(t));
+    }
+    let mut by_tag = HashMap::new();
+    for tag in SWEEP_TAGS {
+        let ks: Vec<usize> = chosen
+            .iter()
+            .copied()
+            .filter(|&k| inputs[k].1.tags.iter().any(|x| x == tag))
+            .collect();
+        if !ks.is_empty() {
+            let bp = Breakpoints::new(&refs(&ks), SweepScope::All);
+            by_tag.insert(tag.to_string(), bp.point_at(t));
+        }
+    }
+    let small = Breakpoints::new(&refs(&chosen), SweepScope::Small);
+    if small.npos > 0 {
+        by_tag.insert(SMALL_KEY.to_string(), small.point_at(t));
+    }
+    let per_class = wanted
+        .iter()
+        .map(|c| (c, Breakpoints::new(&refs(&chosen), SweepScope::Class(c))))
+        .filter(|(_, bp)| bp.npos > 0)
+        .map(|(c, bp)| (c.clone(), bp.point_at(t)))
+        .collect();
+    Some(PointsAt {
+        overall: overall.point_at(t),
+        at_run: overall.point_at(run.configured),
+        by_dataset,
+        by_tag,
+        per_class,
+    })
+}
+
 /// Search one stored run.
 fn search_run(
     run: &StoredRun,
@@ -567,30 +693,7 @@ fn search_run(
         }
         v
     };
-    // (set, image info, eval input, classes annotated) of every searched image.
-    let mut inputs: Vec<(&ImageSetInfo, &ImageInfo, EvalImage, Vec<String>)> = Vec::new();
-    for (k, img) in run.images.iter().enumerate() {
-        if !req.datasets.is_empty() && !req.datasets.contains(&img.set) {
-            continue;
-        }
-        let Some(set) = sets.get(img.set.as_str()) else {
-            continue;
-        };
-        let Some(info) = set.images.iter().find(|i| i.file == img.file) else {
-            continue;
-        };
-        if !req.tags.iter().all(|t| info.tags.iter().any(|x| x == t)) {
-            continue;
-        }
-        let Some(gt) = &info.objects else { continue };
-        let (_, mut eval, allowed) =
-            super::eval_input(&map, set.scored_labels.as_deref(), gt, &run.preds(k));
-        eval.gt.retain(|g| wanted.contains(&g.label));
-        eval.preds.retain(|p| wanted.contains(&p.label));
-        let mut fc = super::frame_classes(&map, allowed.as_deref());
-        fc.retain(|c| wanted.contains(c));
-        inputs.push((set, info, eval, fc));
-    }
+    let inputs = scored_inputs(run, sets, &map, req, &wanted);
     if inputs.is_empty() {
         bail!("no scored images match these filters");
     }
@@ -618,6 +721,8 @@ fn search_run(
     if overall.npos == 0 {
         bail!("no ground-truth objects of these classes in the matching images");
     }
+    // The threshold configured now (the run's when the config has none for the model).
+    let now = current.unwrap_or(run.configured);
     let group = |key: &str, bp: &Breakpoints, relative: bool, roc_auc: Option<f64>| GroupPick {
         key: key.to_string(),
         images: bp.images,
@@ -626,6 +731,7 @@ fn search_run(
         configured: bp.point_at(run.configured),
         best: exact_pick(bp, req.objective),
         roc_auc,
+        now: Some(bp.point_at(now)),
     };
     let mut by_dataset = Vec::new();
     let mut seen: Vec<&str> = Vec::new();
@@ -676,6 +782,7 @@ fn search_run(
         gt: overall.npos,
         classes: wanted.clone(),
         configured: overall.point_at(run.configured),
+        now: overall.point_at(now),
         current: current
             .filter(|c| (c - run.configured).abs() > 1e-6)
             .map(|c| overall.point_at(c)),
@@ -695,7 +802,8 @@ fn search_run(
     })
 }
 
-/// CSV of the search summary and each model's 0.05 grid.
+/// CSV of the search summary (the `configured` columns at the threshold configured now) and
+/// each model's 0.05 grid.
 pub fn to_csv(out: &SearchOutput) -> String {
     let f = |v: Option<f64>| v.map_or(String::new(), |v| format!("{v:.4}"));
     let ft = |p: Option<&ThresholdPoint>| p.and_then(|p| p.frame).and_then(|f| f.tpr);
@@ -711,19 +819,19 @@ pub fn to_csv(out: &SearchOutput) -> String {
             csv_field(&r.model),
             r.device,
             r.objective,
-            r.configured.threshold,
-            f(r.configured.precision),
-            f(r.configured.recall),
-            f(r.configured.f1),
+            r.now.threshold,
+            f(r.now.precision),
+            f(r.now.recall),
+            f(r.now.f1),
             b.map_or(String::new(), |b| format!("{:.2}", b.threshold)),
             f(b.and_then(|b| b.point.precision)),
             f(b.and_then(|b| b.point.recall)),
             f(b.and_then(|b| b.point.f1)),
-            f(b.and_then(|b| Some(b.point.f1? - r.configured.f1?))),
+            f(b.and_then(|b| Some(b.point.f1? - r.now.f1?))),
             f(roc.and_then(|x| x.auc)),
             f(roc.and_then(|x| x.micro_auc)),
-            f(ft(Some(&r.configured))),
-            f(ff(Some(&r.configured))),
+            f(ft(Some(&r.now))),
+            f(ff(Some(&r.now))),
             f(ft(b.map(|b| &b.point))),
             f(ff(b.map(|b| &b.point))),
         ));

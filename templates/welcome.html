@@ -49,7 +49,8 @@
         var d = row.querySelector(".detail");
         if (d && m.stateDetail) d.textContent = m.stateDetail;
       });
-      if (changed) { clearInterval(timer); location.reload(); }
+      // Reload where the user was (PrismLive keeps the scroll position across it).
+      if (changed) { clearInterval(timer); if (window.PrismLive) PrismLive.reloadKeep(); else location.reload(); }
     }).catch(function () {});
   }, 2000);
 })();
