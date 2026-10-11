@@ -7,7 +7,7 @@ use crate::backend::detect::HardwareInfo;
 use crate::backend::select::{OpenVinoProbe, OrtProbe, RuntimeProbe, Selection, select};
 use crate::backend::spec::{self, DeviceSpec};
 use crate::cli::LogReloadHandle;
-use crate::config::{Config, FORM_FIELDS, LogLevel, apply_config_form, apply_models_selection};
+use crate::config::{Config, FORM_FIELDS, LogLevel};
 use crate::metrics::{Metrics, Stat};
 use crate::registry::ModelRegistry;
 use crate::setup_onnxruntime::InstalledOrt;
@@ -25,8 +25,8 @@ use base64::Engine as _;
 use crossbeam_channel::TrySendError;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -39,15 +39,22 @@ pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const RESTART_DELAY: Duration = Duration::from_millis(250);
 
 mod benchmark;
+mod live;
 
 static STYLE_CSS: &str = include_str!("../assets/style.css");
+static LIVE_JS: &str = include_str!("../assets/live.js");
 static FAVICON_ICO: &[u8] = include_bytes!("../assets/favicon.ico");
 
 pub struct AppState {
     pub registry: Arc<ModelRegistry>,
     pub metrics: Arc<Metrics>,
-    /// In-memory copy of the config file; `/config` edits it and writes it to `config_path`.
-    pub config: Arc<RwLock<Config>>,
+    /// The live config (revision, change log, file sync). Every change goes through
+    /// [`save_config`] / [`crate::config_store::ConfigStore::update`]. Shared by every
+    /// generation of the process.
+    pub config: Arc<crate::config_store::ConfigStore>,
+    /// The config this generation's registry was started with (what is running; the pages
+    /// compare it with `config` to show what a restart would apply).
+    pub running: Arc<Config>,
     /// Process start (survives in-process restarts).
     pub started: Instant,
     pub config_path: PathBuf,
@@ -71,10 +78,16 @@ impl AppState {
         config: Config,
         config_path: PathBuf,
     ) -> Self {
+        let mut running = config.clone();
+        running.normalize();
         Self {
             registry,
             metrics,
-            config: Arc::new(RwLock::new(config)),
+            config: Arc::new(crate::config_store::ConfigStore::new(
+                config,
+                config_path.clone(),
+            )),
+            running: Arc::new(running),
             started: Instant::now(),
             config_path,
             log_reload: None,
@@ -84,12 +97,8 @@ impl AppState {
         }
     }
 
-    fn config_read(&self) -> RwLockReadGuard<'_, Config> {
-        self.config.read().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn config_write(&self) -> RwLockWriteGuard<'_, Config> {
-        self.config.write().unwrap_or_else(|e| e.into_inner())
+    fn config_read(&self) -> crate::config_store::ConfigRef<'_> {
+        self.config.read()
     }
 
     /// Recent log events for the Logs page (kept by the logging setup's reload handle).
@@ -106,6 +115,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/vision/custom/{model}", post(detection_custom))
         .route("/v1/status/updateavailable", get(update_available))
         .route("/v1/devices", get(devices_json))
+        .route("/v1/config", get(live::config_json))
         .route("/v1/resources", get(resources_json))
         .route("/v1/resources/download", post(resources_download))
         .route("/v1/resources/remove", post(resources_remove))
@@ -141,6 +151,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/benchmark/images", get(benchmark::images_detail))
         .route("/v1/benchmark/image", get(benchmark::image_file))
         .route("/static/style.css", get(style_css))
+        .route("/static/live.js", get(live_js))
         .route("/favicon.ico", get(favicon))
         .fallback(fallback)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
@@ -242,6 +253,8 @@ struct ModelRow {
     provider: String,
     requests: u64,
     queue: String,
+    /// What a restart would change for this model ("" = nothing).
+    pending: String,
 }
 
 /// Short state, badge class and detail of a worker for the pages. Ready stays exactly
@@ -433,12 +446,14 @@ async fn welcome(State(state): State<Arc<AppState>>) -> Response {
     let reg = &state.registry;
     let snap = devices_snapshot(&state);
     let default = default_name(reg);
+    let pending = crate::config_merge::pending(&state.running, &state.config_read());
     let models = reg
         .workers()
         .iter()
         .map(|w| {
             let (state, state_class, state_detail) = state_view(w);
             ModelRow {
+                pending: pending.for_model(&w.name).join("; "),
                 name: w.name.clone(),
                 is_default: w.name == default,
                 state,
@@ -966,7 +981,7 @@ async fn resources_add_to_config(
     let form = form.map(|Form(f)| f).unwrap_or_default();
     let (id, _) = action_fields(&form);
     let mut outcome = String::new();
-    let saved = save_config(&state, |c| {
+    let saved = save_config(&state, "resources add-to-config", |c| {
         outcome = crate::resources::status::add_to_config(state.resources.as_ref(), c, &id)
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(())
@@ -1005,10 +1020,9 @@ async fn resources_export(
     let cfg = state.config_read().clone();
     let on_done: Option<crate::resources::export::OnDone> = add.then(|| {
         let config = state.config.clone();
-        let path = state.config_path.clone();
         let id = id.clone();
         Box::new(move |_: &crate::resources::export::ExportOutput| {
-            add_export_to_config_file(&config, &path, &id)
+            add_export_to_config(&config, &id)
         }) as crate::resources::export::OnDone
     });
     let result = match &state.resources {
@@ -1024,33 +1038,17 @@ async fn resources_export(
     action_response(&state, &headers, result)
 }
 
-/// After an export: append the model to the config file (the file is what the next generation
-/// loads) and to this generation's in-memory config.
-fn add_export_to_config_file(config: &Arc<RwLock<Config>>, path: &std::path::Path, id: &str) {
-    let mut c = if path.exists() {
-        match Config::load(path) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(
-                    "not adding {id} to the config: reading {}: {e:#}",
-                    path.display()
-                );
-                return;
-            }
-        }
-    } else {
-        config.read().unwrap_or_else(|e| e.into_inner()).clone()
-    };
-    match crate::resources::status::add_to_config(None, &mut c, id) {
-        Ok(msg) => match c.save(path) {
-            Ok(()) => {
-                info!("{msg} ({})", path.display());
-                let mut mem = config.write().unwrap_or_else(|e| e.into_inner());
-                let _ = crate::resources::status::add_to_config(None, &mut mem, id);
-            }
-            Err(e) => warn!("not adding {id} to the config: {e:#}"),
-        },
-        Err(e) => warn!("not adding {id} to the config: {e}"),
+/// After an export: append the model to the config (through the config store, which first
+/// picks up changes made to the file meanwhile, writes the file and logs the change).
+fn add_export_to_config(config: &crate::config_store::ConfigStore, id: &str) {
+    let mut msg = String::new();
+    match config.update("resources export", |c| {
+        msg =
+            crate::resources::status::add_to_config(None, c, id).map_err(|e| anyhow::anyhow!(e))?;
+        Ok(())
+    }) {
+        Ok(_) => info!("{msg} ({})", config.path().display()),
+        Err(e) => warn!("not adding {id} to the config: {e:#}"),
     }
 }
 
@@ -1214,7 +1212,9 @@ async fn test_submit(
 // ---------------------------------------------------------------------------------------------
 // Config page
 
-/// Form values as strings, so a rejected submission can be shown again as typed.
+/// Form values as strings, so a rejected submission can be shown again as typed (also the
+/// `forms.server.view` of `GET /v1/config`, which the page compares its inputs with).
+#[derive(serde::Serialize)]
 struct ConfigView {
     port: String,
     request_timeout_secs: String,
@@ -1251,8 +1251,9 @@ impl ConfigView {
             gpu_index: c.gpu_index.to_string(),
             force_cpu: c.force_cpu,
             cache_dir: c.cache_dir.clone(),
-            confidence_threshold: c.confidence_threshold.to_string(),
-            nms_iou: c.nms_iou.to_string(),
+            confidence_threshold: crate::config::round_threshold_f64(c.confidence_threshold)
+                .to_string(),
+            nms_iou: crate::config::clean_f32(c.nms_iou).to_string(),
             object_filter: c.object_filter.join(", "),
             log_level: c.log_level.as_str().to_string(),
             log_path: path(&c.log_path),
@@ -1307,6 +1308,8 @@ impl ConfigView {
 /// One row of the Models card.
 struct ModelSelectRow {
     name: String,
+    /// Normalized name (the row's merge keys are `model:<field>:<key>`).
+    key: String,
     family: String,
     path: String,
     /// The model file exists (resolved against the exe dir).
@@ -1315,10 +1318,18 @@ struct ModelSelectRow {
     is_default: bool,
     /// Per-model Device select: "Global (...)" first, then every device option.
     devices: Vec<DeviceChoice>,
-    /// Execution provider of the loaded model (enabled models of this generation).
-    provider: Option<String>,
+    /// Per-model threshold as typed in the input ("" = global).
+    threshold: String,
+    /// What the running worker uses ("OpenVINO CPU · threshold 0.50", "not loaded", ...).
+    running: String,
+    running_class: &'static str,
+    /// What a restart would change for this model (empty = nothing).
+    pending: Vec<String>,
     /// Latest benchmark recommendation for this model.
     bench: Option<BenchHint>,
+    /// Best confidence threshold of the latest benchmark: (value "0.35", objective "f1",
+    /// "in use" / "configured; restart to use" when it is the configured threshold).
+    best_threshold: Option<(String, String, Option<&'static str>)>,
     /// The file is missing and made by exporting this resource (`model:yolo26s`).
     needs_export: Option<String>,
 }
@@ -1394,26 +1405,30 @@ fn model_device_choices(
 fn model_choices(
     c: &Config,
     snap: &DevicesSnapshot,
-    reg: &ModelRegistry,
-    results: Option<&crate::benchmark::BenchmarkResults>,
+    state: &AppState,
+    bench: Option<&live::BenchSummary>,
 ) -> Vec<ModelSelectRow> {
     let default = c.effective_default_index();
     let global = global_device_label(c, snap);
+    let pending = crate::config_merge::pending(&state.running, c);
+    let thr = crate::config::round_threshold_f64;
     c.models
         .iter()
         .enumerate()
         .map(|(i, m)| {
             let name = m.effective_name();
-            let provider = m
-                .enabled
-                .then(|| reg.by_name(&name))
-                .flatten()
-                .map(|w| w.execution_provider());
-            let bench = results.and_then(|r| r.find(&name)).map(|r| {
+            let key = crate::registry::normalize_name(&name);
+            let facts = bench.and_then(|b| b.models.get(&key));
+            let run = live::running_view(state, &name);
+            let hint = facts.map(|r| {
                 let configured = crate::benchmark::configured_device(c, m, &snap.selection);
                 let text = match &r.recommended {
                     Some(d) if configured.as_deref() == Some(d.as_str()) => {
-                        format!("benchmark: {d} (in use)")
+                        if run.device.as_deref() == Some(d.as_str()) {
+                            format!("benchmark: {d} (in use)")
+                        } else {
+                            format!("benchmark: {d} (configured; restart to use)")
+                        }
                     }
                     Some(d) => format!("benchmark recommends {d}"),
                     None => "benchmark: no recommendation".to_string(),
@@ -1423,6 +1438,18 @@ fn model_choices(
                     title: r.recommendation.clone(),
                     href: format!("/benchmark#m-{}", encode_uri_component(&r.model)),
                 }
+            });
+            let effective = thr(m.confidence_threshold.unwrap_or(c.confidence_threshold));
+            let best_threshold = facts.and_then(|f| {
+                let t = thr(f.best_threshold?);
+                let state = if t != effective {
+                    None
+                } else if run.threshold == Some(t) {
+                    Some("in use")
+                } else {
+                    Some("configured; restart to use")
+                };
+                Some((format!("{t:.2}"), f.objective.clone(), state))
             });
             let exists = c.data_path(&m.path).is_file();
             let needs_export = (!exists
@@ -1434,15 +1461,23 @@ fn model_choices(
             .map(|r| r.id.to_string());
             ModelSelectRow {
                 devices: model_device_choices(snap, m.device.as_deref(), &global),
-                name,
+                key,
                 family: m.family.to_string(),
                 path: m.path.display().to_string(),
                 exists,
                 needs_export,
                 enabled: m.enabled,
                 is_default: default == Some(i),
-                provider,
-                bench,
+                threshold: m
+                    .confidence_threshold
+                    .map(|t| thr(t).to_string())
+                    .unwrap_or_default(),
+                running: run.text,
+                running_class: run.state_class,
+                pending: pending.for_model(&name).to_vec(),
+                bench: hint,
+                best_threshold,
+                name,
             }
         })
         .collect()
@@ -1479,6 +1514,18 @@ struct ConfigTemplate {
     force_cpu_note: Option<String>,
     /// One line about the `benchmark` config section and the last results.
     bench_summary: String,
+    /// Config revision the page was rendered from.
+    revision: u64,
+    /// Canonical values the main form / the Models card were rendered from (JSON, posted back
+    /// as `base` so a save merges instead of overwriting).
+    server_base: String,
+    card_base: String,
+    /// Global confidence threshold (placeholder of the per-model inputs).
+    global_threshold: String,
+    /// What a restart would apply (all reasons).
+    pending: Vec<String>,
+    /// A save that conflicted with changes made elsewhere (no-JS answer).
+    conflict: Option<live::ConflictView>,
 }
 
 /// One `<option>` of the Device select.
@@ -1556,49 +1603,50 @@ fn config_template(
     error: Option<String>,
     submitted: Option<&HashMap<String, String>>,
 ) -> ConfigTemplate {
+    state.config.check_disk();
     let snap = devices_snapshot(state);
-    let results = crate::benchmark::BenchmarkResults::load_or_warn(
-        &crate::benchmark::results_path(&state.config_path),
-    );
-    let (mut c, models) = {
-        let cfg = state.config_read();
-        (
-            ConfigView::from_config(&cfg),
-            model_choices(&cfg, &snap, &state.registry, results.as_ref()),
-        )
-    };
+    let bench = live::bench_summary(&crate::benchmark::results_path(&state.config_path));
+    let (revision, cfg) = state.config.snapshot();
+    let mut c = ConfigView::from_config(&cfg);
+    let models = model_choices(&cfg, &snap, state, (*bench).as_ref());
+    let mut server_base = serde_json::to_string(&crate::config_merge::form_fields(
+        &cfg,
+        crate::config_merge::Scope::ServerForm,
+    ))
+    .unwrap_or_default();
+    let card_base = serde_json::to_string(&crate::config_merge::form_fields(
+        &cfg,
+        crate::config_merge::Scope::ModelsCard,
+    ))
+    .unwrap_or_default();
     if let Some(form) = submitted {
         c.overlay(form);
+        // A rejected submission shown as typed keeps the base it was made from.
+        if let Some(b) = form.get("base").filter(|b| !b.trim().is_empty()) {
+            server_base = b.clone();
+        }
     }
     let log_levels = level_choices(&c.log_level);
     let device_choices = device_choices(&snap, &c.device, &c.gpu_index);
-    let (resource_groups, local_models, models_dir, force_cpu_note) = {
-        let cfg = state.config_read();
-        (
-            crate::resources::status::grouped(crate::resources::status::rows(
-                state.resources.as_ref(),
-                &cfg,
-            )),
-            crate::resources::status::local_models(state.resources.as_ref(), &cfg),
-            cfg.data_path(&cfg.models_dir).display().to_string(),
-            force_cpu_note(&cfg, &snap),
-        )
-    };
-    let tools_dir = state
-        .config_read()
+    let resource_groups = crate::resources::status::grouped(crate::resources::status::rows(
+        state.resources.as_ref(),
+        &cfg,
+    ));
+    let local_models = crate::resources::status::local_models(state.resources.as_ref(), &cfg);
+    let models_dir = cfg.data_path(&cfg.models_dir).display().to_string();
+    let force_cpu_note = force_cpu_note(&cfg, &snap);
+    let tools_dir = cfg
         .data_root()
         .join(crate::resources::export::TOOLS_DIR)
         .display()
         .to_string();
     let bench_summary = {
-        let cfg = state.config_read();
         let b = &cfg.benchmark;
         let datasets: Vec<String> = b.datasets.iter().map(|d| d.label()).collect();
-        let last = match &results {
+        let last = match (*bench).as_ref() {
             Some(r) => format!(
                 " Last results: {} model(s), updated {}.",
-                r.models.len(),
-                r.timestamp
+                r.count, r.timestamp
             ),
             None => " No results yet.".to_string(),
         };
@@ -1618,6 +1666,17 @@ fn config_template(
             b.weights.accuracy_share() * 100.0
         )
     };
+    let pending = {
+        let p = crate::config_merge::pending(&state.running, &cfg);
+        let mut all = p.global.clone();
+        for m in &cfg.models {
+            for r in p.for_model(&m.effective_name()) {
+                all.push(format!("{}: {r}", m.effective_name()));
+            }
+        }
+        all.extend(p.process.iter().cloned());
+        all
+    };
     ConfigTemplate {
         bench_summary,
         resource_groups,
@@ -1636,6 +1695,15 @@ fn config_template(
         device_choices,
         message,
         error,
+        revision,
+        server_base,
+        card_base,
+        global_threshold: format!(
+            "{:.2}",
+            crate::config::round_threshold_f64(cfg.confidence_threshold)
+        ),
+        pending,
+        conflict: None,
     }
 }
 
@@ -1643,23 +1711,24 @@ async fn config_page(State(state): State<Arc<AppState>>) -> Response {
     render(&config_template(&state, None, None, None))
 }
 
-/// Apply `edit` to a copy of the config, write it to the config file and, on success, make it
-/// the in-memory config. Returns the success message for the config page ("restart to apply",
-/// plus the outcome of applying a changed log level immediately).
+/// Apply `edit` to the current config through the config store (one writer for everything:
+/// it bumps the revision and logs the change under `source`), write the file and, when the log
+/// level changed, apply it now. Returns the message for the page ("restart to apply", ...).
 fn save_config(
     state: &AppState,
+    source: &str,
     edit: impl FnOnce(&mut Config) -> anyhow::Result<()>,
 ) -> anyhow::Result<String> {
-    let level = {
-        let mut cfg = state.config_write();
-        let mut new = cfg.clone();
-        edit(&mut new)?;
-        new.save(&state.config_path)?;
-        let level_changed = new.log_level != cfg.log_level;
-        *cfg = new;
-        level_changed.then_some(cfg.log_level)
-    };
-    info!(path = %state.config_path.display(), "config saved from the web UI");
+    let up = state.config.update(source, edit)?;
+    if !up.changed {
+        return Ok(format!(
+            "No changes: {} already has these values.",
+            state.config_path.display()
+        ));
+    }
+    let level = state.config_read().log_level;
+    let level = (level != up.before.log_level).then_some(level);
+    info!(path = %state.config_path.display(), revision = up.revision, source, "config saved from the web UI");
     let mut msg = format!(
         "Saved to {}. Restart the server to apply the changes.",
         state.config_path.display()
@@ -1679,19 +1748,37 @@ fn save_config(
 /// Validate and save the form. Changes apply on restart, except the log level (immediately).
 /// `default_model` and the `enabled` flags are only changed when the form carries them (the
 /// page's main form does not; the Models card posts to `/config/models`).
+///
+/// The page's form carries `base` (the values it was rendered from): the submission is merged
+/// field by field into the current config ([`crate::config_merge`]), so a page opened before
+/// another change (Benchmark apply, another tab, the CLI) does not revert it; a field changed
+/// on both sides is a conflict (409: the page with a conflict card, or JSON). Clients that
+/// send `Accept: application/json` get JSON.
 async fn config_submit(
     State(state): State<Arc<AppState>>,
-    form: Result<Form<HashMap<String, String>>, FormRejection>,
+    headers: HeaderMap,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
 ) -> Response {
-    let form = match form {
+    let json = live::wants_json(&headers);
+    let pairs = match form {
         Ok(Form(f)) => f,
         Err(e) => {
-            return render(&config_template(
-                &state,
-                None,
-                Some(format!("Invalid form submission: {e}")),
-                None,
-            ));
+            let msg = format!("Invalid form submission: {e}");
+            if json {
+                return live::error_json(StatusCode::BAD_REQUEST, msg);
+            }
+            return render(&config_template(&state, None, Some(msg), None));
+        }
+    };
+    let form: HashMap<String, String> = pairs.iter().cloned().collect();
+    let meta = match live::FormMeta::parse(&pairs) {
+        Ok(m) => m,
+        Err(e) => {
+            let msg = format!("Not saved: {e:#}");
+            if json {
+                return live::error_json(StatusCode::BAD_REQUEST, msg);
+            }
+            return render(&config_template(&state, None, Some(msg), None));
         }
     };
     let devices = |c: &Config| {
@@ -1706,7 +1793,9 @@ async fn config_submit(
         )
     };
     let before = devices(&state.config_read());
-    match save_config(&state, |c| apply_config_form(c, &form)) {
+    match save_config(&state, "config page", |c| {
+        live::server_form_edit(c, &form, &meta)
+    }) {
         Ok(msg) => {
             // A device change to an option that needs a download (the dropdown's
             // "will download ..." entries, or a per-model `device`): queue it and restart. The
@@ -1719,80 +1808,92 @@ async fn config_submit(
                 let queued = crate::resources::status::queue_needs(ctx, &cfg);
                 if !queued.is_empty() {
                     info!("device change needs downloads: {}", queued.join(", "));
-                    return restart_response_with(
-                        &state,
-                        format!(
-                            "Saved. Downloading {} for the new device setting; the server \
-                             restarts now, serves on what it can meanwhile, and switches when \
-                             the download is installed (progress on the home and Config pages).",
-                            queued.join(", ")
-                        ),
+                    let msg = format!(
+                        "Saved. Downloading {} for the new device setting; the server                          restarts now, serves on what it can meanwhile, and switches when                          the download is installed (progress on the home and Config pages).",
+                        queued.join(", ")
                     );
+                    if json {
+                        schedule_restart(&state);
+                        return live::saved_json(&state, msg, true);
+                    }
+                    return restart_response_with(&state, msg);
                 }
+            }
+            if json {
+                return live::saved_json(&state, msg, false);
             }
             render(&config_template(&state, Some(msg), None, None))
         }
         Err(e) => {
+            if let Some(conflicts) = live::conflicts_of(&e) {
+                warn!("config form conflicts with newer changes: {e}");
+                return if json {
+                    live::conflict_json(&state, conflicts)
+                } else {
+                    live::conflict_page(&state, "/config", conflicts, &pairs)
+                };
+            }
             warn!("rejected config form: {e:#}");
-            render(&config_template(
-                &state,
-                None,
-                Some(format!("Not saved: {e:#}")),
-                Some(&form),
-            ))
+            let msg = format!("Not saved: {e:#}");
+            if json {
+                return live::error_json(StatusCode::BAD_REQUEST, msg);
+            }
+            render(&config_template(&state, None, Some(msg), Some(&form)))
         }
     }
 }
 
-/// The Models card: `enabled` (repeated, one per checked model), `default_model` (radio) and
+/// The Models card: `enabled` (repeated, one per checked model), `default_model` (radio),
+/// `device.<name>` / `threshold.<name>` ("" = global), `base` (see [`config_submit`]) and
 /// `action` (`save` or `restart`). Saves like `config_submit`; `restart` then restarts like
 /// `POST /config/restart`.
 async fn config_models(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     form: Result<Form<Vec<(String, String)>>, FormRejection>,
 ) -> Response {
+    let json = live::wants_json(&headers);
     let form = match form {
         Ok(Form(f)) => f,
         Err(e) => {
-            return render(&config_template(
-                &state,
-                None,
-                Some(format!("Invalid form submission: {e}")),
-                None,
-            ));
+            let msg = format!("Invalid form submission: {e}");
+            if json {
+                return live::error_json(StatusCode::BAD_REQUEST, msg);
+            }
+            return render(&config_template(&state, None, Some(msg), None));
         }
     };
-    fn field<'a>(form: &'a [(String, String)], k: &'a str) -> impl Iterator<Item = &'a str> {
-        form.iter()
-            .filter(move |(key, _)| key == k)
-            .map(|(_, v)| v.as_str())
-    }
-    let enabled: Vec<String> = field(&form, "enabled").map(str::to_string).collect();
-    let default = field(&form, "default_model").next();
-    let restart = field(&form, "action").any(|a| a == "restart");
-    // Per-model Device selects: `device.<model name>` = spec, or "" for the global device.
-    let devices: Vec<(String, Option<String>)> = form
-        .iter()
-        .filter_map(|(k, v)| {
-            k.strip_prefix("device.")
-                .map(|name| (name.to_string(), Some(v.clone())))
+    let restart = form.iter().any(|(k, a)| k == "action" && a == "restart");
+    let result = live::FormMeta::parse(&form).and_then(|meta| {
+        save_config(&state, "config page (Models card)", |c| {
+            live::models_card_edit(c, &form, &meta)
         })
-        .collect();
-    match save_config(&state, |c| {
-        apply_models_selection(c, &enabled, default)?;
-        crate::config::apply_model_devices(c, &devices)?;
-        Ok(())
-    }) {
-        Ok(_) if restart => restart_response(&state),
+    });
+    match result {
+        Ok(msg) if restart => {
+            if json {
+                schedule_restart(&state);
+                return live::saved_json(&state, msg, true);
+            }
+            restart_response(&state)
+        }
+        Ok(msg) if json => live::saved_json(&state, msg, false),
         Ok(msg) => render(&config_template(&state, Some(msg), None, None)),
         Err(e) => {
+            if let Some(conflicts) = live::conflicts_of(&e) {
+                warn!("Models card conflicts with newer changes: {e}");
+                return if json {
+                    live::conflict_json(&state, conflicts)
+                } else {
+                    live::conflict_page(&state, "/config/models", conflicts, &form)
+                };
+            }
             warn!("rejected models selection: {e:#}");
-            render(&config_template(
-                &state,
-                None,
-                Some(format!("Models not saved: {e:#}")),
-                None,
-            ))
+            let msg = format!("Models not saved: {e:#}");
+            if json {
+                return live::error_json(StatusCode::BAD_REQUEST, msg);
+            }
+            render(&config_template(&state, None, Some(msg), None))
         }
     }
 }
@@ -1876,11 +1977,10 @@ async fn config_loglevel(
         let raw = level.ok_or_else(|| anyhow::anyhow!("missing field 'level'"))?;
         let level: LogLevel = raw.trim().parse()?;
         apply_log_level(&state, level)?;
-        let mut cfg = state.config_write();
-        let mut new = cfg.clone();
-        new.log_level = level;
-        new.save(&state.config_path)?;
-        *cfg = new;
+        state.config.update("log level", |c| {
+            c.log_level = level;
+            Ok(())
+        })?;
         Ok(level)
     })();
     let html = wants_html(&headers);
@@ -2025,6 +2125,19 @@ async fn style_css() -> Response {
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         STYLE_CSS,
+    )
+        .into_response()
+}
+
+/// Shared page script: polls `GET /v1/config` and keeps the header's pending-restart indicator
+/// (and the pages that listen) up to date.
+async fn live_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        LIVE_JS,
     )
         .into_response()
 }
@@ -2913,11 +3026,14 @@ mod tests {
     #[tokio::test]
     async fn force_cpu_note_on_home_and_config() {
         let state = test_state();
-        {
-            let mut c = state.config_write();
-            c.force_cpu = true;
-            c.device = "auto".into();
-        }
+        state
+            .config
+            .update("test", |c| {
+                c.force_cpu = true;
+                c.device = "auto".into();
+                Ok(())
+            })
+            .unwrap();
         let (_, home) = get_text(&state, "/").await;
         assert!(
             home.contains("Force CPU is on \u{2014} overrides device auto (would use "),
@@ -3044,6 +3160,9 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{b}");
         assert!(b["message"].as_str().unwrap().contains("added 'mynet'"));
+        let last = state.config.changes(1).pop().expect("logged");
+        assert_eq!(last.source, "resources add-to-config");
+        assert!(last.summary.contains("mynet added"), "{}", last.summary);
         let saved = Config::load(&state.config_path).unwrap();
         let m = saved
             .models
@@ -3202,6 +3321,13 @@ mod tests {
         );
         assert!(root.join("models/yolo26n.onnx").is_file());
         assert!(root.join("models/yolo26n.yaml").is_file());
+        let last = state.config.changes(1).pop().expect("logged");
+        assert_eq!(last.source, "resources export");
+        // Memory and file agree (the in-memory config got the model too).
+        assert_eq!(
+            *state.config_read(),
+            Config::load(&state.config_path).unwrap()
+        );
         let saved = Config::load(&state.config_path).unwrap();
         let m = saved
             .models
@@ -3265,7 +3391,13 @@ mod tests {
         let (state, root) = export_state(fake);
         {
             // allow_large_downloads: no confirmation needed.
-            state.config_write().allow_large_downloads = true;
+            state
+                .config
+                .update("test", |c| {
+                    c.allow_large_downloads = true;
+                    Ok(())
+                })
+                .unwrap();
         }
         let (s, _) = post_action(&state, "/v1/resources/cancel", "id=model%3Ayolo26n").await;
         assert_eq!(s, StatusCode::NOT_FOUND, "no such endpoint");
@@ -3327,5 +3459,374 @@ mod tests {
             "{html}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- live config: revision, merge of stale pages, /v1/config ----
+
+    fn html_unescape(s: &str) -> String {
+        s.replace("&#34;", "\"")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&#x27;", "'")
+            .replace("&lt;", "<")
+            .replace("&#60;", "<")
+            .replace("&gt;", ">")
+            .replace("&#62;", ">")
+            .replace("&amp;", "&")
+            .replace("&#38;", "&")
+    }
+
+    /// The hidden `base` of a Config page form: 0 = Models card, 1 = the main form.
+    fn page_base(html: &str, idx: usize) -> String {
+        let marker = "name=\"base\" value=\"";
+        let mut rest = html;
+        for _ in 0..=idx {
+            let i = rest.find(marker).expect("base field");
+            rest = &rest[i + marker.len()..];
+        }
+        html_unescape(&rest[..rest.find('"').unwrap()])
+    }
+
+    /// The main form as a browser posts it from a page rendered from `c`, with `base` and the
+    /// user's `edits`.
+    fn server_form_body(c: &Config, base: &str, edits: &[(&str, &str)]) -> String {
+        let view = serde_json::to_value(ConfigView::from_config(c)).unwrap();
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (k, v) in view.as_object().unwrap() {
+            match v {
+                serde_json::Value::Bool(true) => pairs.push((k.clone(), "on".into())),
+                serde_json::Value::String(s) => pairs.push((k.clone(), s.clone())),
+                _ => {}
+            }
+        }
+        for (k, v) in edits {
+            pairs.retain(|(x, _)| x != k);
+            pairs.push((k.to_string(), v.to_string()));
+        }
+        pairs.push(("download_settings".into(), "1".into()));
+        pairs.push(("base".into(), base.into()));
+        pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v)))
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
+    fn post_json(uri: &str, body: &str) -> Request<Body> {
+        Request::post(uri)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::ACCEPT, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn first_model(state: &AppState) -> (Option<String>, Option<f32>) {
+        let c = state.config_read();
+        (c.models[0].device.clone(), c.models[0].confidence_threshold)
+    }
+
+    /// The reported bug: a Config page opened before a Benchmark apply, then saved, reverted
+    /// the applied device and threshold (main form and Models card). Both now merge.
+    #[tokio::test]
+    async fn stale_config_page_keeps_benchmark_apply() {
+        let state = test_state();
+        let evil = urlencode("<b>evil</b>");
+        state.config.update("test", |_| Ok(())).unwrap();
+        // The page is opened...
+        let (_, page) = get_text(&state, "/config").await;
+        let (card_base, server_base) = (page_base(&page, 0), page_base(&page, 1));
+        let stale = state.config_read().clone();
+        assert!(page.contains("data-revision=\"1\""));
+        // ...then the Benchmark page applies a device and a threshold.
+        let (s, _, b) = call(
+            &state,
+            post_form(
+                "/v1/benchmark/apply",
+                "model=ipcam-general&device=openvino:cpu",
+                false,
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+        let (s, _, b) = call(
+            &state,
+            post_form(
+                "/v1/benchmark/apply-threshold",
+                "model=ipcam-general&threshold=0.35",
+                false,
+            ),
+        )
+        .await;
+        let text = String::from_utf8(b).unwrap();
+        assert_eq!(s, StatusCode::OK, "{text}");
+        // Rounded in the API answer (was 0.3499999940395355).
+        assert!(text.contains("\"to\":0.35"), "{text}");
+        assert!(!text.contains("0.34999"), "{text}");
+        assert_eq!(state.config.revision(), 3);
+        let applied = (Some("openvino:cpu".to_string()), Some(0.35));
+        assert_eq!(first_model(&state), applied);
+
+        // 1. The stale main form saved as is: nothing reverted, nothing changed.
+        let body = server_form_body(&stale, &server_base, &[]);
+        let (s, _, b) = call(&state, post_form("/config", &body, true)).await;
+        let html = String::from_utf8(b).unwrap();
+        assert_eq!(s, StatusCode::OK);
+        assert!(html.contains("No changes"), "{html}");
+        assert_eq!(first_model(&state), applied);
+        assert_eq!(state.config.revision(), 3);
+        // With a user edit: the edit is saved, the applied values stay (memory and file).
+        let body = server_form_body(&stale, &server_base, &[("port", "4000")]);
+        let (s, _, b) = call(&state, post_form("/config", &body, true)).await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(
+            String::from_utf8(b)
+                .unwrap()
+                .contains("Restart the server to apply")
+        );
+        assert_eq!(state.config_read().port, 4000);
+        assert_eq!(first_model(&state), applied);
+        let file = Config::load(&state.config_path).unwrap();
+        assert_eq!(file, *state.config_read());
+        let last = state.config.changes(1).pop().unwrap();
+        assert_eq!((last.source.as_str(), last.revision), ("config page", 4));
+        assert_eq!(last.summary, "Port \u{2192} 4000");
+
+        // 2. The stale Models card with one user edit (a threshold on the other model).
+        let card = format!(
+            "enabled=ipcam-general&enabled={evil}&default_model=ipcam-general&device.ipcam-general=\
+             &device.{evil}=&threshold.ipcam-general=&threshold.{evil}=0.6&base={}&action=save",
+            urlencode(&card_base)
+        );
+        let (s, _, b) = call(&state, post_form("/config/models", &card, true)).await;
+        assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+        assert_eq!(first_model(&state), applied);
+        assert_eq!(
+            state.config_read().models[1].confidence_threshold,
+            Some(0.6)
+        );
+        let last = state.config.changes(1).pop().unwrap();
+        assert_eq!(last.source, "config page (Models card)");
+        assert_eq!(last.summary, "<b>evil</b> threshold \u{2192} 0.6");
+
+        // 3. A conflicting edit: the stale card picks another device for the same model.
+        let conflicting = card.replace("device.ipcam-general=&", "device.ipcam-general=ort:cpu&");
+        let rev = state.config.revision();
+        let (s, _, b) = call(&state, post_form("/config/models", &conflicting, true)).await;
+        let html = String::from_utf8(b).unwrap();
+        assert_eq!(s, StatusCode::CONFLICT);
+        assert!(html.contains("Not saved: changed elsewhere"), "{html}");
+        assert!(html.contains("ipcam-general \u{b7} device"), "{html}");
+        assert!(
+            html.contains("<code>ort:cpu</code>") && html.contains("<code>openvino:cpu</code>")
+        );
+        assert!(html.contains("value=\"mine\" checked> Use mine"));
+        assert!(html.contains("name=\"resolve_cur.model:device:ipcam-general\""));
+        assert_eq!(state.config.revision(), rev, "nothing saved");
+        assert_eq!(first_model(&state), applied);
+        // The same as JSON (the page's script).
+        let (s, _, b) = call(&state, post_json("/config/models", &conflicting)).await;
+        let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(s, StatusCode::CONFLICT);
+        assert_eq!(j["conflict"], true);
+        assert_eq!(j["conflicts"][0]["key"], "model:device:ipcam-general");
+        assert_eq!(j["conflicts"][0]["mine_text"], "ort:cpu");
+        assert_eq!(j["conflicts"][0]["current_text"], "openvino:cpu");
+        assert_eq!(j["conflicts"][0]["current"], "openvino:cpu");
+        assert!(
+            j["conflicts"][0].get("base").is_some(),
+            "base was null, not absent"
+        );
+        // "Use current" keeps the applied device (the rest of the card is still saved).
+        let key = urlencode("model:device:ipcam-general");
+        let cur = urlencode("\"openvino:cpu\"");
+        let resolved = format!("{conflicting}&resolve.{key}=current&resolve_cur.{key}={cur}");
+        let (s, _, b) = call(&state, post_json("/config/models", &resolved)).await;
+        assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+        assert_eq!(first_model(&state), applied);
+        // "Use mine" takes the user's device.
+        let resolved = format!("{conflicting}&resolve.{key}=mine&resolve_cur.{key}={cur}");
+        let (s, _, b) = call(&state, post_json("/config/models", &resolved)).await;
+        let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(s, StatusCode::OK, "{j}");
+        assert_eq!(j["revision"], state.config.revision());
+        assert_eq!(first_model(&state).0.as_deref(), Some("ort:cpu"));
+        // "Use mine" against a value the user has not seen is a conflict again.
+        let stale_choice = format!("{conflicting}&resolve.{key}=mine&resolve_cur.{key}={cur}")
+            .replace(
+                "device.ipcam-general=ort:cpu",
+                "device.ipcam-general=ort:coreml",
+            );
+        let (s, _, _) = call(&state, post_json("/config/models", &stale_choice)).await;
+        assert_eq!(s, StatusCode::CONFLICT);
+
+        // 4. The stale main form's models JSON changes the applied threshold differently.
+        let mut edited = stale.clone();
+        edited.models[0].confidence_threshold = Some(0.4);
+        let body = server_form_body(&edited, &server_base, &[]);
+        let (s, _, b) = call(&state, post_json("/config", &body)).await;
+        let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(s, StatusCode::CONFLICT, "{j}");
+        let keys: Vec<&str> = j["conflicts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["key"].as_str().unwrap())
+            .collect();
+        assert_eq!(keys, ["model:confidence_threshold:ipcam-general"]);
+        assert!(
+            j["message"]
+                .as_str()
+                .unwrap()
+                .contains("yours: 0.4, now: 0.35"),
+            "{j}"
+        );
+        // No-JS: the conflict page replays the submission for "Use mine for all".
+        let (s, _, b) = call(&state, post_form("/config", &body, true)).await;
+        let html = String::from_utf8(b).unwrap();
+        assert_eq!(s, StatusCode::CONFLICT);
+        assert!(
+            html.contains("name=\"resolve_all\" value=\"mine\""),
+            "{html}"
+        );
+        assert!(html.contains("<input type=\"hidden\" name=\"models_json\""));
+        assert_eq!(first_model(&state).1, Some(0.35));
+    }
+
+    /// Legacy clients (no `base`) keep the old apply-as-submitted behavior.
+    #[tokio::test]
+    async fn forms_without_base_apply_as_submitted() {
+        let state = test_state();
+        let (s, _, _) = call(
+            &state,
+            post_form(
+                "/config/models",
+                "enabled=ipcam-general&device.ipcam-general=openvino:cpu&threshold.ipcam-general=0.456&action=save",
+                true,
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(
+            first_model(&state),
+            (Some("openvino:cpu".to_string()), Some(0.46))
+        );
+    }
+
+    #[tokio::test]
+    async fn config_endpoint_etag_pending_and_disk_changes() {
+        let state = test_state();
+        let get = |etag: Option<&str>| {
+            let mut r = Request::get("/v1/config");
+            if let Some(e) = etag {
+                r = r.header(header::IF_NONE_MATCH, e);
+            }
+            r.body(Body::empty()).unwrap()
+        };
+        let (s, h, b) = call(&state, get(None)).await;
+        assert_eq!(s, StatusCode::OK);
+        let etag = h[header::ETAG].to_str().unwrap().to_string();
+        assert!(etag.starts_with("W/\"1-"), "{etag}");
+        let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(j["revision"], 1);
+        assert_eq!(j["restartNeeded"], false);
+        assert_eq!(j["models"][0]["name"], "ipcam-general");
+        assert_eq!(j["models"][0]["running"]["present"], true);
+        assert_eq!(j["models"][0]["running"]["threshold"], 0.5);
+        assert_eq!(j["models"][0]["default"], true);
+        assert!(j["forms"]["server"]["base"]["model:device:ipcam-general"].is_null());
+        assert_eq!(j["forms"]["models"]["base"]["default"], "ipcam-general");
+        assert_eq!(
+            j["forms"]["server"]["view"]["port"],
+            crate::DEFAULT_PORT.to_string()
+        );
+        // Unchanged: 304.
+        let (s, h, b) = call(&state, get(Some(&etag))).await;
+        assert_eq!(s, StatusCode::NOT_MODIFIED);
+        assert!(b.is_empty());
+        assert_eq!(h[header::ETAG].to_str().unwrap(), etag);
+
+        // A change: new revision, pending restart for the model, the change log entry.
+        let (s, _, _) = call(
+            &state,
+            post_form(
+                "/v1/benchmark/apply-threshold",
+                "model=ipcam-general&threshold=0.35",
+                false,
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, h, b) = call(&state, get(Some(&etag))).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_ne!(h[header::ETAG].to_str().unwrap(), etag);
+        let text = String::from_utf8(b).unwrap();
+        assert!(text.contains("\"threshold\":0.35"), "{text}");
+        assert!(!text.contains("0.34999"), "{text}");
+        let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(j["revision"], 2);
+        assert_eq!(j["restartNeeded"], true);
+        assert_eq!(j["pendingCount"], 1);
+        assert_eq!(j["models"][0]["restartNeeded"], true);
+        assert_eq!(
+            j["models"][0]["reasons"][0],
+            "threshold: 0.50 \u{2192} 0.35"
+        );
+        // Running: what the worker uses (still the old threshold until a restart).
+        assert_eq!(j["models"][0]["running"]["threshold"], 0.5);
+        assert_eq!(j["models"][1]["restartNeeded"], false);
+        assert_eq!(j["changes"][0]["source"], "benchmark apply-threshold");
+        assert_eq!(
+            j["changes"][0]["summary"],
+            "ipcam-general threshold \u{2192} 0.35"
+        );
+        // The config file says 0.35, too.
+        let file = std::fs::read_to_string(&state.config_path).unwrap();
+        assert!(file.contains("\"confidence_threshold\": 0.35"), "{file}");
+        // The other pages carry the pending state.
+        let (_, home) = get_text(&state, "/").await;
+        assert!(
+            home.contains("title=\"threshold: 0.50 \u{2192} 0.35\">restart needed"),
+            "{home}"
+        );
+        let (_, cfg) = get_text(&state, "/config").await;
+        assert!(
+            cfg.contains("<li>ipcam-general: threshold: 0.50 \u{2192} 0.35</li>"),
+            "{cfg}"
+        );
+        assert!(cfg.contains("value=\"0.35\" placeholder=\"0.50\""), "{cfg}");
+
+        // Another process edits the file (the CLI, an editor): picked up on the next poll.
+        std::thread::sleep(Duration::from_millis(20));
+        let mut other = Config::load(&state.config_path).unwrap();
+        other.port = 4321;
+        other.save(&state.config_path).unwrap();
+        let (_, _, b) = call(&state, get(None)).await;
+        let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(j["revision"], 3);
+        assert_eq!(j["changes"][1]["source"], "file changed on disk");
+        assert_eq!(j["changes"][1]["summary"], "Port \u{2192} 4321");
+        assert_eq!(j["pending"]["global"][0], "Port: 32168 \u{2192} 4321");
+        assert_eq!(j["pendingCount"], 2);
+        assert_eq!(state.config_read().port, 4321);
+    }
+
+    #[tokio::test]
+    async fn log_level_writer_bumps_the_revision() {
+        let mut st = Arc::try_unwrap(test_state()).ok().unwrap();
+        st.log_reload = Some(LogReloadHandle::detached(LogLevel::Info));
+        let state = Arc::new(st);
+        let (s, _, _) = call(&state, post_form("/config/loglevel", "level=debug", false)).await;
+        assert_eq!(s, StatusCode::OK);
+        let last = state.config.changes(1).pop().unwrap();
+        assert_eq!((last.source.as_str(), last.revision), ("log level", 2));
+        assert_eq!(last.summary, "Log level \u{2192} debug");
+        // The log level applies now: no restart needed for it.
+        let (_, _, b) = call(
+            &state,
+            Request::get("/v1/config").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(j["restartNeeded"], false);
     }
 }

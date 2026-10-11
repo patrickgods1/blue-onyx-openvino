@@ -16,10 +16,10 @@
 <h2>Models</h2>
 <div class="scroll">
 <table class="models">
-<thead><tr><th>Model</th><th>Default</th><th>State</th><th>Device</th><th>Requests</th><th>Queue</th></tr></thead>
+<thead><tr><th>Model</th><th>Default</th><th>State</th><th>Device</th><th>Requests</th><th>Queue</th><th><span class="sr-only">Pending</span></th></tr></thead>
 <tbody>
 {% for m in models %}
-<tr class="st-{{ m.state_class }}"><td>{{ m.name }}</td><td>{% if m.is_default %}yes{% endif %}</td><td>{{ m.state }}{% if let Some(d) = m.state_detail %}<br><span class="detail">{{ d }}</span>{% endif %}</td><td class="trunc" title="{{ m.provider }}">{{ m.provider }}</td><td class="num">{{ m.requests }}</td><td class="num">{{ m.queue }}</td></tr>
+<tr class="st-{{ m.state_class }}"><td>{{ m.name }}</td><td>{% if m.is_default %}yes{% endif %}</td><td>{{ m.state }}{% if let Some(d) = m.state_detail %}<br><span class="detail">{{ d }}</span>{% endif %}</td><td class="trunc" title="{{ m.provider }}">{{ m.provider }}</td><td class="num">{{ m.requests }}</td><td class="num">{{ m.queue }}</td><td><span class="tag restart pending-badge" data-model="{{ m.name }}" title="{{ m.pending }}"{% if m.pending.is_empty() %} hidden{% endif %}>restart needed</span></td></tr>
 {% endfor %}
 </tbody>
 </table>
@@ -53,6 +53,16 @@
     }).catch(function () {});
   }, 2000);
 })();
+// Pending restart badges follow the live config (another tab, Benchmark apply, the CLI).
+if (window.PrismLive) PrismLive.onConfig(function (j) {
+  var norm = function (n) { n = n.trim().toLowerCase(); var m = /^(.+)\.(onnx|xml)$/.exec(n); return m ? m[1] : n; };
+  var byKey = {}; j.models.forEach(function (m) { byKey[m.key] = m; });
+  document.querySelectorAll("table.models .pending-badge[data-model]").forEach(function (b) {
+    var m = byKey[norm(b.dataset.model)];
+    var reasons = m ? m.reasons : ["removed from the config; still loaded"];
+    b.hidden = !reasons.length; b.title = reasons.join("; ");
+  });
+});
 fetch("/v1/status/updateavailable").then(r => r.json()).then(u => {
   if (u.success && u.updateAvailable && u.latest) {
     const el = document.getElementById("update-hint");

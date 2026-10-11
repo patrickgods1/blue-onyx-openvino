@@ -19,7 +19,9 @@
     <a href="/config"{% if nav == "config" %} class="active"{% endif %}>Config</a>
     <a href="/logs"{% if nav == "logs" %} class="active"{% endif %}>Logs</a>
   </nav>
+  <span id="pending-restart" class="pending-restart" hidden><a href="/config#models"></a> <button type="button" class="small danger" data-restart>Restart</button></span>
 </header>
+<script src="/static/live.js?v={{ version }}"></script>
 <main>
 {% block content %}{% endblock %}
 </main>
@@ -27,6 +29,7 @@
   <div>Blue Onyx Prism {{ version }} &middot; CodeProject.AI compatible API</div>
   <div class="endpoints">JSON:
     <a href="/stats.json">stats</a> &middot;
+    <a href="/v1/config">config</a> &middot;
     <a href="/v1/devices">devices</a> &middot;
     <a href="/v1/resources">resources</a> &middot;
     <a href="/v1/benchmark">benchmark</a> &middot;

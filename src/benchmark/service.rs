@@ -15,7 +15,7 @@
 //! The service lives for the whole process (across registry generations); the runner cancels a
 //! running benchmark when a generation stops.
 
-use super::grade::Weights;
+use super::grade::{AccuracyMetric, Weights};
 use super::images::{self, ImageSet};
 use super::report::{HardwareSummary, RuntimeVersions};
 use super::threshold::Objective;
@@ -58,6 +58,9 @@ pub struct RunRequest {
     /// What the best confidence threshold optimizes.
     #[serde(default)]
     pub threshold_objective: Objective,
+    /// What the accuracy grade is computed from.
+    #[serde(default)]
+    pub accuracy_metric: AccuracyMetric,
 }
 
 impl RunRequest {
@@ -73,13 +76,15 @@ impl RunRequest {
             reference_model: b.reference_model.clone(),
             weights: b.weights,
             threshold_objective: b.threshold_objective,
+            accuracy_metric: b.accuracy_metric,
         }
     }
 
     /// Parse form fields over the configured defaults: `model`, `device`, `dataset` (repeated:
     /// a given field replaces the default list), `max_images`, `repeat`, `warmup`,
     /// `reference_model` ("" = automatic), `accuracy_weight` (0..1), `threshold_objective`
-    /// (`f1`, `f2`, `precision:<p>`).
+    /// (`f1`, `f2`, `precision:<p>`, `recall:<r>`, `youden`, `fpr:<x>`), `accuracy_metric`
+    /// (`ap50`, `roc_auc`).
     pub fn from_form(form: &[(String, String)], defaults: &BenchmarkConfig) -> Result<Self> {
         let has = |k: &str| form.iter().any(|(key, _)| key == k);
         let all = |k: &str| -> Vec<String> {
@@ -129,6 +134,9 @@ impl RunRequest {
         if let Some(o) = one("threshold_objective").filter(|o| !o.is_empty()) {
             req.threshold_objective = o.parse().map_err(|e: String| anyhow::anyhow!(e))?;
         }
+        if let Some(m) = one("accuracy_metric").filter(|m| !m.is_empty()) {
+            req.accuracy_metric = m.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+        }
         req.validate()?;
         Ok(req)
     }
@@ -163,6 +171,7 @@ impl RunRequest {
         b.reference_model = self.reference_model.clone();
         b.weights = self.weights;
         b.threshold_objective = self.threshold_objective;
+        b.accuracy_metric = self.accuracy_metric;
     }
 }
 
@@ -778,6 +787,7 @@ pub fn run(ctx: &RunContext, req: &RunRequest, h: &RunHandle) -> Result<String> 
         bench.progress = Some(&progress);
         bench.weights = req.weights;
         bench.threshold_objective = req.threshold_objective;
+        bench.accuracy_metric = req.accuracy_metric;
         let opts = SweepOptions {
             devices: devices.clone(),
             configured,
@@ -802,8 +812,10 @@ pub fn run(ctx: &RunContext, req: &RunRequest, h: &RunHandle) -> Result<String> 
     if !finished.is_empty() {
         let results = BenchmarkResults::new(HardwareSummary::current(), versions, finished.clone())
             .with_sets(&sets);
-        let merged =
+        let mut merged =
             BenchmarkResults::merge(BenchmarkResults::load_or_warn(&ctx.results_path), results);
+        // Models kept from earlier runs are graded like this run's.
+        merged.regrade(req.accuracy_metric, req.weights);
         merged.save(&ctx.results_path)?;
         super::search::save_beside(&ctx.results_path, &merged, &finished);
     }
@@ -857,6 +869,7 @@ mod tests {
             reference_model: None,
             weights: Weights::default(),
             threshold_objective: Objective::default(),
+            accuracy_metric: AccuracyMetric::default(),
         }
     }
 
@@ -878,6 +891,7 @@ mod tests {
                 ("reference_model", "rt-detrv2-x"),
                 ("accuracy_weight", "0.8"),
                 ("threshold_objective", "precision:0.9"),
+                ("accuracy_metric", "roc_auc"),
             ]),
             &defaults,
         )
@@ -890,6 +904,7 @@ mod tests {
         assert_eq!(r.reference_model.as_deref(), Some("rt-detrv2-x"));
         assert!((r.weights.accuracy_share() - 0.8).abs() < 1e-12);
         assert_eq!(r.threshold_objective, Objective::Precision(0.9));
+        assert_eq!(r.accuracy_metric, AccuracyMetric::RocAuc);
         let d = r.parsed_devices().unwrap().unwrap();
         assert_eq!(d.len(), 2);
         assert_eq!(d[1].to_string(), "ort:coreml");
@@ -911,14 +926,16 @@ mod tests {
             &form(&[
                 ("dataset", "sample"),
                 ("repeat", "3"),
-                ("threshold_objective", "f2"),
+                ("threshold_objective", "youden"),
+                ("accuracy_metric", "roc_auc"),
             ]),
             &b,
         )
         .unwrap();
         r.to_config(&mut b);
+        assert_eq!(b.accuracy_metric, AccuracyMetric::RocAuc);
         assert_eq!(b.repeat_per_image, 3);
-        assert_eq!(b.threshold_objective, Objective::F2);
+        assert_eq!(b.threshold_objective, Objective::Youden);
         assert_eq!(b.datasets, [DatasetRef::Id("sample".into())]);
 
         for (bad, needle) in [
@@ -930,6 +947,7 @@ mod tests {
             (form(&[("accuracy_weight", "2")]), "accuracy_weight"),
             (form(&[("dataset", "")]), "dataset"),
             (form(&[("threshold_objective", "f3")]), "objective"),
+            (form(&[("accuracy_metric", "map")]), "accuracy metric"),
         ] {
             let e = RunRequest::from_form(&bad, &defaults).unwrap_err();
             assert!(format!("{e:#}").contains(needle), "{e:#}");

@@ -12,7 +12,15 @@
 //! - `precision:<p>`: the highest recall with precision >= p (e.g. `precision:0.9` to limit false
 //!   alerts). When no threshold reaches p, the most precise threshold is picked, with a note;
 //! - `recall:<r>`: the highest precision with recall >= r (e.g. `recall:0.9`: miss at most 10%).
-//!   When no threshold reaches r, the threshold with the highest recall is picked, with a note.
+//!   When no threshold reaches r, the threshold with the highest recall is picked, with a note;
+//! - `youden`: the highest frame-level Youden's J, TPR - FPR (alert rate on frames with an
+//!   object minus false-alert rate on frames without), over the frame samples of
+//!   [`super::roc`] pooled over the scored classes (one threshold for every class);
+//! - `fpr:<x>`: the highest frame TPR with frame FPR <= x (e.g. `fpr:0.05`: at most 5% of the
+//!   frames without an object alert).
+//!
+//! The frame objectives use the same samples as the frame ROC AUC; frame TPR and FPR only
+//! change at the frames' maximum confidences, which are breakpoints of the exact sweep too.
 //!
 //! The pick is exact, not limited to the 0.05 grid ([`exact_pick`]): precision, recall and F
 //! only change at the predictions' confidence values, so one pass over the predictions sorted
@@ -31,6 +39,7 @@
 
 use super::metrics::{Breakpoints, SWEEP_THRESHOLDS, ThresholdPoint};
 use super::report::DeviceResult;
+use super::roc::{FrameRates, FrameRoc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -55,11 +64,25 @@ pub enum Objective {
     Precision(f64),
     /// Highest precision with recall at or above the target (0..1].
     Recall(f64),
+    /// Highest frame-level Youden's J (TPR - FPR over frames, classes pooled).
+    Youden,
+    /// Highest frame TPR with frame FPR at or below the target [0..1).
+    Fpr(f64),
 }
 
 impl Objective {
     /// The objectives every report shows for comparison.
-    pub const STANDARD: [Objective; 3] = [Objective::F1, Objective::F2, Objective::Precision(0.9)];
+    pub const STANDARD: [Objective; 4] = [
+        Objective::F1,
+        Objective::F2,
+        Objective::Precision(0.9),
+        Objective::Youden,
+    ];
+
+    /// Scored on frame-level rates ([`super::roc`]) rather than box counts.
+    pub fn is_frame(&self) -> bool {
+        matches!(self, Objective::Youden | Objective::Fpr(_))
+    }
 
     /// The value maximized at `p`: F1, F2, or recall when the precision target is met.
     pub fn score(&self, p: &ThresholdPoint) -> Option<f64> {
@@ -70,6 +93,25 @@ impl Objective {
                 p.precision.filter(|&v| v >= target - TIE).and(p.recall)
             }
             Objective::Recall(target) => p.recall.filter(|&v| v >= target - TIE).and(p.precision),
+            Objective::Youden => p.frame.as_ref().and_then(FrameRates::youden),
+            Objective::Fpr(target) => {
+                let f = p.frame.as_ref()?;
+                f.fpr.filter(|&v| v <= target + TIE).and(f.tpr)
+            }
+        }
+    }
+
+    /// Whether `p` meets the objective's target (precision / frame FPR), None without one.
+    fn target_met(&self, p: &ThresholdPoint) -> Option<bool> {
+        match self {
+            Objective::Precision(t) => Some(p.precision.is_some_and(|v| v >= t - TIE)),
+            Objective::Fpr(t) => Some(
+                p.frame
+                    .as_ref()
+                    .and_then(|f| f.fpr)
+                    .is_some_and(|v| v <= t + TIE),
+            ),
+            _ => None,
         }
     }
 
@@ -80,6 +122,8 @@ impl Objective {
             Objective::F2 => "F2 (favor recall)".into(),
             Objective::Precision(p) => format!("recall at precision \u{2265} {}%", pct0(*p)),
             Objective::Recall(r) => format!("precision at recall \u{2265} {}%", pct0(*r)),
+            Objective::Youden => "Youden's J (frame TPR \u{2212} FPR)".into(),
+            Objective::Fpr(x) => format!("frame TPR at frame FPR \u{2264} {}%", pct0(*x)),
         }
     }
 }
@@ -96,6 +140,8 @@ impl fmt::Display for Objective {
             Objective::F2 => f.write_str("f2"),
             Objective::Precision(p) => write!(f, "precision:{p}"),
             Objective::Recall(r) => write!(f, "recall:{r}"),
+            Objective::Youden => f.write_str("youden"),
+            Objective::Fpr(x) => write!(f, "fpr:{x}"),
         }
     }
 }
@@ -108,7 +154,19 @@ impl FromStr for Objective {
         match t.as_str() {
             "f1" | "" => Ok(Objective::F1),
             "f2" => Ok(Objective::F2),
+            "youden" | "youden_j" | "j" => Ok(Objective::Youden),
             _ => {
+                if let Some(x) = t.strip_prefix("fpr:").or_else(|| t.strip_prefix("fpr=")) {
+                    let v: f64 = x.trim().parse().map_err(|_| {
+                        format!("threshold objective '{s}': '{x}' is not a number (e.g. fpr:0.05)")
+                    })?;
+                    if !(0.0..1.0).contains(&v) {
+                        return Err(format!(
+                            "threshold objective '{s}': the fpr target must be in [0, 1)"
+                        ));
+                    }
+                    return Ok(Objective::Fpr(v));
+                }
                 let (kind, p) = if let Some(p) = t
                     .strip_prefix("precision:")
                     .or_else(|| t.strip_prefix("precision="))
@@ -121,7 +179,8 @@ impl FromStr for Objective {
                     ("recall", p)
                 } else {
                     return Err(format!(
-                        "threshold objective '{s}': use f1, f2, precision:<0..1> or recall:<0..1>"
+                        "threshold objective '{s}': use f1, f2, precision:<0..1>, recall:<0..1>, \
+                         youden or fpr:<0..1>"
                     ));
                 };
                 let v: f64 = p.trim().parse().map_err(|_| {
@@ -248,10 +307,13 @@ pub fn segments(bp: &Breakpoints, objective: Objective) -> Vec<Segment> {
     let mut cs: Vec<f32> = bp
         .steps
         .iter()
-        .rev()
         .map(|s| s.0)
+        .chain(bp.frames.iter().flat_map(|f| f.steps.iter().map(|s| s.0)))
         .filter(|c| (MIN_THRESHOLD..=1.0).contains(c))
         .collect();
+    // Ascending and distinct (frame scores are prediction confidences, mostly already here).
+    cs.sort_by(f32::total_cmp);
+    cs.dedup();
     // Above the most confident prediction nothing is kept.
     if cs.last().is_none_or(|&c| c < 1.0) {
         cs.push(1.0);
@@ -274,7 +336,16 @@ pub fn segments(bp: &Breakpoints, objective: Objective) -> Vec<Segment> {
 /// The exact best threshold of `bp` for `objective` (see the module docs): None without
 /// ground truth (or, for a precision target, without any detection).
 pub fn exact_pick(bp: &Breakpoints, objective: Objective) -> Option<Pick> {
-    if bp.npos == 0 {
+    if objective.is_frame() {
+        // Frame objectives need positive and negative frames.
+        if !bp
+            .frames
+            .as_ref()
+            .is_some_and(|f| f.positives > 0 && f.negatives > 0)
+        {
+            return None;
+        }
+    } else if bp.npos == 0 {
         return None;
     }
     let segs = segments(bp, objective);
@@ -293,21 +364,24 @@ pub fn exact_pick(bp: &Breakpoints, objective: Objective) -> Option<Pick> {
         let (a, b) = plateau(&segs, PLATEAU).unwrap_or((best, best));
         let mut t = round_in(&segs, a, b);
         let mut note = None;
-        if let Objective::Precision(target) = objective {
-            // Rounding down may let in enough false positives to miss the target: take the
-            // next 0.01 step up that meets it.
-            let meets = |t: f32| bp.point_at(t).precision.is_some_and(|p| p >= target - TIE);
-            if !meets(t) {
-                let start = (t as f64 * 100.0).round() as u32 + 1;
-                match (start..=100).map(|k| k as f32 / 100.0).find(|&u| meets(u)) {
-                    Some(up) => t = up,
-                    None => {
-                        note = Some(format!(
-                            "precision {}% is met only between 0.01 steps (exact optimum {:.3})",
-                            pct0(target),
-                            segs[best].hi
-                        ))
-                    }
+        if objective.target_met(&bp.point_at(t)) == Some(false) {
+            // Rounding down may let in enough false positives (false alerts) to miss the
+            // target: take the next 0.01 step up that meets it.
+            let meets = |t: f32| objective.target_met(&bp.point_at(t)) == Some(true);
+            let start = (t as f64 * 100.0).round() as u32 + 1;
+            match (start..=100).map(|k| k as f32 / 100.0).find(|&u| meets(u)) {
+                Some(up) => t = up,
+                None => {
+                    let (name, target) = match objective {
+                        Objective::Fpr(x) => ("frame FPR", x),
+                        Objective::Precision(p) => ("precision", p),
+                        _ => ("target", 0.0),
+                    };
+                    note = Some(format!(
+                        "{name} {}% is met only between 0.01 steps (exact optimum {:.3})",
+                        pct0(target),
+                        segs[best].hi
+                    ))
                 }
             }
         }
@@ -412,6 +486,12 @@ fn fallback_keys(objective: Objective) -> Option<(f64, Metric, Metric)> {
     match objective {
         Objective::Precision(t) => Some((t, |p| p.precision, |p| p.recall)),
         Objective::Recall(t) => Some((t, |p| p.recall, |p| p.precision)),
+        // Maximize 1 - FPR (the lowest false-alert rate), then TPR.
+        Objective::Fpr(t) => Some((
+            t,
+            |p| p.frame.as_ref()?.fpr.map(|v| 1.0 - v),
+            |p| p.frame.as_ref()?.tpr,
+        )),
         _ => None,
     }
 }
@@ -423,6 +503,14 @@ fn unreached_note(objective: Objective, p: &ThresholdPoint) -> String {
     };
     let (name, most) = match objective {
         Objective::Recall(_) => ("recall", "the highest recall"),
+        Objective::Fpr(_) => {
+            return format!(
+                "frame FPR {}% is not reached at any threshold; the lowest is {}% at {:.2}",
+                pct0(target),
+                pct0(1.0 - metric(p).unwrap_or(0.0)),
+                p.threshold
+            );
+        }
         _ => ("precision", "the most precise"),
     };
     format!(
@@ -454,6 +542,9 @@ pub struct Curve {
     /// The exact curve, thinned to at most [`EXACT_POINTS`] points (overall curve only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exact: Vec<ThresholdPoint>,
+    /// Frame ROC AUC of the group (macro over classes; the class's own for a class curve).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roc_auc: Option<f64>,
 }
 
 /// Points of the thinned exact curve.
@@ -496,6 +587,9 @@ pub struct ThresholdSweep {
     pub by_tag: Vec<Curve>,
     #[serde(default)]
     pub per_class: Vec<Curve>,
+    /// Frame-level ROC of the overall images, with its thinned curve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roc: Option<FrameRoc>,
 }
 
 /// Tags that get their own curve (when present).
@@ -513,6 +607,9 @@ pub struct GroupPick {
     pub relative: bool,
     pub configured: ThresholdPoint,
     pub best: Option<Pick>,
+    /// Frame ROC AUC of the group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roc_auc: Option<f64>,
 }
 
 impl GroupPick {
@@ -524,6 +621,7 @@ impl GroupPick {
             relative: c.relative,
             configured: c.configured,
             best: c.best(objective),
+            roc_auc: c.roc_auc,
         }
     }
 }
@@ -565,6 +663,9 @@ pub struct ThresholdAdvice {
     /// Best threshold per device that ran.
     #[serde(default)]
     pub by_device: Vec<DevicePick>,
+    /// Frame-level ROC on [`ThresholdAdvice::device`] (AUCs and the curve).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roc: Option<FrameRoc>,
 }
 
 fn pct(v: Option<f64>) -> String {
@@ -581,6 +682,21 @@ pub fn prf(p: &ThresholdPoint) -> String {
     )
 }
 
+/// "frame TPR 91.0% FPR 6.2%" (empty without frame rates).
+pub fn frame_rates(p: &ThresholdPoint) -> String {
+    p.frame.as_ref().map_or(String::new(), |f| {
+        format!("frame TPR {} FPR {}", pct(f.tpr), pct(f.fpr))
+    })
+}
+
+/// [`prf`] followed by [`frame_rates`] when there are frame rates.
+fn prf_frame(p: &ThresholdPoint) -> String {
+    match frame_rates(p) {
+        f if f.is_empty() => prf(p),
+        f => format!("{}, {f}", prf(p)),
+    }
+}
+
 impl ThresholdAdvice {
     /// The objective, parsed.
     pub fn objective(&self) -> Objective {
@@ -594,12 +710,12 @@ impl ThresholdAdvice {
             "P/R at the best confidence threshold {:.2} ({}): {}",
             b.threshold,
             self.objective().describe(),
-            prf(&b.point)
+            prf_frame(&b.point)
         );
         if (b.threshold - self.configured.threshold).abs() > 1e-6 {
             s.push_str(&format!(
                 " vs {} at the configured {:.2}",
-                prf(&self.configured),
+                prf_frame(&self.configured),
                 self.configured.threshold
             ));
         } else {
@@ -682,6 +798,7 @@ pub fn advise(
                 })
             })
             .collect(),
+        roc: sweep.roc.clone(),
     })
 }
 
@@ -744,6 +861,7 @@ pub(crate) fn test_advice(t: f32) -> ThresholdAdvice {
         by_tag: vec![],
         per_class: vec![],
         by_device: vec![],
+        roc: None,
     }
 }
 
@@ -806,6 +924,201 @@ mod tests {
             Objective::Precision(0.9).describe(),
             "recall at precision \u{2265} 90%"
         );
+        // Frame objectives.
+        assert_eq!("youden".parse::<Objective>().unwrap(), Objective::Youden);
+        assert_eq!(" Youden ".parse::<Objective>().unwrap(), Objective::Youden);
+        assert_eq!(
+            "fpr:0.05".parse::<Objective>().unwrap(),
+            Objective::Fpr(0.05)
+        );
+        assert_eq!("fpr:0".parse::<Objective>().unwrap(), Objective::Fpr(0.0));
+        for bad in ["fpr:", "fpr:x", "fpr:1", "fpr:-0.1"] {
+            assert!(bad.parse::<Objective>().is_err(), "{bad}");
+        }
+        assert_eq!(Objective::Youden.to_string(), "youden");
+        assert_eq!(Objective::Fpr(0.05).to_string(), "fpr:0.05");
+        assert_eq!(
+            serde_json::to_string(&Objective::Fpr(0.1)).unwrap(),
+            "\"fpr:0.1\""
+        );
+        assert!(Objective::Youden.is_frame() && Objective::Fpr(0.1).is_frame());
+        assert!(!Objective::F1.is_frame());
+        assert!(Objective::STANDARD.contains(&Objective::Youden));
+    }
+
+    /// Images with person/car frames (scores tend higher on positive frames) and matching box
+    /// predictions; `coarse` rounds scores so frames tie.
+    fn random_frames(seed: u64, n: usize, coarse: bool) -> Vec<super::super::metrics::SweepImage> {
+        use super::super::metrics::{SweepImage, SweepPred};
+        use super::super::roc::FrameSample;
+        let mut seed = seed;
+        let mut rnd = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as f32 / (1u64 << 31) as f32
+        };
+        (0..n)
+            .map(|_| {
+                let mut img = SweepImage::default();
+                for class in ["person", "car"] {
+                    let positive = rnd() < 0.4;
+                    let mut score = if rnd() < 0.25 {
+                        0.0
+                    } else {
+                        (0.05 + rnd() * 0.6 + if positive { 0.3 } else { 0.0 }).min(1.0)
+                    };
+                    if coarse && score > 0.0 {
+                        score = ((score * 20.0).round() / 20.0).max(0.05);
+                    }
+                    if positive {
+                        img.gt.push((class.into(), false));
+                    }
+                    if score > 0.0 {
+                        img.preds.push(SweepPred {
+                            confidence: score,
+                            class: class.into(),
+                            tp: positive,
+                            small: false,
+                        });
+                    }
+                    img.frames.push(FrameSample {
+                        class: class.into(),
+                        positive,
+                        score,
+                    });
+                }
+                img
+            })
+            .collect()
+    }
+
+    /// Youden and fpr:x picks equal brute force over every frame score; the reported (rounded)
+    /// threshold keeps the FPR target.
+    #[test]
+    fn frame_objectives_match_brute_force() {
+        use super::super::metrics::SweepScope;
+        for seed in 1..40u64 {
+            let imgs = random_frames(seed, 20 + seed as usize * 2, seed % 2 == 0);
+            let refs: Vec<&super::super::metrics::SweepImage> = imgs.iter().collect();
+            let bp = Breakpoints::new(&refs, SweepScope::All);
+            let fs = bp.frames.as_ref().unwrap();
+            // Every alert decision a threshold >= 0.05 can make: at each frame score, and above
+            // all of them.
+            let mut cands: Vec<f32> = fs
+                .steps
+                .iter()
+                .map(|s| s.0)
+                .filter(|&t| t >= MIN_THRESHOLD)
+                .collect();
+            cands.push(1.0);
+            for o in [
+                Objective::Youden,
+                Objective::Fpr(0.0),
+                Objective::Fpr(0.05),
+                Objective::Fpr(0.2),
+            ] {
+                let brute = cands
+                    .iter()
+                    .filter_map(|&t| {
+                        let r = fs.rates_at(t);
+                        match o {
+                            Objective::Youden => r.youden(),
+                            Objective::Fpr(x) => r.fpr.filter(|&v| v <= x + 1e-12).and(r.tpr),
+                            _ => unreachable!(),
+                        }
+                    })
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let p = exact_pick(&bp, o).unwrap();
+                assert!(p.met, "seed {seed} {o}");
+                assert!(
+                    (p.exact_score.unwrap() - brute).abs() < 1e-12,
+                    "seed {seed} {o}: {:?} vs {brute}",
+                    p.exact_score
+                );
+                assert_eq!(p.point, bp.point_at(p.threshold));
+                assert!(p.threshold >= MIN_THRESHOLD);
+                let f = p.point.frame.unwrap();
+                match o {
+                    Objective::Fpr(x) => {
+                        assert!(f.fpr.unwrap() <= x + 1e-12, "seed {seed} {o}: {f:?}")
+                    }
+                    _ => {
+                        // Every threshold of the plateau scores within PLATEAU of the optimum
+                        // (the reported value is its midpoint rounded to 0.01, as for F1).
+                        let [lo, hi] = p.plateau.unwrap();
+                        for k in 0..20 {
+                            let t = lo + (hi - lo) * (k as f32 + 0.5) / 20.0;
+                            let v = o.score(&bp.point_at(t)).unwrap();
+                            assert!(v >= brute - PLATEAU - 1e-9, "seed {seed} t {t}");
+                        }
+                    }
+                }
+                // Ties go to the higher threshold: no higher candidate scores as well.
+                let et = p.exact_threshold.unwrap();
+                for &t in cands.iter().filter(|&&t| t > et) {
+                    let v = o.score(&bp.point_at(t));
+                    assert!(
+                        v.is_none_or(|v| v < p.exact_score.unwrap() - 1e-12),
+                        "seed {seed} {o}: {t} ties {et}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frame_objectives_hand_computed_and_undefined() {
+        use super::super::metrics::{SweepImage, SweepScope};
+        use super::super::roc::FrameSample;
+        // Positive frames .9 .6 .3; negative frames .7 .2 0.
+        let mut imgs = Vec::new();
+        for (score, positive) in [
+            (0.9, true),
+            (0.6, true),
+            (0.3, true),
+            (0.7, false),
+            (0.2, false),
+            (0.0, false),
+        ] {
+            let mut i = SweepImage::default();
+            if positive {
+                i.gt.push(("person".into(), false));
+            }
+            i.frames.push(FrameSample {
+                class: "person".into(),
+                positive,
+                score,
+            });
+            imgs.push(i);
+        }
+        let refs: Vec<&SweepImage> = imgs.iter().collect();
+        let bp = Breakpoints::new(&refs, SweepScope::All);
+        // J = TPR - FPR by alerting set: {.9} 1/3, {+.7} 0, {+.6} 1/3, {+.3} 2/3, {+.2} 1/3.
+        // Best: thresholds (0.2, 0.3].
+        let p = exact_pick(&bp, Objective::Youden).unwrap();
+        assert_eq!(p.exact_threshold, Some(0.3));
+        assert!((p.exact_score.unwrap() - 2.0 / 3.0).abs() < 1e-12);
+        assert_eq!(p.plateau, Some([0.2, 0.3]));
+        assert_eq!(p.threshold, 0.25);
+        let f = p.point.frame.unwrap();
+        assert_eq!((f.tp, f.fp), (3, 1));
+        // FPR <= 0.4 (1 of 3 negatives may alert): highest TPR keeps down to .3 (FPR 1/3).
+        let q = exact_pick(&bp, Objective::Fpr(0.4)).unwrap();
+        assert_eq!(q.exact_threshold, Some(0.3));
+        // FPR 0: only the .9 frame may alert -> (0.7, 0.9]; midpoint 0.80.
+        let z = exact_pick(&bp, Objective::Fpr(0.0)).unwrap();
+        assert_eq!((z.exact_threshold, z.threshold), (Some(0.9), 0.8));
+        assert_eq!(z.point.frame.unwrap().fp, 0);
+        // No negative frames: frame objectives are undefined; box objectives still work.
+        let only_pos: Vec<&SweepImage> = refs.iter().take(3).copied().collect();
+        let bp = Breakpoints::new(&only_pos, SweepScope::All);
+        assert!(exact_pick(&bp, Objective::Youden).is_none());
+        assert!(exact_pick(&bp, Objective::Fpr(0.1)).is_none());
+        // No frame samples at all (small-object scope).
+        let bp = Breakpoints::new(&refs, SweepScope::Small);
+        assert!(bp.frames.is_none());
+        assert!(exact_pick(&bp, Objective::Youden).is_none());
     }
 
     #[test]

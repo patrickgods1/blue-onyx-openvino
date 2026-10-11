@@ -2,7 +2,7 @@
 //! model, and the persisted `benchmark.json` (the latest run of every model, next to the config
 //! file) that the CLI and the web UI both read and write.
 
-use super::grade::{Grade, Grades};
+use super::grade::{AccuracyMetric, Grade, Grades, Weights};
 use super::images::{GroundTruth, ImageSet, SetKind};
 use super::metrics::GtBox;
 use super::threshold::{Objective, ThresholdAdvice};
@@ -185,8 +185,9 @@ impl DeviceResult {
     }
 }
 
-/// Accuracy scores (0..1) this close to a model's best count as equally accurate when picking
-/// its device.
+/// AP50 accuracy scores (0..1) this close to a model's best count as equally accurate when
+/// picking its device. Each metric has its own tie on its own scale
+/// ([`AccuracyMetric::tie`]); this is the AP50 one.
 pub const ACCURACY_TIE: f64 = 0.015;
 
 /// The recommended device of a model and why.
@@ -197,10 +198,11 @@ pub struct Recommendation {
 }
 
 /// The best device among those that ran and whose detections agree with the CPU reference:
-/// the fastest full-request p50 among those as accurate as the best (within
-/// [`ACCURACY_TIE`]). When the `configured` device is eligible, as accurate (accuracy score within 0.01) and
-/// within `margin` (fraction, e.g. [`NOISE_MARGIN`]) of the best p50, it is kept: the difference
-/// is noise.
+/// the fastest full-request p50 among those as accurate as the best (within the grading
+/// metric's tie, [`AccuracyMetric::tie`]: [`ACCURACY_TIE`] for AP50, 0.01 for ROC AUC). When the
+/// `configured` device is eligible, as accurate ([`AccuracyMetric::keep_tie`]) and within
+/// `margin` (fraction, e.g. [`NOISE_MARGIN`]) of the best p50, it is kept: the difference is
+/// noise.
 pub fn recommend(
     devices: &[DeviceResult],
     configured: Option<&str>,
@@ -221,12 +223,17 @@ pub fn recommend(
     // (OpenVINO's f16 CPU inference on ARM moves AP by ~1 point), so accuracy within
     // ACCURACY_TIE of the best counts as equal and the fastest of those wins. Letter grades are
     // too coarse here: 14 ms and 35 ms are both speed A.
+    // Every run of one sweep is graded on one metric; the tie is on its scale.
+    let metric = eligible
+        .iter()
+        .find(|(_, g)| g.accuracy_score.is_some())
+        .map_or(AccuracyMetric::Ap50, |(_, g)| g.metric);
     let top_acc = eligible
         .iter()
         .filter_map(|(_, g)| g.accuracy_score)
         .max_by(f64::total_cmp);
     let as_accurate = |g: &Grades| match (top_acc, g.accuracy_score) {
-        (Some(top), Some(a)) => a >= top - ACCURACY_TIE,
+        (Some(top), Some(a)) => a >= top - metric.tie(),
         (Some(_), None) => false,
         (None, _) => true,
     };
@@ -264,7 +271,12 @@ pub fn recommend(
         )
     };
     let grade_text = |g: &Grades| match g.accuracy {
-        Some(a) => format!("overall {} (accuracy {a}, speed {})", g.overall, g.speed),
+        Some(a) => format!(
+            "overall {} (accuracy {a} by {}, speed {})",
+            g.overall,
+            g.metric.label(),
+            g.speed
+        ),
         None => format!("speed {}", g.speed),
     };
     if let Some(cur) = configured
@@ -272,7 +284,7 @@ pub fn recommend(
         && let Some((d, g)) = eligible.iter().find(|(d, _)| d.device == cur)
         && g.p50_ms <= bg.p50_ms * (1.0 + margin)
         && match (g.accuracy_score, bg.accuracy_score) {
-            (Some(a), Some(b)) => a >= b - 0.01,
+            (Some(a), Some(b)) => a >= b - metric.keep_tie(),
             (None, None) => true,
             _ => false,
         }
@@ -620,6 +632,12 @@ pub struct RankRow {
     pub speed: Grade,
     pub p50_ms: f64,
     pub ap50: Option<f64>,
+    /// Macro frame ROC AUC.
+    pub roc_auc: Option<f64>,
+    /// What the accuracy grade (and the ranking) was computed from.
+    pub metric: AccuracyMetric,
+    /// The accuracy score of `metric`.
+    pub accuracy_score: Option<f64>,
     pub relative: bool,
     pub datasets: Vec<String>,
 }
@@ -685,13 +703,14 @@ impl BenchmarkResults {
             .iter()
             .filter_map(|m| {
                 let g = *m.recommended_grades()?;
-                let ap50 = m
+                let acc = m
                     .devices
                     .iter()
                     .find(|d| Some(&d.device) == m.recommended.as_ref())
                     .and_then(|d| d.run.as_ref())
-                    .and_then(|r| r.accuracy.as_ref())
-                    .and_then(|a| a.overall.ap50);
+                    .and_then(|r| r.accuracy.as_ref());
+                let ap50 = acc.and_then(|a| a.overall.ap50);
+                let roc_auc = acc.and_then(|a| a.roc_auc());
                 Some((
                     RankRow {
                         rank: 0,
@@ -703,6 +722,9 @@ impl BenchmarkResults {
                         speed: g.speed,
                         p50_ms: g.p50_ms,
                         ap50,
+                        roc_auc,
+                        metric: g.metric,
+                        accuracy_score: g.accuracy_score,
                         relative: g.relative,
                         datasets: m.datasets.clone(),
                     },
@@ -718,6 +740,37 @@ impl BenchmarkResults {
                 r
             })
             .collect()
+    }
+
+    /// The metric the grades were computed from (the first graded run's; AP50 without any).
+    pub fn accuracy_metric(&self) -> AccuracyMetric {
+        self.models
+            .iter()
+            .flat_map(|m| m.devices.iter())
+            .find_map(|d| d.run.as_ref()?.grades.filter(|g| g.accuracy.is_some()))
+            .map_or(AccuracyMetric::Ap50, |g| g.metric)
+    }
+
+    /// Re-grade every run on `metric` with `weights` from its stored accuracy and speed, and
+    /// recompute each model's recommendation: models kept from earlier runs (merged results)
+    /// are then graded like the new ones, so the ranking compares like with like.
+    pub fn regrade(&mut self, metric: AccuracyMetric, weights: Weights) {
+        for m in &mut self.models {
+            let mut changed = false;
+            for d in &mut m.devices {
+                let Some(run) = d.run.as_mut() else { continue };
+                let Some(old) = run.grades else { continue };
+                let score = run.accuracy.as_ref().and_then(|a| a.score(metric));
+                let g = Grades::with_metric(metric, score, old.p50_ms, weights, old.relative);
+                if g != old {
+                    run.grades = Some(g);
+                    changed = true;
+                }
+            }
+            if changed {
+                m.finish();
+            }
+        }
     }
 
     /// A copy without per-image details (for polling).
@@ -1255,6 +1308,132 @@ mod tests {
         assert_eq!(rank[1].device, "openvino:cpu");
     }
 
+    fn graded_auc(spec: &str, p50: f64, auc: Option<f64>) -> DeviceResult {
+        let mut d = dev(spec, p50, scene());
+        d.run.as_mut().unwrap().grades = Some(Grades::with_metric(
+            AccuracyMetric::RocAuc,
+            auc,
+            p50,
+            Default::default(),
+            false,
+        ));
+        d
+    }
+
+    #[test]
+    fn roc_auc_metric_drives_tie_ranking_and_text() {
+        // AUC within 0.01 of the best counts as equal (the AUC scale): the faster device wins.
+        let m = model(
+            vec![
+                graded_auc("ort:coreml", 14.0, Some(0.952)),
+                graded_auc("openvino:cpu", 35.0, Some(0.960)),
+            ],
+            None,
+        );
+        assert_eq!(m.recommended.as_deref(), Some("ort:coreml"));
+        assert!(
+            m.recommendation.contains("accuracy A by ROC AUC"),
+            "{}",
+            m.recommendation
+        );
+        // 0.015 apart is a real difference on the AUC scale (it would tie for AP50).
+        let m = model(
+            vec![
+                graded_auc("ort:coreml", 14.0, Some(0.945)),
+                graded_auc("openvino:cpu", 35.0, Some(0.960)),
+            ],
+            None,
+        );
+        assert_eq!(m.recommended.as_deref(), Some("openvino:cpu"));
+        let ap = model(
+            vec![
+                graded("ort:coreml", 14.0, Some(0.745)),
+                graded("openvino:cpu", 35.0, Some(0.760)),
+            ],
+            None,
+        );
+        assert_eq!(ap.recommended.as_deref(), Some("ort:coreml"));
+        // Ranking rows say which metric graded them.
+        let r = BenchmarkResults::new(Default::default(), Default::default(), vec![m.clone()]);
+        let rows = r.ranking();
+        assert_eq!(rows[0].metric, AccuracyMetric::RocAuc);
+        assert_eq!(rows[0].accuracy_score, Some(0.960));
+        assert_eq!(r.accuracy_metric(), AccuracyMetric::RocAuc);
+    }
+
+    #[test]
+    fn regrade_switches_metric_from_stored_accuracy() {
+        use super::super::AccuracyReport;
+        use super::super::metrics::{ClassMetrics, Summary};
+        use super::super::roc::FrameRoc;
+        // Model a: AP50 0.80, AUC 0.85; model b: AP50 0.55, AUC 0.97. AP50 ranks a first,
+        // ROC AUC ranks b first.
+        let with_acc = |name: &str, ap: f64, auc: f64| {
+            let mut d = graded("openvino:cpu", 40.0, Some(ap));
+            d.run.as_mut().unwrap().accuracy = Some(AccuracyReport {
+                ground_truth: "ground truth".into(),
+                relative: false,
+                classes: vec!["person".into()],
+                threshold: 0.5,
+                overall: Summary {
+                    ap50: Some(ap),
+                    per_class: vec![ClassMetrics {
+                        class: "person".into(),
+                        gt: 3,
+                        ap50: Some(ap),
+                        ap50_95: None,
+                        precision: None,
+                        recall: None,
+                    }],
+                    ..Default::default()
+                },
+                by_dataset: vec![],
+                by_tag: vec![],
+                all_classes: None,
+                sweep: None,
+                frame_roc: Some(FrameRoc {
+                    auc: Some(auc),
+                    ..Default::default()
+                }),
+            });
+            let mut m = model(vec![d], None);
+            m.model = name.into();
+            m
+        };
+        let mut r = BenchmarkResults::new(
+            Default::default(),
+            Default::default(),
+            vec![with_acc("a", 0.80, 0.85), with_acc("b", 0.55, 0.97)],
+        );
+        let names = |r: &BenchmarkResults| -> Vec<String> {
+            r.ranking().into_iter().map(|x| x.model).collect()
+        };
+        assert_eq!(names(&r), ["a", "b"]);
+        assert_eq!(r.accuracy_metric(), AccuracyMetric::Ap50);
+        r.regrade(AccuracyMetric::RocAuc, Default::default());
+        assert_eq!(r.accuracy_metric(), AccuracyMetric::RocAuc);
+        assert_eq!(names(&r), ["b", "a"]);
+        let g = r.models[1].recommended_grades().unwrap();
+        assert_eq!((g.accuracy, g.accuracy_score), (Some(Grade::A), Some(0.97)));
+        assert!(r.models[1].recommendation.contains("by ROC AUC"));
+        // And back.
+        r.regrade(AccuracyMetric::Ap50, Default::default());
+        assert_eq!(names(&r), ["a", "b"]);
+        // A run without frame ROC (older results) is unscored under ROC AUC.
+        let mut old = with_acc("old", 0.7, 0.9);
+        old.devices[0]
+            .run
+            .as_mut()
+            .unwrap()
+            .accuracy
+            .as_mut()
+            .unwrap()
+            .frame_roc = None;
+        let mut r = BenchmarkResults::new(Default::default(), Default::default(), vec![old]);
+        r.regrade(AccuracyMetric::RocAuc, Default::default());
+        assert_eq!(r.models[0].recommended_grades().unwrap().accuracy, None);
+    }
+
     #[test]
     fn agreement_over_many_images() {
         let img = |dets: Vec<Detection>| super::super::ImageRun {
@@ -1342,6 +1521,7 @@ mod tests {
                     small: false,
                 })
                 .collect(),
+            frames: vec![],
         };
         let bp = Breakpoints::new(&[&img], SweepScope::All);
         let curve = |key: &str| Curve {
@@ -1359,6 +1539,7 @@ mod tests {
                 .filter_map(|o| exact_pick(&bp, *o))
                 .collect(),
             exact: bp.decimated(50),
+            roc_auc: None,
         };
         let run = d.run.as_mut().unwrap();
         run.accuracy = Some(super::super::AccuracyReport {
@@ -1376,7 +1557,9 @@ mod tests {
                 by_dataset: vec![curve("exdark-night")],
                 by_tag: vec![],
                 per_class: vec![curve("person")],
+                roc: None,
             }),
+            frame_roc: None,
         });
         d
     }

@@ -92,8 +92,11 @@ struct BenchmarkTemplate {
     results_file: String,
     speed_thresholds: String,
     accuracy_thresholds: String,
+    auc_thresholds: String,
     /// (value, label, selected) of the threshold objective select.
     objectives: Vec<(String, String, bool)>,
+    /// (value, label, selected) of the accuracy metric select.
+    accuracy_metrics: Vec<(String, String, bool)>,
     blue_iris_note: &'static str,
 }
 
@@ -117,6 +120,18 @@ fn objective_options(
             Objective::Precision(0.95),
             "Precision \u{2265} 95%, highest recall",
         ),
+        (
+            Objective::Youden,
+            "Youden's J: frame alert rate minus false-alert rate",
+        ),
+        (
+            Objective::Fpr(0.05),
+            "Frame false alerts \u{2264} 5%, highest alert rate",
+        ),
+        (
+            Objective::Fpr(0.1),
+            "Frame false alerts \u{2264} 10%, highest alert rate",
+        ),
     ]
     .into_iter()
     .map(|(o, l)| (o.to_string(), l.to_string(), o == current))
@@ -125,6 +140,23 @@ fn objective_options(
         list.push((current.to_string(), current.describe(), true));
     }
     list
+}
+
+/// Accuracy metric choices.
+fn metric_options(current: crate::benchmark::grade::AccuracyMetric) -> Vec<(String, String, bool)> {
+    use crate::benchmark::grade::AccuracyMetric;
+    AccuracyMetric::ALL
+        .iter()
+        .map(|m| {
+            let label = match m {
+                AccuracyMetric::Ap50 => "AP50: box accuracy (AP@0.5, small-object recall)",
+                AccuracyMetric::RocAuc => {
+                    "ROC AUC: frame-level alerting (does a frame with an object score higher?)"
+                }
+            };
+            (m.as_str().to_string(), label.to_string(), *m == current)
+        })
+        .collect()
 }
 
 fn model_options(c: &Config) -> Vec<ModelOption> {
@@ -280,7 +312,9 @@ pub(super) async fn page(State(state): State<Arc<AppState>>) -> Response {
     let snap = devices_snapshot(&state);
     let cfg = state.config_read().clone();
     let b = &cfg.benchmark;
-    use crate::benchmark::grade::{ACCURACY_THRESHOLDS as A, SPEED_THRESHOLDS_MS as S};
+    use crate::benchmark::grade::{
+        ACCURACY_THRESHOLDS as A, ROC_AUC_THRESHOLDS as U, SPEED_THRESHOLDS_MS as S,
+    };
     render(&BenchmarkTemplate {
         nav: "benchmark",
         version: crate::VERSION,
@@ -309,7 +343,12 @@ pub(super) async fn page(State(state): State<Arc<AppState>>) -> Response {
             "A \u{2265} {:.2}, B \u{2265} {:.2}, C \u{2265} {:.2}, D \u{2265} {:.2}",
             A[0], A[1], A[2], A[3]
         ),
+        auc_thresholds: format!(
+            "A \u{2265} {:.2}, B \u{2265} {:.2}, C \u{2265} {:.2}, D \u{2265} {:.2}",
+            U[0], U[1], U[2], U[3]
+        ),
         objectives: objective_options(b.threshold_objective),
+        accuracy_metrics: metric_options(b.accuracy_metric),
         blue_iris_note: BLUE_IRIS_THRESHOLD_NOTE,
     })
 }
@@ -330,7 +369,10 @@ fn loaded_devices(state: &AppState) -> HashMap<String, String> {
 /// The config's view for the page: global device, and per model its `device`, the device it
 /// runs on (loaded, else what the config resolves to) and its execution provider.
 fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
-    let cfg = state.config_read().clone();
+    state.config.check_disk();
+    let (revision, cfg) = state.config.snapshot();
+    let pending = crate::config_merge::pending(&state.running, &cfg);
+    let thr = crate::config::round_threshold_f64;
     let loaded = loaded_devices(state);
     let models: Vec<serde_json::Value> = cfg
         .models
@@ -348,22 +390,30 @@ fn config_view(state: &AppState, snap: &DevicesSnapshot) -> serde_json::Value {
                 .then(|| state.registry.by_name(&name))
                 .flatten()
                 .map(|w| w.execution_provider());
+            let reasons = pending.for_model(&name);
+            let running = super::live::running_view(state, &name);
             serde_json::json!({
                 "name": name,
                 "enabled": m.enabled,
-                "confidenceThreshold": m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+                "confidenceThreshold": thr(m.confidence_threshold.unwrap_or(cfg.confidence_threshold)),
                 "ownThreshold": m.confidence_threshold.is_some(),
                 "device": m.device,
                 "effective": effective,
                 "provider": provider,
+                "runningThreshold": running.threshold,
+                "runningDevice": running.device,
+                "restartNeeded": !reasons.is_empty(),
+                "pending": reasons,
             })
         })
         .collect();
     serde_json::json!({
+        "revision": revision,
+        "restartNeeded": pending.restart_needed(),
         "forceCpu": cfg.force_cpu,
         "globalDevice": cfg.device,
         "globalLabel": global_device_label(&cfg, snap),
-        "confidenceThreshold": cfg.confidence_threshold,
+        "confidenceThreshold": thr(cfg.confidence_threshold),
         "models": models,
         "benchmark": cfg.benchmark,
     })
@@ -485,7 +535,7 @@ pub(super) async fn settings(
         Ok(r) => r,
         Err(e) => return json_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
     };
-    match save_config(&state, |c| {
+    match save_config(&state, "benchmark settings", |c| {
         req.to_config(&mut c.benchmark);
         Ok(())
     }) {
@@ -688,7 +738,7 @@ pub(super) async fn apply(
         }
     };
     let mut changes: Vec<DeviceChange> = Vec::new();
-    let saved = save_config(&state, |c| {
+    let saved = save_config(&state, "benchmark apply", |c| {
         changes = apply_model_devices(c, &picks)?;
         Ok(())
     });
@@ -764,14 +814,16 @@ fn search_data(
     }
 }
 
-/// Normalized model name -> its effective confidence threshold in the config.
-fn current_thresholds(cfg: &Config) -> HashMap<String, f32> {
+/// Normalized model name -> its effective confidence threshold in the config (2 decimals).
+fn current_thresholds(cfg: &Config) -> HashMap<String, f64> {
     cfg.models
         .iter()
         .map(|m| {
             (
                 crate::registry::normalize_name(&m.effective_name()),
-                m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+                crate::config::round_threshold_f64(
+                    m.confidence_threshold.unwrap_or(cfg.confidence_threshold),
+                ),
             )
         })
         .collect()
@@ -822,7 +874,11 @@ pub(super) async fn threshold_search(
         Err(r) => return r,
     };
     let current = current_thresholds(&cfg);
-    let lookup = |m: &str| current.get(&crate::registry::normalize_name(m)).copied();
+    let lookup = |m: &str| {
+        current
+            .get(&crate::registry::normalize_name(m))
+            .map(|t| *t as f32)
+    };
     match crate::benchmark::search::search(&results, &preds, &req, &lookup) {
         Ok(out) if out.results.is_empty() => json_error(
             StatusCode::BAD_REQUEST,
@@ -926,7 +982,7 @@ pub(super) async fn apply_threshold(
         picks
     };
     let mut changes: Vec<ThresholdChange> = Vec::new();
-    if let Err(e) = save_config(&state, |c| {
+    if let Err(e) = save_config(&state, "benchmark apply-threshold", |c| {
         changes = apply_model_thresholds(c, &picks)?;
         Ok(())
     }) {
@@ -1077,6 +1133,73 @@ mod tests {
         assert!(html.contains("id=\"apply-all-thr\""));
         assert!(html.contains("/v1/benchmark/apply-threshold"));
         assert!(html.contains("min_confidence"));
+        // Accuracy metric (config default ap50), the frame objectives and the ROC chart code.
+        assert!(html.contains("<select name=\"accuracy_metric\">"), "{html}");
+        assert!(html.contains("<option value=\"ap50\" selected>"), "{html}");
+        assert!(html.contains("<option value=\"roc_auc\">"), "{html}");
+        assert!(html.contains("<option value=\"youden\">"), "{html}");
+        assert!(html.contains("<option value=\"fpr:0.05\">"), "{html}");
+        assert!(html.contains("function rocSvg"));
+    }
+
+    #[tokio::test]
+    async fn settings_save_accuracy_metric_and_objective() {
+        let st = state();
+        let (s, v) = call(
+            &st,
+            post(
+                "/v1/benchmark/settings",
+                "dataset=sample&accuracy_metric=roc_auc&threshold_objective=youden",
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let last = st.config.changes(1).pop().expect("logged");
+        assert_eq!(
+            (last.source.as_str(), last.revision),
+            ("benchmark settings", 2)
+        );
+        assert!(
+            last.summary
+                .contains("Benchmark accuracy metric \u{2192} roc_auc"),
+            "{}",
+            last.summary
+        );
+        let c = crate::config::Config::load(&st.config_path).unwrap();
+        assert_eq!(
+            c.benchmark.accuracy_metric,
+            crate::benchmark::grade::AccuracyMetric::RocAuc
+        );
+        assert_eq!(
+            c.benchmark.threshold_objective,
+            crate::benchmark::threshold::Objective::Youden
+        );
+        // The page now preselects them.
+        let resp = router(st.clone()).oneshot(get("/benchmark")).await.unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            html.contains("<option value=\"roc_auc\" selected>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<option value=\"youden\" selected>"),
+            "{html}"
+        );
+        let (s, _) = call(
+            &st,
+            post(
+                "/v1/benchmark/settings",
+                "dataset=sample&accuracy_metric=map",
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1237,8 +1360,15 @@ mod tests {
         .unwrap();
         assert!(html.contains("name=\"device.ipcam-general\""), "{html}");
         assert!(html.contains("<option value=\"\">Global (auto"), "{html}");
-        assert!(html.contains("benchmark: openvino:cpu (in use)"), "{html}");
-        assert!(html.contains("benchmark: ort:coreml (in use)"), "{html}");
+        // Configured but not loaded on it (the test workers never load): restart to use.
+        assert!(
+            html.contains("benchmark: openvino:cpu (configured; restart to use)"),
+            "{html}"
+        );
+        assert!(
+            html.contains("benchmark: ort:coreml (configured; restart to use)"),
+            "{html}"
+        );
     }
 
     #[tokio::test]
@@ -1428,6 +1558,32 @@ mod tests {
         assert_eq!((r["images"].as_u64(), r["gt"].as_u64()), (Some(1), Some(1)));
         assert_eq!(r["objective"], "recall:0.5");
         assert_eq!(r["classes"], serde_json::json!(["person"]));
+
+        // Frame-level objective from stored data: Youden's J. Frames (real set): a person+ .85,
+        // a car+ .4, b person+ .6, b car- (no car prediction: 0). J = 1 for thresholds up to
+        // 0.4 -> plateau [0.05, 0.4], midpoint 0.22.
+        let (s, v) = call(
+            &st,
+            post("/v1/benchmark/threshold-search", "objective=youden"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let r = &v["results"][0];
+        assert_eq!(r["objective"], "youden");
+        assert_eq!(r["best"]["threshold"].as_f64().unwrap() as f32, 0.22);
+        assert_eq!(r["best"]["exact_threshold"].as_f64().unwrap() as f32, 0.4);
+        assert_eq!(r["best"]["point"]["frame"]["tpr"], 1.0);
+        assert_eq!(r["best"]["point"]["frame"]["fpr"], 0.0);
+        assert_eq!(r["roc"]["auc"], 1.0);
+        assert!(r["roc"]["curve"].as_array().unwrap().len() >= 2);
+        assert!(v["csv"].as_str().unwrap().contains("roc_auc"));
+        let (s, v) = call(
+            &st,
+            post("/v1/benchmark/threshold-search", "objective=fpr%3A0.05"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["results"][0]["objective"], "fpr:0.05");
 
         // Bad input / nothing matching: 400 with a message.
         for body in [

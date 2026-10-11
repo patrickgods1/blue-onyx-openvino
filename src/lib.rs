@@ -4,6 +4,8 @@
 //! Module map (see CLAUDE.md):
 //! - [`api`]       wire structs for the CodeProject.AI compatible JSON API
 //! - [`config`]    JSON config next to the executable, merged with CLI flags
+//! - [`config_store`] the live config with a revision and change log (every writer goes through it)
+//! - [`config_merge`] field-level config view: change summaries, pending restart, 3-way form merge
 //! - [`backend`]   runtimes (OpenVINO today), device specs, load plans, inference backends
 //! - [`model`]     model families (yolo26, yolo5, yolo8, rtdetr): pre/post-processing
 //! - [`registry`]  loads all configured models and owns their worker threads
@@ -21,6 +23,8 @@ pub mod backend;
 pub mod benchmark;
 pub mod cli;
 pub mod config;
+pub mod config_merge;
+pub mod config_store;
 pub mod download;
 pub mod image;
 pub mod logbuf;
