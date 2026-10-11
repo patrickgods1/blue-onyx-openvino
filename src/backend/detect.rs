@@ -522,9 +522,8 @@ pub(crate) mod linux {
         v
     }
 
-    /// GPUs from `drm_root` (`/sys/class/drm`) plus names from `nvidia_root`
-    /// (`/proc/driver/nvidia/gpus`). NVIDIA GPUs the driver lists without a DRM card (nvidia-drm
-    /// not loaded) are appended after the cards.
+    /// [`adapters_with_slots`] without the slots.
+    #[cfg(test)]
     pub fn adapters(drm_root: &Path, nvidia_root: &Path) -> Vec<GpuAdapter> {
         adapters_with_slots(drm_root, nvidia_root)
             .into_iter()
@@ -532,7 +531,10 @@ pub(crate) mod linux {
             .collect()
     }
 
-    /// [`adapters`] with each GPU's PCI slot ("0000:01:00.0"), when known.
+    /// GPUs from `drm_root` (`/sys/class/drm`) plus names from `nvidia_root`
+    /// (`/proc/driver/nvidia/gpus`), each with its PCI slot ("0000:01:00.0") when known. NVIDIA
+    /// GPUs the driver lists without a DRM card (nvidia-drm not loaded) are appended after the
+    /// cards.
     pub fn adapters_with_slots(
         drm_root: &Path,
         nvidia_root: &Path,
