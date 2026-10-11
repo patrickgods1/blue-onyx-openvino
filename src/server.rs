@@ -2374,6 +2374,7 @@ mod tests {
                     vram_mb: 0,
                     index: 0,
                     discrete: false,
+                    cuda: None,
                 },
                 GpuAdapter {
                     vendor: GpuVendor::Nvidia,
@@ -2381,6 +2382,7 @@ mod tests {
                     vram_mb: 12288,
                     index: 1,
                     discrete: true,
+                    cuda: None,
                 },
             ],
         );

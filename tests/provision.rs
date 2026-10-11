@@ -255,6 +255,7 @@ fn downloadable_device_state() {
             vram_mb: 0,
             index: 0,
             discrete: false,
+            cuda: None,
         }],
     );
     let cfg = Config::default();
@@ -314,6 +315,7 @@ fn downloadable_device_state() {
             vram_mb: 12288,
             index: 0,
             discrete: true,
+            cuda: None,
         }],
     );
     let probe = RuntimeProbe::openvino_only(&["CPU".to_string()]);

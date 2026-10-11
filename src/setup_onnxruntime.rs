@@ -44,13 +44,17 @@ pub struct Part {
     pub size: u64,
 }
 
-/// Flavor `--flavor auto` installs on this hardware.
+/// Flavor `--flavor auto` installs on this hardware. CUDA needs an NVIDIA GPU the pinned CUDA
+/// build has kernels for (or one of unknown compute capability).
 pub fn auto_flavor(hw: &crate::backend::detect::HardwareInfo) -> Flavor {
     use crate::backend::detect::GpuVendor;
+    let cuda_gpu = hw
+        .gpus_of(GpuVendor::Nvidia)
+        .any(|g| crate::backend::select::ort_cuda_unsupported(hw, g).is_none());
     match (hw.os.as_str(), hw.arch.as_str()) {
-        ("windows", "x86_64") if hw.has_vendor(GpuVendor::Nvidia) => Flavor::Cuda,
+        ("windows", "x86_64") if cuda_gpu => Flavor::Cuda,
         ("windows", _) => Flavor::DirectMl,
-        ("linux", "x86_64") if hw.has_vendor(GpuVendor::Nvidia) => Flavor::Cuda,
+        ("linux", "x86_64") if cuda_gpu => Flavor::Cuda,
         ("macos", "aarch64") => Flavor::CoreMl,
         _ => Flavor::Cpu,
     }
@@ -189,6 +193,7 @@ mod tests {
             vram_mb: 0,
             index: 0,
             discrete: true,
+            cuda: None,
         }
     }
 
@@ -210,6 +215,20 @@ mod tests {
         assert_eq!(auto_flavor(&hw("linux", "x86_64", &[i])), Flavor::Cpu);
         assert_eq!(auto_flavor(&hw("linux", "aarch64", &[n])), Flavor::Cpu);
         assert_eq!(auto_flavor(&hw("macos", "aarch64", &[])), Flavor::CoreMl);
+
+        // An NVIDIA GPU the CUDA build has no kernels for: not CUDA.
+        let with_cc = |os: &str, major: u32, minor: u32| {
+            let mut h = hw(os, "x86_64", &[i, n]);
+            h.gpus[1].cuda = Some(crate::backend::detect::CudaInfo {
+                ordinal: 0,
+                compute_capability: crate::backend::detect::ComputeCapability::new(major, minor),
+            });
+            h
+        };
+        assert_eq!(auto_flavor(&with_cc("windows", 6, 1)), Flavor::DirectMl);
+        assert_eq!(auto_flavor(&with_cc("windows", 8, 6)), Flavor::Cuda);
+        assert_eq!(auto_flavor(&with_cc("linux", 5, 2)), Flavor::Cpu);
+        assert_eq!(auto_flavor(&with_cc("linux", 6, 1)), Flavor::Cuda);
     }
 
     #[test]

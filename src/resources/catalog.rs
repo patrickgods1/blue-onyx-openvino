@@ -29,6 +29,7 @@
 //! API `digest` for the YOLO26 weights (also downloaded and hashed) and the release's
 //! `<archive>.sha256` files for uv (archives downloaded and checked against them).
 
+use crate::backend::detect::ComputeCapability;
 use crate::backend::spec::{Runtime, Target};
 use crate::model::ModelFamilyKind;
 use serde::{Serialize, Serializer};
@@ -39,6 +40,80 @@ pub const OPENVINO_VERSION: &str = "2026.4.0";
 /// Runtime 1.17+ library loads; 1.24.4 is the newest release that ships every package we use
 /// (the DirectML NuGet package stops at 1.24.x, and 1.25+ renamed the GPU archives).
 pub const ONNXRUNTIME_VERSION: &str = "1.24.4";
+/// GPU code in a CUDA build: which compute capabilities its kernels run on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CudaArchs {
+    /// Real (SASS) architectures: run on GPUs of the same major version and a minor version at
+    /// least this one (an `sm_86` cubin runs on 8.6 and 8.9, not on 8.0 or 9.0).
+    pub sass: &'static [ComputeCapability],
+    /// Virtual (PTX) architectures: JIT-compiled by the driver for any GPU at or above them.
+    pub ptx: &'static [ComputeCapability],
+}
+
+impl CudaArchs {
+    /// Whether a GPU of compute capability `cc` has kernels in this build.
+    pub fn runs_on(&self, cc: ComputeCapability) -> bool {
+        self.sass
+            .iter()
+            .any(|a| a.major == cc.major && a.minor <= cc.minor)
+            || self.ptx.iter().any(|a| *a <= cc)
+    }
+
+    /// Lowest compute capability with kernels.
+    pub fn min(&self) -> Option<ComputeCapability> {
+        self.sass.iter().chain(self.ptx).min().copied()
+    }
+
+    /// "7.5, 8.6, 8.9 (PTX 9.0)".
+    pub fn describe(&self) -> String {
+        let list = |v: &[ComputeCapability]| {
+            v.iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match (self.sass.is_empty(), self.ptx.is_empty()) {
+            (_, true) => list(self.sass),
+            (true, false) => format!("PTX {}", list(self.ptx)),
+            (false, false) => format!("{} (PTX {})", list(self.sass), list(self.ptx)),
+        }
+    }
+}
+
+const fn cc(major: u32, minor: u32) -> ComputeCapability {
+    ComputeCapability::new(major, minor)
+}
+
+/// GPU code of the pinned ONNX Runtime 1.24.4 CUDA 12 build for Windows x64
+/// (`onnxruntime-win-x64-gpu-1.24.4.zip`): `CMAKE_CUDA_ARCHITECTURES=75-real;86-real;89-real;
+/// 90-virtual` (`CudaArchs` for CUDA 12.8 in `tools/ci_build/github/azure-pipelines/
+/// cuda-packaging-pipeline.yml` on branch rel-1.24.4). Checked on the shipped
+/// `onnxruntime_providers_cuda.dll`: its 200 embedded fatbinaries hold SASS for sm_75, sm_86 and
+/// sm_89 and PTX for compute_90 only. So 7.5 is the minimum, and 6.x (Pascal), 7.0/7.2 (Volta)
+/// and 8.0 (A100) fail at run time with `cudaErrorNoKernelImageForDevice`.
+pub const ORT_CUDA_ARCHS_WINDOWS: CudaArchs = CudaArchs {
+    sass: &[cc(7, 5), cc(8, 6), cc(8, 9)],
+    ptx: &[cc(9, 0)],
+};
+/// GPU code of the pinned ONNX Runtime 1.24.4 CUDA 12 build for Linux x64
+/// (`onnxruntime-linux-x64-gpu-1.24.4.tgz`): `CUDA_ARCHS="60-real;70-real;75-real;80-real;
+/// 90a-real;90-virtual"` for CUDA 12.8 in `tools/ci_build/github/linux/
+/// build_cuda_c_api_package.sh` on branch rel-1.24.4 (`sm_90a` runs on 9.0 only, as `9.0` here).
+/// Minimum 6.0.
+pub const ORT_CUDA_ARCHS_LINUX: CudaArchs = CudaArchs {
+    sass: &[cc(6, 0), cc(7, 0), cc(7, 5), cc(8, 0), cc(9, 0)],
+    ptx: &[cc(9, 0)],
+};
+
+/// GPU code of the pinned ONNX Runtime CUDA build for `os` (None: no CUDA package there).
+pub fn ort_cuda_archs(os: &str) -> Option<&'static CudaArchs> {
+    match os {
+        "windows" => Some(&ORT_CUDA_ARCHS_WINDOWS),
+        "linux" => Some(&ORT_CUDA_ARCHS_LINUX),
+        _ => None,
+    }
+}
+
 /// Pinned DirectML redistributable (NuGet `Microsoft.AI.DirectML`).
 pub const DIRECTML_VERSION: &str = "1.15.4";
 /// Version label of `nvidia-cuda-libs`: CUDA 12.8 Update 1 components (ONNX Runtime 1.24's CUDA
@@ -1546,6 +1621,46 @@ pub fn model(name: &str) -> Option<&'static Resource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ort_cuda_compute_capabilities() {
+        let win = ort_cuda_archs("windows").unwrap();
+        let linux = ort_cuda_archs("linux").unwrap();
+        assert!(ort_cuda_archs("macos").is_none());
+        assert_eq!(win.min(), Some(cc(7, 5)));
+        assert_eq!(linux.min(), Some(cc(6, 0)));
+        let runs = |a: &CudaArchs, v: &[(u32, u32)]| -> Vec<bool> {
+            v.iter().map(|&(m, n)| a.runs_on(cc(m, n))).collect()
+        };
+        let probe = [
+            (5, 2),
+            (6, 0),
+            (6, 1),
+            (7, 0),
+            (7, 2),
+            (7, 5),
+            (8, 0),
+            (8, 6),
+            (8, 7),
+            (8, 9),
+            (9, 0),
+            (10, 0),
+            (12, 0),
+        ];
+        assert_eq!(
+            runs(win, &probe),
+            [
+                false, false, false, false, false, true, false, true, true, true, true, true, true
+            ]
+        );
+        assert_eq!(
+            runs(linux, &probe),
+            [
+                false, true, true, true, true, true, true, true, true, true, true, true, true
+            ]
+        );
+        assert_eq!(win.describe(), "7.5, 8.6, 8.9 (PTX 9.0)");
+    }
 
     #[test]
     fn wheel_names_and_model_lookup() {
