@@ -20,7 +20,8 @@ use super::threshold::{Objective, ThresholdAdvice};
 use super::{
     Bench, BenchmarkResults, Comparison, Job, MATCH_IOU, ModelResult, Phase, RunResult, Stats,
     SweepOptions, compare, config_models, configured_device, export, job_for_config, job_for_file,
-    pick_reference, pseudo_ground_truth, reference_device, results_path, sweep,
+    no_pseudo_gt_device, pick_reference, pseudo_ground_truth, pseudo_gt_device, results_path,
+    sweep,
 };
 use crate::backend::{CoreOptions, OrtOptions, Runtimes, libs, spec};
 use crate::config::{
@@ -620,6 +621,11 @@ pub fn run(args: BenchArgs) -> Result<bool> {
         }
     };
 
+    // `benchmark.devices` of the config limits the sweep, as on the web UI's Benchmark page,
+    // and the pseudo-ground-truth device.
+    let sweep_devices = super::service::parse_devices(&config.benchmark.devices)
+        .context("benchmark.devices in the config")?;
+
     // Pseudo ground truth for datasets without it (accuracy relative to a reference model).
     if sets.iter().any(|s| !s.annotated()) {
         let reference = pick_reference(
@@ -637,7 +643,9 @@ pub fn run(args: BenchArgs) -> Result<bool> {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .selection(Some(&job.path));
-            let device = reference_device(&sel).context("no CPU device for pseudo ground truth")?;
+            let allowed = sweep_devices.as_deref();
+            let device =
+                pseudo_gt_device(&sel, allowed).with_context(|| no_pseudo_gt_device(allowed))?;
             if !args.json {
                 eprintln!("pseudo ground truth: {} on {device} ...", job.name);
             }
@@ -673,9 +681,6 @@ pub fn run(args: BenchArgs) -> Result<bool> {
     bench.threshold_objective = objective;
     bench.accuracy_metric = metric;
 
-    // `benchmark.devices` of the config limits the sweep, as on the web UI's Benchmark page.
-    let sweep_devices = super::service::parse_devices(&config.benchmark.devices)
-        .context("benchmark.devices in the config")?;
     let mut swept: Vec<ModelResult> = Vec::new();
     for Planned { job, entry } in &jobs {
         if all_devices {

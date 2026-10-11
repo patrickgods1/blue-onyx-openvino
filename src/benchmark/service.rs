@@ -4,8 +4,9 @@
 //!
 //! A run: resolve the datasets (downloading missing built-in sets first when
 //! `benchmark.auto_download_datasets` is on), compute pseudo ground truth for datasets without
-//! ground truth (reference model on a CPU device), then sweep every model over the chosen
-//! devices, and merge the results into `benchmark.json`.
+//! ground truth (reference model on a CPU device, or on one of the chosen devices when the run
+//! limits them), then sweep every model over the chosen devices, and merge the results into
+//! `benchmark.json`.
 //!
 //! The run uses the registry's shared [`Runtimes`] when there is one (same OpenVINO `Core`,
 //! same ONNX Runtime library: a process can load only one ONNX Runtime flavor), compiling under
@@ -21,8 +22,8 @@ use super::report::{HardwareSummary, RuntimeVersions};
 use super::threshold::Objective;
 use super::{
     Bench, BenchmarkResults, ModelResult, Phase, Progress, SweepOptions, configured_device,
-    find_model, is_cancelled, job_for_config, pick_reference, pseudo_ground_truth,
-    reference_device, sweep,
+    find_model, is_cancelled, job_for_config, no_pseudo_gt_device, pick_reference,
+    pseudo_ground_truth, pseudo_gt_device, sweep,
 };
 use crate::backend::spec::{self, Device, DeviceSpec};
 use crate::backend::{CoreOptions, Runtimes};
@@ -613,65 +614,67 @@ pub fn run(ctx: &RunContext, req: &RunRequest, h: &RunHandle) -> Result<String> 
 
     // Pseudo ground truth for datasets without ground truth.
     if sets.iter().any(|s| !s.annotated()) {
+        // The guard of `lock()` is dropped before pseudo ground truth locks the runtimes again.
         let reference = pick_reference(&ctx.config, req.reference_model.as_deref())
-            .and_then(|m| job_for_config(&ctx.config, m, None));
+            .and_then(|m| job_for_config(&ctx.config, m, None))
+            .map(|job| {
+                let sel = lock().selection(Some(&job.path));
+                (pseudo_gt_device(&sel, devices.as_deref()), job)
+            });
         match reference {
-            Ok(job) => match reference_device(&lock().selection(Some(&job.path))) {
-                Some(device) => {
-                    let pseudo_images: usize = sets
-                        .iter()
-                        .filter(|s| !s.annotated())
-                        .map(|s| s.images.len())
-                        .sum();
-                    let progress = |p: &Progress| {
-                        h.set_progress(ProgressView {
-                            stage: "pseudo-gt".into(),
-                            model: p.model.to_string(),
-                            device: p.device.to_string(),
-                            phase: phase_name(p.phase),
-                            done: p.done,
-                            total: p.total,
-                            image: p.image.to_string(),
-                            text: format!(
-                                "pseudo ground truth: {} on {} ({}/{} images)",
-                                p.model, p.device, p.done, pseudo_images
-                            ),
-                            ..Default::default()
-                        })
-                    };
-                    let mut pb = Bench::new(&[], 0, 1, params);
-                    pb.cache_dir = cache_dir.as_deref();
-                    pb.cancel = Some(h.cancel_flag());
-                    pb.progress = Some(&progress);
-                    match pseudo_ground_truth(&pb, &runtimes, &job, device, &mut sets) {
-                        Ok(_) => {
-                            let key = crate::registry::normalize_name;
-                            let in_run = req.models.is_empty()
-                                && default_models(&ctx.config)
-                                    .iter()
-                                    .any(|m| key(m) == key(&job.name))
-                                || req.models.iter().any(|m| key(m) == key(&job.name));
-                            if in_run {
-                                h.warn(format!(
-                                    "{} is also the pseudo-ground-truth reference: its accuracy on \
-                                     the datasets without ground truth is 100% by construction",
-                                    job.name
-                                ));
-                            }
+            Ok((Some(device), job)) => {
+                let pseudo_images: usize = sets
+                    .iter()
+                    .filter(|s| !s.annotated())
+                    .map(|s| s.images.len())
+                    .sum();
+                let progress = |p: &Progress| {
+                    h.set_progress(ProgressView {
+                        stage: "pseudo-gt".into(),
+                        model: p.model.to_string(),
+                        device: p.device.to_string(),
+                        phase: phase_name(p.phase),
+                        done: p.done,
+                        total: p.total,
+                        image: p.image.to_string(),
+                        text: format!(
+                            "pseudo ground truth: {} on {} ({}/{} images)",
+                            p.model, p.device, p.done, pseudo_images
+                        ),
+                        ..Default::default()
+                    })
+                };
+                let mut pb = Bench::new(&[], 0, 1, params);
+                pb.cache_dir = cache_dir.as_deref();
+                pb.cancel = Some(h.cancel_flag());
+                pb.progress = Some(&progress);
+                match pseudo_ground_truth(&pb, &runtimes, &job, device, &mut sets) {
+                    Ok(_) => {
+                        let key = crate::registry::normalize_name;
+                        let in_run = req.models.is_empty()
+                            && default_models(&ctx.config)
+                                .iter()
+                                .any(|m| key(m) == key(&job.name))
+                            || req.models.iter().any(|m| key(m) == key(&job.name));
+                        if in_run {
+                            h.warn(format!(
+                                "{} is also the pseudo-ground-truth reference: its accuracy on \
+                                 the datasets without ground truth is 100% by construction",
+                                job.name
+                            ));
                         }
-                        Err(e) if is_cancelled(&e) => return Err(e),
-                        Err(e) => h.warn(format!(
-                            "pseudo ground truth failed, accuracy is not scored for the datasets \
-                             without ground truth: {e:#}"
-                        )),
                     }
+                    Err(e) if is_cancelled(&e) => return Err(e),
+                    Err(e) => h.warn(format!(
+                        "pseudo ground truth failed, accuracy is not scored for the datasets \
+                         without ground truth: {e:#}"
+                    )),
                 }
-                None => h.warn(
-                    "no CPU device to compute pseudo ground truth on; accuracy is not scored for \
-                     the datasets without ground truth"
-                        .into(),
-                ),
-            },
+            }
+            Ok((None, _)) => h.warn(format!(
+                "{}; accuracy is not scored for the datasets without ground truth",
+                no_pseudo_gt_device(devices.as_deref())
+            )),
             Err(e) => h.warn(format!(
                 "{e:#}; accuracy is not scored for the datasets without ground truth"
             )),
