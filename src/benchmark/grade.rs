@@ -1,9 +1,16 @@
 //! Letter grades for a model on a device.
 //!
-//! - **Accuracy** from the accuracy score: AP@0.5 over the scored CCTV classes, blended with
-//!   small-object recall when the images have small objects
-//!   (`score = (1 - SMALL_RECALL_WEIGHT) * AP50 + SMALL_RECALL_WEIGHT * small recall`), against
-//!   [`ACCURACY_THRESHOLDS`]: A >= 0.70, B >= 0.60, C >= 0.50, D >= 0.40, else F.
+//! - **Accuracy** from the accuracy score of the configured [`AccuracyMetric`]
+//!   (`benchmark.accuracy_metric`):
+//!   - `ap50` (default): AP@0.5 over the scored CCTV classes, blended with small-object recall
+//!     when the images have small objects
+//!     (`score = (1 - SMALL_RECALL_WEIGHT) * AP50 + SMALL_RECALL_WEIGHT * small recall`), against
+//!     [`ACCURACY_THRESHOLDS`]: A >= 0.70, B >= 0.60, C >= 0.50, D >= 0.40, else F.
+//!   - `roc_auc`: the macro frame-level ROC AUC (see [`super::roc`]: does a frame with an object
+//!     score higher than a frame without?), against [`ROC_AUC_THRESHOLDS`]: A >= 0.95,
+//!     B >= 0.90, C >= 0.80, D >= 0.70, else F (0.5 is chance). There is no small-object
+//!     component: a frame-level alert has no object size, and small objects already lower the
+//!     scores of the frames they are in.
 //! - **Speed** from the full-request p50 (decode + preprocess + inference + postprocess) against
 //!   [`SPEED_THRESHOLDS_MS`]: A < 50 ms, B < 100, C < 200, D < 400, else F.
 //! - **Overall**: the weighted mean of the grade points (A = 4 .. F = 0), default 60% accuracy /
@@ -12,8 +19,92 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Accuracy score lower bounds of A, B, C, D.
+/// Accuracy score lower bounds of A, B, C, D (AP50 metric).
 pub const ACCURACY_THRESHOLDS: [f64; 4] = [0.70, 0.60, 0.50, 0.40];
+/// Macro frame ROC AUC lower bounds of A, B, C, D (ROC AUC metric).
+pub const ROC_AUC_THRESHOLDS: [f64; 4] = [0.95, 0.90, 0.80, 0.70];
+
+/// What the accuracy grade (and the ranking, and the device recommendation's accuracy tie) is
+/// computed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Hash)]
+pub enum AccuracyMetric {
+    /// AP@0.5 (box level) blended with small-object recall.
+    #[default]
+    #[serde(rename = "ap50")]
+    Ap50,
+    /// Macro frame-level ROC AUC.
+    #[serde(rename = "roc_auc")]
+    RocAuc,
+}
+
+impl AccuracyMetric {
+    pub const ALL: [AccuracyMetric; 2] = [AccuracyMetric::Ap50, AccuracyMetric::RocAuc];
+
+    /// `ap50` / `roc_auc`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccuracyMetric::Ap50 => "ap50",
+            AccuracyMetric::RocAuc => "roc_auc",
+        }
+    }
+
+    /// "AP50" / "ROC AUC".
+    pub fn label(self) -> &'static str {
+        match self {
+            AccuracyMetric::Ap50 => "AP50",
+            AccuracyMetric::RocAuc => "ROC AUC",
+        }
+    }
+
+    /// Grade lower bounds of A, B, C, D.
+    pub fn thresholds(self) -> &'static [f64; 4] {
+        match self {
+            AccuracyMetric::Ap50 => &ACCURACY_THRESHOLDS,
+            AccuracyMetric::RocAuc => &ROC_AUC_THRESHOLDS,
+        }
+    }
+
+    /// Scores this close to a model's best count as equally accurate when picking its device
+    /// (numeric noise between devices that agree): 0.015 AP50, 0.01 AUC (the AUC's useful range,
+    /// 0.5 .. 1, is half as wide).
+    pub fn tie(self) -> f64 {
+        match self {
+            AccuracyMetric::Ap50 => 0.015,
+            AccuracyMetric::RocAuc => 0.01,
+        }
+    }
+
+    /// The configured device is kept when its score is within this of the best (and its speed
+    /// within the noise margin).
+    pub fn keep_tie(self) -> f64 {
+        match self {
+            AccuracyMetric::Ap50 => 0.01,
+            AccuracyMetric::RocAuc => 0.005,
+        }
+    }
+}
+
+impl std::fmt::Display for AccuracyMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AccuracyMetric {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "ap50" | "ap" | "map50" | "" => Ok(AccuracyMetric::Ap50),
+            "roc_auc" | "auc" | "rocauc" | "roc" => Ok(AccuracyMetric::RocAuc),
+            _ => Err(format!("accuracy metric '{s}': use ap50 or roc_auc")),
+        }
+    }
+}
 /// Full-request p50 upper bounds (ms, exclusive) of A, B, C, D.
 pub const SPEED_THRESHOLDS_MS: [f64; 4] = [50.0, 100.0, 200.0, 400.0];
 /// Share of small-object recall in the accuracy score (when there are small objects).
@@ -63,8 +154,14 @@ impl Grade {
             .map_or(Grade::F, |i| Self::ALL[i])
     }
 
+    /// Grade of an AP50 accuracy score.
     pub fn accuracy(score: f64) -> Self {
         Self::at_least(score, &ACCURACY_THRESHOLDS)
+    }
+
+    /// Grade of an accuracy score of `metric`.
+    pub fn accuracy_for(metric: AccuracyMetric, score: f64) -> Self {
+        Self::at_least(score, metric.thresholds())
     }
 
     pub fn speed(p50_ms: f64) -> Self {
@@ -136,12 +233,33 @@ pub struct Grades {
     /// Accuracy was measured against pseudo ground truth.
     #[serde(default)]
     pub relative: bool,
+    /// What `accuracy_score` is (results of older versions: AP50).
+    #[serde(default)]
+    pub metric: AccuracyMetric,
 }
 
 impl Grades {
+    /// Grades with an AP50 accuracy score.
     pub fn new(accuracy_score: Option<f64>, p50_ms: f64, weights: Weights, relative: bool) -> Self {
+        Self::with_metric(
+            AccuracyMetric::Ap50,
+            accuracy_score,
+            p50_ms,
+            weights,
+            relative,
+        )
+    }
+
+    /// Grades with an accuracy score of `metric`.
+    pub fn with_metric(
+        metric: AccuracyMetric,
+        accuracy_score: Option<f64>,
+        p50_ms: f64,
+        weights: Weights,
+        relative: bool,
+    ) -> Self {
         let speed = Grade::speed(p50_ms);
-        let accuracy = accuracy_score.map(Grade::accuracy);
+        let accuracy = accuracy_score.map(|s| Grade::accuracy_for(metric, s));
         let points = match accuracy {
             Some(a) => {
                 let w = weights.accuracy_share();
@@ -157,6 +275,7 @@ impl Grades {
             overall: Grade::from_points(points),
             overall_points: points,
             relative,
+            metric,
         }
     }
 
@@ -202,6 +321,44 @@ mod tests {
         assert_eq!(Grade::accuracy(0.1), Grade::F);
         assert!((accuracy_score(0.8, Some(0.3)) - 0.70).abs() < 1e-12);
         assert_eq!(accuracy_score(0.8, None), 0.8);
+    }
+
+    #[test]
+    fn roc_auc_thresholds_and_metric_parsing() {
+        use AccuracyMetric::RocAuc;
+        assert_eq!(Grade::accuracy_for(RocAuc, 0.95), Grade::A);
+        assert_eq!(Grade::accuracy_for(RocAuc, 0.949), Grade::B);
+        assert_eq!(Grade::accuracy_for(RocAuc, 0.90), Grade::B);
+        assert_eq!(Grade::accuracy_for(RocAuc, 0.85), Grade::C);
+        assert_eq!(Grade::accuracy_for(RocAuc, 0.70), Grade::D);
+        assert_eq!(Grade::accuracy_for(RocAuc, 0.5), Grade::F);
+        // The same score grades differently per metric: 0.75 is an A for AP50, a D for AUC.
+        assert_eq!(Grade::accuracy_for(AccuracyMetric::Ap50, 0.75), Grade::A);
+        assert_eq!(Grade::accuracy_for(RocAuc, 0.75), Grade::D);
+        let g = Grades::with_metric(RocAuc, Some(0.93), 30.0, Weights::default(), false);
+        assert_eq!((g.accuracy, g.metric), (Some(Grade::B), RocAuc));
+        assert_eq!(
+            Grades::new(Some(0.5), 1.0, Weights::default(), false).metric,
+            AccuracyMetric::Ap50
+        );
+        for (s, m) in [
+            ("ap50", AccuracyMetric::Ap50),
+            ("AP50", AccuracyMetric::Ap50),
+            ("roc_auc", RocAuc),
+            ("ROC-AUC", RocAuc),
+            ("auc", RocAuc),
+        ] {
+            assert_eq!(s.parse::<AccuracyMetric>().unwrap(), m, "{s}");
+        }
+        assert!("f1".parse::<AccuracyMetric>().is_err());
+        assert_eq!(serde_json::to_string(&RocAuc).unwrap(), "\"roc_auc\"");
+        let m: AccuracyMetric = serde_json::from_str("\"ap50\"").unwrap();
+        assert_eq!(m, AccuracyMetric::Ap50);
+        // Grades of older versions (no metric) are AP50.
+        let mut v = serde_json::to_value(g).unwrap();
+        v.as_object_mut().unwrap().remove("metric");
+        let old: Grades = serde_json::from_value(v).unwrap();
+        assert_eq!(old.metric, AccuracyMetric::Ap50);
     }
 
     #[test]

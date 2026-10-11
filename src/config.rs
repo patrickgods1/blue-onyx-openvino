@@ -238,9 +238,13 @@ pub struct BenchmarkConfig {
     /// Download the selected built-in datasets when a run starts (large ones still need
     /// `allow_large_downloads`).
     pub auto_download_datasets: bool,
-    /// What the best confidence threshold optimizes: `f1` (default), `f2` (favor recall) or
-    /// `precision:<p>` (highest recall with precision >= p).
+    /// What the best confidence threshold optimizes: `f1` (default), `f2` (favor recall),
+    /// `precision:<p>` (highest recall with precision >= p), `recall:<r>`, `youden` (frame-level
+    /// TPR - FPR) or `fpr:<x>` (highest frame TPR with frame FPR <= x).
     pub threshold_objective: crate::benchmark::threshold::Objective,
+    /// What the accuracy grade, the ranking and the device recommendation use: `ap50` (default,
+    /// box-level AP@0.5 with small-object recall) or `roc_auc` (macro frame-level ROC AUC).
+    pub accuracy_metric: crate::benchmark::grade::AccuracyMetric,
 }
 
 impl Default for BenchmarkConfig {
@@ -259,6 +263,7 @@ impl Default for BenchmarkConfig {
             weights: Default::default(),
             auto_download_datasets: true,
             threshold_objective: Default::default(),
+            accuracy_metric: Default::default(),
         }
     }
 }
@@ -823,6 +828,35 @@ mod tests {
         // A bad objective is an error, not a silent default.
         assert!(
             serde_json::from_str::<super::Config>(r#"{"benchmark":{"threshold_objective":"f3"}}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn accuracy_metric_parsing_and_defaults() {
+        use crate::benchmark::grade::AccuracyMetric;
+        use crate::benchmark::threshold::Objective;
+        // Old files get ap50.
+        let c: super::Config = serde_json::from_str(r#"{"benchmark":{"warmup":2}}"#).unwrap();
+        assert_eq!(c.benchmark.accuracy_metric, AccuracyMetric::Ap50);
+        let c: super::Config = serde_json::from_str(r#"{"port":1}"#).unwrap();
+        assert_eq!(c.benchmark.accuracy_metric, AccuracyMetric::Ap50);
+        let c: super::Config = serde_json::from_str(
+            r#"{"benchmark":{"accuracy_metric":"roc_auc","threshold_objective":"youden"}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.benchmark.accuracy_metric, AccuracyMetric::RocAuc);
+        assert_eq!(c.benchmark.threshold_objective, Objective::Youden);
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains(r#""accuracy_metric":"roc_auc""#), "{text}");
+        assert!(text.contains(r#""threshold_objective":"youden""#), "{text}");
+        let back: super::Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, c);
+        let c: super::Config =
+            serde_json::from_str(r#"{"benchmark":{"threshold_objective":"fpr:0.05"}}"#).unwrap();
+        assert_eq!(c.benchmark.threshold_objective, Objective::Fpr(0.05));
+        assert!(
+            serde_json::from_str::<super::Config>(r#"{"benchmark":{"accuracy_metric":"map"}}"#)
                 .is_err()
         );
     }

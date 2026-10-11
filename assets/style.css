@@ -296,6 +296,14 @@ figure.thumb figcaption { font-size: 0.78rem; color: var(--muted); word-break: b
 .thr-chart .thr-guide { stroke: var(--muted); stroke-width: 1; }
 .thr-chart .thr-tip rect { fill: var(--card); stroke: var(--border); }
 .thr-chart .thr-tip text { fill: var(--fg); font-size: 11px; }
+.chart-row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
+.chart-row .thr-chart-wrap { flex: 1 1 420px; }
+.roc-chart-wrap { flex: 0 1 340px; max-width: 340px; }
+.thr-chart .roc-line { stroke: var(--chart-p); }
+.thr-chart .roc-diag { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; }
+.thr-chart .roc-dot-best { fill: var(--fg); }
+.thr-chart .roc-dot-cfg { fill: var(--card); stroke: var(--fg); stroke-width: 1.5; }
+.thr-chart .roc-hover { fill: var(--chart-p); }
 table.bench tr.best-row td { background: var(--ok-bg); font-weight: 600; }
 table.bench tr.selected td:first-child { font-weight: 600; }
 

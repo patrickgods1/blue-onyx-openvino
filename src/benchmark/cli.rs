@@ -9,8 +9,11 @@
 //! blue-onyx-prism-benchmark --apply-threshold --threshold-objective f2      # also set per-model thresholds
 //! blue-onyx-prism-benchmark --threshold-search --tag night --threshold-objective recall:0.9
 //!                                                       # search the stored predictions, no inference
+//! blue-onyx-prism-benchmark --all-devices --accuracy-metric roc_auc --threshold-objective youden
+//!                                                       # grade by frame ROC AUC, pick by Youden's J
 //! ```
 
+use super::grade::AccuracyMetric;
 use super::images::{self, ImageSet};
 use super::report::{HardwareSummary, RuntimeVersions, Verdict};
 use super::threshold::{Objective, ThresholdAdvice};
@@ -65,10 +68,18 @@ pub struct BenchArgs {
     pub apply_threshold: bool,
     /// What the best confidence threshold optimizes: f1 (balance), f2 (favor recall: fewer
     /// missed objects) or precision:<p> (highest recall with precision >= p, e.g.
-    /// precision:0.9 for fewer false alerts) or recall:<r> (highest precision with recall >= r).
-    /// Default: benchmark.threshold_objective (f1).
+    /// precision:0.9 for fewer false alerts) or recall:<r> (highest precision with recall >= r),
+    /// youden (frame-level Youden's J: alert rate on frames with objects minus false-alert rate
+    /// on frames without) or fpr:<x> (highest frame alert rate with at most x false alerts per
+    /// frame without objects, e.g. fpr:0.05). Default: benchmark.threshold_objective (f1).
     #[arg(long, value_parser = parse_objective_arg)]
     pub threshold_objective: Option<Objective>,
+    /// What the accuracy grade, the ranking and the device recommendation use: ap50 (box-level
+    /// AP@0.5 with small-object recall) or roc_auc (macro frame-level ROC AUC: how well a
+    /// frame's top confidence separates frames with objects from frames without). Default:
+    /// benchmark.accuracy_metric (ap50).
+    #[arg(long, value_parser = parse_metric_arg)]
+    pub accuracy_metric: Option<AccuracyMetric>,
     /// Search the best confidence threshold over the predictions stored by the last benchmark
     /// (`benchmark-preds.json` beside the config; no inference), filtered by --dataset, --tag,
     /// --class, --search-model, --search-device and --iou, for --threshold-objective (also
@@ -159,6 +170,10 @@ pub struct BenchArgs {
 }
 
 fn parse_objective_arg(s: &str) -> Result<Objective, String> {
+    s.parse()
+}
+
+fn parse_metric_arg(s: &str) -> Result<AccuracyMetric, String> {
     s.parse()
 }
 
@@ -478,6 +493,9 @@ pub fn run(args: BenchArgs) -> Result<bool> {
     let objective = args
         .threshold_objective
         .unwrap_or(config.benchmark.threshold_objective);
+    let metric = args
+        .accuracy_metric
+        .unwrap_or(config.benchmark.accuracy_metric);
     if let Some(w) = args.accuracy_weight
         && !(0.0..=1.0).contains(&w)
     {
@@ -652,6 +670,7 @@ pub fn run(args: BenchArgs) -> Result<bool> {
     bench.cache_dir = cache_dir.as_deref();
     bench.weights = weights;
     bench.threshold_objective = objective;
+    bench.accuracy_metric = metric;
 
     let mut swept: Vec<ModelResult> = Vec::new();
     for Planned { job, entry } in &jobs {
@@ -753,12 +772,16 @@ pub fn run(args: BenchArgs) -> Result<bool> {
         }
         if !args.json {
             print_thresholds(&swept, objective);
+            print_frame_roc(&swept);
         }
         let path = results_path(&config_path);
         let merged = if args.no_save {
             results
         } else {
-            let merged = BenchmarkResults::merge(BenchmarkResults::load_or_warn(&path), results);
+            let mut merged =
+                BenchmarkResults::merge(BenchmarkResults::load_or_warn(&path), results);
+            // Models kept from earlier runs are graded like this run's.
+            merged.regrade(metric, weights);
             merged.save(&path)?;
             super::search::save_beside(&path, &merged, &swept);
             if !args.json {
@@ -880,14 +903,29 @@ fn threshold_search_cli(
         out.elapsed_ms
     );
     println!(
-        "  {:<20} {:<14} {:>5} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5} {:>6}  {:>4} {:>4}",
-        "model", "device", "conf", "P", "R", "F1", "best", "P", "R", "F1", "dF1", "imgs", "objs"
+        "  {:<20} {:<14} {:>5} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5} {:>6}  {:>4} {:>4}  {:>5} {:>11} {:>11}",
+        "model",
+        "device",
+        "conf",
+        "P",
+        "R",
+        "F1",
+        "best",
+        "P",
+        "R",
+        "F1",
+        "dF1",
+        "imgs",
+        "objs",
+        "AUC",
+        "TPR/FPR cf",
+        "TPR/FPR bs"
     );
     for r in &out.results {
         let c = &r.configured;
         let b = r.best.as_ref();
         println!(
-            "  {:<20} {:<14} {:>5.2} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5} {:>6}  {:>4} {:>4}{}",
+            "  {:<20} {:<14} {:>5.2} {:>5} {:>5} {:>5}   {:>5} {:>5} {:>5} {:>5} {:>6}  {:>4} {:>4}  {:>5} {:>11} {:>11}{}",
             r.model,
             r.device,
             c.threshold,
@@ -908,8 +946,24 @@ fn threshold_search_cli(
             },
             r.images,
             r.gt,
+            pct1(r.roc.as_ref().and_then(|x| x.auc)),
+            tpr_fpr(c),
+            b.map_or("-".into(), |b| tpr_fpr(&b.point)),
             if r.relative { "  (relative)" } else { "" }
         );
+    }
+    for r in &out.results {
+        if let Some(roc) = &r.roc {
+            println!(
+                "  {} frame ROC AUC: macro {} micro {} ({} positive / {} negative frame samples); {}",
+                r.model,
+                pct1(roc.auc),
+                pct1(roc.micro_auc),
+                roc.positives,
+                roc.negatives,
+                class_aucs(roc)
+            );
+        }
     }
     for r in &out.results {
         let Some(b) = &r.best else { continue };
@@ -925,8 +979,8 @@ fn threshold_search_cli(
             b.note.as_ref().map_or(String::new(), |n| format!("; {n}"))
         );
         println!(
-            "    {:>5} {:>6} {:>6} {:>6} {:>6} {:>7}",
-            "conf", "P", "R", "F1", "F2", "FP/img"
+            "    {:>5} {:>6} {:>6} {:>6} {:>6} {:>7} {:>6} {:>6}",
+            "conf", "P", "R", "F1", "F2", "FP/img", "TPR", "FPR"
         );
         let mut extra = vec![r.configured, b.point];
         if let Some(c) = r.current {
@@ -946,13 +1000,15 @@ fn threshold_search_cli(
                 marks.push("in config now");
             }
             println!(
-                "    {:>5.2} {:>6} {:>6} {:>6} {:>6} {:>7.2}{}",
+                "    {:>5.2} {:>6} {:>6} {:>6} {:>6} {:>7.2} {:>6} {:>6}{}",
                 p.threshold,
                 pct1(p.precision),
                 pct1(p.recall),
                 pct1(p.f1),
                 pct1(p.f2),
                 p.fp_per_image,
+                pct1(p.frame.and_then(|f| f.tpr)),
+                pct1(p.frame.and_then(|f| f.fpr)),
                 if marks.is_empty() {
                     String::new()
                 } else {
@@ -968,6 +1024,14 @@ fn threshold_search_cli(
             .collect();
         if !groups.is_empty() {
             println!("    best by dataset/class: {}", groups.join(", "));
+        }
+        let aucs: Vec<String> = r
+            .by_dataset
+            .iter()
+            .filter_map(|g| Some(format!("{} {}", g.key, pct1(Some(g.roc_auc?)))))
+            .collect();
+        if !aucs.is_empty() {
+            println!("    frame ROC AUC by dataset: {}", aucs.join(", "));
         }
     }
     for e in &out.errors {
@@ -1038,6 +1102,72 @@ pub const BLUE_IRIS_NOTE: &str = "note: Blue Iris can send its own min_confidenc
 
 fn pct1(v: Option<f64>) -> String {
     v.map_or("-".to_string(), |v| format!("{:.1}", v * 100.0))
+}
+
+/// "91.0/6.2" (frame TPR / FPR in %), "-" without frame rates.
+fn tpr_fpr(p: &super::metrics::ThresholdPoint) -> String {
+    p.frame
+        .as_ref()
+        .map_or("-".into(), |f| format!("{}/{}", pct1(f.tpr), pct1(f.fpr)))
+}
+
+/// "person 97.1 (120+/80-), vehicle 93.0 (..)".
+fn class_aucs(roc: &super::roc::FrameRoc) -> String {
+    roc.per_class
+        .iter()
+        .map(|c| {
+            format!(
+                "{} {} ({}+/{}-)",
+                c.class,
+                pct1(c.auc),
+                c.positives,
+                c.negatives
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Frame-level ROC per model on the advice device: AUC, and frame TPR / FPR at the configured
+/// and the best threshold.
+fn print_frame_roc(swept: &[ModelResult]) {
+    let rows: Vec<(&ModelResult, &ThresholdAdvice, &super::roc::FrameRoc)> = swept
+        .iter()
+        .filter_map(|m| {
+            let a = m.threshold.as_ref()?;
+            Some((m, a, a.roc.as_ref()?))
+        })
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "== Frame-level ROC per model (a frame alerts when its top confidence >= the threshold; %)"
+    );
+    println!(
+        "  {:<20} {:<14} {:>5} {:>5}  {:>5} {:>11}  {:>5} {:>11}  per class",
+        "model", "device", "AUC", "micro", "conf", "TPR/FPR", "best", "TPR/FPR"
+    );
+    for (m, a, roc) in rows {
+        println!(
+            "  {:<20} {:<14} {:>5} {:>5}  {:>5.2} {:>11}  {:>5} {:>11}  {}",
+            m.model,
+            a.device,
+            pct1(roc.auc),
+            pct1(roc.micro_auc),
+            a.configured.threshold,
+            tpr_fpr(&a.configured),
+            a.best
+                .as_ref()
+                .map_or("-".into(), |b| format!("{:.2}", b.threshold)),
+            a.best.as_ref().map_or("-".into(), |b| tpr_fpr(&b.point)),
+            class_aucs(roc)
+        );
+    }
+    println!(
+        "  (AUC from the 0.05+ predictions: frames below 0.05 score 0, which slightly understates it)"
+    );
 }
 
 /// The best-threshold summary across models.
@@ -1124,8 +1254,8 @@ fn print_threshold_table(a: &ThresholdAdvice) {
         if a.relative { ", relative" } else { "" }
     );
     println!(
-        "    {:>5} {:>6} {:>6} {:>6} {:>6} {:>7}",
-        "conf", "P", "R", "F1", "F2", "FP/img"
+        "    {:>5} {:>6} {:>6} {:>6} {:>6} {:>7} {:>6} {:>6}",
+        "conf", "P", "R", "F1", "F2", "FP/img", "TPR", "FPR"
     );
     for p in super::threshold::table_points(&a.curve, &extra) {
         let mut marks = Vec::new();
@@ -1136,13 +1266,15 @@ fn print_threshold_table(a: &ThresholdAdvice) {
             marks.push("configured");
         }
         println!(
-            "    {:>5.2} {:>6} {:>6} {:>6} {:>6} {:>7.2}{}",
+            "    {:>5.2} {:>6} {:>6} {:>6} {:>6} {:>7.2} {:>6} {:>6}{}",
             p.threshold,
             pct1(p.precision),
             pct1(p.recall),
             pct1(p.f1),
             pct1(p.f2),
             p.fp_per_image,
+            pct1(p.frame.and_then(|f| f.tpr)),
+            pct1(p.frame.and_then(|f| f.fpr)),
             if marks.is_empty() {
                 String::new()
             } else {
@@ -1174,14 +1306,18 @@ fn print_threshold_table(a: &ThresholdAdvice) {
 
 fn print_ranking(rows: &[super::report::RankRow]) {
     println!();
-    println!("== Best model for this machine (each on its recommended device)");
+    let metric = rows.first().map_or(AccuracyMetric::Ap50, |r| r.metric);
     println!(
-        "  {:>2} {:<20} {:<16} {:>7} {:>8} {:>5} {:>9} {:>6}",
-        "#", "model", "device", "overall", "accuracy", "speed", "p50 ms", "AP50"
+        "== Best model for this machine (each on its recommended device; accuracy graded by {})",
+        metric.label()
+    );
+    println!(
+        "  {:>2} {:<20} {:<16} {:>7} {:>8} {:>5} {:>9} {:>6} {:>6}",
+        "#", "model", "device", "overall", "accuracy", "speed", "p50 ms", "AP50", "AUC"
     );
     for r in rows {
         println!(
-            "  {:>2} {:<20} {:<16} {:>7} {:>8} {:>5} {:>9.1} {:>6}",
+            "  {:>2} {:<20} {:<16} {:>7} {:>8} {:>5} {:>9.1} {:>6} {:>6}",
             r.rank,
             r.model,
             r.device,
@@ -1196,7 +1332,8 @@ fn print_ranking(rows: &[super::report::RankRow]) {
             r.speed.to_string(),
             r.p50_ms,
             r.ap50
-                .map_or("-".to_string(), |v| format!("{:.1}", v * 100.0))
+                .map_or("-".to_string(), |v| format!("{:.1}", v * 100.0)),
+            pct1(r.roc_auc)
         );
     }
 }
@@ -1273,7 +1410,7 @@ fn print_all_devices(result: &ModelResult, m: &ModelReport) {
         m.primary.model, m.primary.images, m.primary.repeat
     );
     println!(
-        "  {:<16} {:<26} {:>7} {:>9} {:>9} {:>9} {:>7} {:>6} {:>6} {:>5} {:>5} {:<7} {:<12}",
+        "  {:<16} {:<26} {:>7} {:>9} {:>9} {:>9} {:>7} {:>6} {:>6} {:>6} {:>5} {:>5} {:<7} {:<12}",
         "requested",
         "device",
         "compile",
@@ -1283,6 +1420,7 @@ fn print_all_devices(result: &ModelResult, m: &ModelReport) {
         "req/s",
         "AP50",
         "AP-95",
+        "AUC",
         "P",
         "R",
         "O/A/S",
@@ -1323,7 +1461,7 @@ fn print_all_devices(result: &ModelResult, m: &ModelReport) {
             )
         });
         println!(
-            "  {:<16} {:<26} {:>7.0} {:>9.2} {:>9.2} {:>9.2} {:>7.1} {:>6} {:>6} {:>5} {:>5} {:<7} {:<12}{}",
+            "  {:<16} {:<26} {:>7.0} {:>9.2} {:>9.2} {:>9.2} {:>7.1} {:>6} {:>6} {:>6} {:>5} {:>5} {:<7} {:<12}{}",
             r.requested_device,
             name,
             r.compile_ms,
@@ -1333,6 +1471,7 @@ fn print_all_devices(result: &ModelResult, m: &ModelReport) {
             r.throughput_fps,
             pct(acc.and_then(|a| a.ap50)),
             pct(acc.and_then(|a| a.ap50_95)),
+            pct(r.accuracy.as_ref().and_then(|a| a.roc_auc())),
             pct(acc.and_then(|a| a.precision)),
             pct(acc.and_then(|a| a.recall)),
             grades,
@@ -1369,11 +1508,12 @@ fn print_all_devices(result: &ModelResult, m: &ModelReport) {
             );
             for b in a.by_dataset.iter().chain(&a.by_tag) {
                 println!(
-                    "    {:<24} {:>4} img {:>5} obj  AP50 {:>5}  P {:>5}  R {:>5}{}",
+                    "    {:<24} {:>4} img {:>5} obj  AP50 {:>5}  AUC {:>5}  P {:>5}  R {:>5}{}",
                     b.key,
                     b.images,
                     b.gt,
                     pct(b.ap50),
+                    pct(b.roc_auc),
                     pct(b.precision),
                     pct(b.recall),
                     if b.relative { "  (relative)" } else { "" }
@@ -1462,10 +1602,11 @@ fn print_run(r: &RunResult) {
     if let Some(a) = &r.accuracy {
         let pct = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{:.1}", v * 100.0));
         println!(
-            "  accuracy ({}): AP50 {} AP50-95 {} P {} R {} F1 {}",
+            "  accuracy ({}): AP50 {} AP50-95 {} frame ROC AUC {} P {} R {} F1 {}",
             a.ground_truth,
             pct(a.overall.ap50),
             pct(a.overall.ap50_95),
+            pct(a.roc_auc()),
             pct(a.overall.precision),
             pct(a.overall.recall),
             pct(a.overall.f1)
@@ -1473,9 +1614,10 @@ fn print_run(r: &RunResult) {
     }
     if let Some(g) = &r.grades {
         println!(
-            "  grades: overall {} (accuracy {}, speed {})",
+            "  grades: overall {} (accuracy {} by {}, speed {})",
             g.overall,
             g.accuracy.map_or("-".to_string(), |a| a.to_string()),
+            g.metric.label(),
             g.speed
         );
     }

@@ -3,9 +3,13 @@
 //! external files). Both show the machine, the datasets, the cross-model ranking, and per model
 //! the device table with grades plus the recommended device's breakdown by dataset, tag and
 //! resolution, and the confidence-threshold sweep (best threshold per model, a compact
-//! P/R/F1/F2 table per model).
+//! P/R/F1/F2 table per model), and the frame-level ROC (AUC per class with the positive and
+//! negative frame counts, frame TPR / FPR at the configured and the best threshold).
 
-use super::grade::{ACCURACY_THRESHOLDS, SMALL_RECALL_WEIGHT, SPEED_THRESHOLDS_MS};
+use super::grade::{
+    ACCURACY_THRESHOLDS, ROC_AUC_THRESHOLDS, SMALL_RECALL_WEIGHT, SPEED_THRESHOLDS_MS,
+};
+use super::metrics::ThresholdPoint;
 use super::report::{BenchmarkResults, DeviceResult, ModelResult};
 use super::threshold::{GroupPick, Pick, ThresholdAdvice, table_points};
 use super::{Breakdown, RunResult};
@@ -81,6 +85,7 @@ fn device_row(m: &ModelResult, d: &DeviceResult) -> Vec<String> {
                 format!("{:.1}", r.throughput_fps),
                 pct(acc.and_then(|s| s.ap50)),
                 pct(acc.and_then(|s| s.ap50_95)),
+                pct(r.accuracy.as_ref().and_then(|a| a.roc_auc())),
                 pct(acc.and_then(|s| s.precision)),
                 pct(acc.and_then(|s| s.recall)),
                 o,
@@ -91,7 +96,7 @@ fn device_row(m: &ModelResult, d: &DeviceResult) -> Vec<String> {
         }
         (Some(r), _) => {
             let mut v = vec![device, format!("fell back to {}", r.device)];
-            v.resize(14, String::new());
+            v.resize(15, String::new());
             v
         }
         (None, e) => {
@@ -99,7 +104,7 @@ fn device_row(m: &ModelResult, d: &DeviceResult) -> Vec<String> {
                 device,
                 format!("failed: {}", e.as_deref().unwrap_or("did not run")),
             ];
-            v.resize(14, String::new());
+            v.resize(15, String::new());
             v
         }
     }
@@ -108,9 +113,11 @@ fn device_row(m: &ModelResult, d: &DeviceResult) -> Vec<String> {
 fn breakdown_table(title: &str, rows: &[Breakdown]) -> Table {
     Table {
         title: title.to_string(),
-        head: ["", "images", "objects", "AP50", "AP50-95", "P", "R", "F1"]
-            .map(String::from)
-            .to_vec(),
+        head: [
+            "", "images", "objects", "AP50", "AP50-95", "ROC AUC", "P", "R", "F1",
+        ]
+        .map(String::from)
+        .to_vec(),
         rows: rows
             .iter()
             .map(|b| {
@@ -124,6 +131,7 @@ fn breakdown_table(title: &str, rows: &[Breakdown]) -> Table {
                     b.gt.to_string(),
                     pct(b.ap50),
                     pct(b.ap50_95),
+                    pct(b.roc_auc),
                     pct(b.precision),
                     pct(b.recall),
                     pct(b.f1),
@@ -139,6 +147,15 @@ fn pick_cell(p: Option<&Pick>) -> String {
         Some(p) => format!("{:.2} (target not reached)", p.threshold),
         None => "-".into(),
     }
+}
+
+/// Frame TPR or FPR at a point ("-" without frame rates).
+fn tpr(p: Option<&ThresholdPoint>) -> String {
+    pct(p.and_then(|p| p.frame).and_then(|f| f.tpr))
+}
+
+fn fpr(p: Option<&ThresholdPoint>) -> String {
+    pct(p.and_then(|p| p.frame).and_then(|f| f.fpr))
 }
 
 fn delta(a: Option<f64>, b: Option<f64>) -> String {
@@ -173,7 +190,9 @@ fn threshold_summary(r: &BenchmarkResults) -> Option<Section> {
         heading: "Best confidence threshold".into(),
         level: 2,
         paragraphs: vec![
-            "Per model on its recommended device: precision / recall / F1 (%, IoU 0.5) at the configured threshold and at the best one for the objective. The best threshold is exact (every distinct confidence is evaluated), taken from the middle of the widest range scoring within 0.002 of the optimum and rounded down to 0.01; F2 and precision:0.9 show what those objectives would pick. Apply with `benchmark --apply-threshold` or the Benchmark page. The server threshold is what a model reports; Blue Iris may send its own min_confidence per request (it then replaces the server threshold for that request), and each camera's minimum confidence filters the returned objects again."
+            "Per model on its recommended device: precision / recall / F1 (%, IoU 0.5) at the configured threshold and at the best one for the objective. The best threshold is exact (every distinct confidence is evaluated), taken from the middle of the widest range scoring within 0.002 of the optimum and rounded down to 0.01; F2, precision:0.9 and youden show what those objectives would pick. Apply with `benchmark --apply-threshold` or the Benchmark page. The server threshold is what a model reports; Blue Iris may send its own min_confidence per request (it then replaces the server threshold for that request), and each camera's minimum confidence filters the returned objects again."
+                .into(),
+            "Frame level: a frame alerts for a class when its most confident prediction of the class reaches the threshold. ROC AUC is the macro mean over classes of the chance that a frame with the class scores higher than a frame without it (ties count half); TPR is the alert rate on frames with an object, FPR the false-alert rate on frames without one (classes pooled). Computed from the 0.05+ predictions: frames below 0.05 score 0, which can only understate the AUC slightly."
                 .into(),
         ],
         tables: vec![Table {
@@ -193,6 +212,10 @@ fn threshold_summary(r: &BenchmarkResults) -> Option<Section> {
                 "F1 gain",
                 "f2 pick",
                 "precision:0.9 pick",
+                "youden pick",
+                "ROC AUC",
+                "frame TPR / FPR configured",
+                "frame TPR / FPR best",
                 "night",
             ]
             .map(String::from)
@@ -221,6 +244,14 @@ fn threshold_summary(r: &BenchmarkResults) -> Option<Section> {
                         delta(b.and_then(|b| b.point.f1), c.f1),
                         alt(a, "f2"),
                         alt(a, "precision:0.9"),
+                        alt(a, "youden"),
+                        pct(a.roc.as_ref().and_then(|r| r.auc)),
+                        format!("{} / {}", tpr(Some(c)), fpr(Some(c))),
+                        format!(
+                            "{} / {}",
+                            tpr(b.map(|b| &b.point)),
+                            fpr(b.map(|b| &b.point))
+                        ),
                         night(a),
                     ]
                 })
@@ -241,6 +272,7 @@ fn group_table(title: &str, groups: &[GroupPick]) -> Table {
             "R",
             "F1",
             "configured F1",
+            "ROC AUC",
         ]
         .map(String::from)
         .to_vec(),
@@ -261,6 +293,7 @@ fn group_table(title: &str, groups: &[GroupPick]) -> Table {
                     pct(b.and_then(|b| b.point.recall)),
                     pct(b.and_then(|b| b.point.f1)),
                     pct(g.configured.f1),
+                    pct(g.roc_auc),
                 ]
             })
             .collect(),
@@ -288,6 +321,15 @@ fn threshold_tables(a: &ThresholdAdvice, paragraphs: &mut Vec<String>, tables: &
             if let (Some(e), Some([lo, hi])) = (b.exact_threshold, b.plateau) {
                 p.push_str(&format!(
                     " Exact optimum at {e:.3}; near-optimal range {lo:.3}..{hi:.3}."
+                ));
+            }
+            if let (Some(c), Some(f)) = (a.configured.frame, b.point.frame) {
+                p.push_str(&format!(
+                    " Frame TPR / FPR: {} / {} at the best, {} / {} at the configured.",
+                    pct(f.tpr),
+                    pct(f.fpr),
+                    pct(c.tpr),
+                    pct(c.fpr)
                 ));
             }
             if let Some(n) = &b.note {
@@ -427,21 +469,27 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
         }],
     });
     let ranking = r.ranking();
+    let metric = r.accuracy_metric();
     if !ranking.is_empty() {
         out.push(Section {
             heading: "Best model for this machine".into(),
             level: 2,
             paragraphs: vec![format!(
                 "Each model on its recommended device, ranked by overall grade, then accuracy, then \
-                 speed. Models with no class in the datasets are not scored for accuracy and \
-                 rank last. Best: {} on {}.",
-                ranking[0].model, ranking[0].device
+                 speed; accuracy graded by {}. Models with no class in the datasets are not \
+                 scored for accuracy and rank last. Best: {} on {}.",
+                metric.label(),
+                ranking[0].model,
+                ranking[0].device
             )],
             tables: vec![Table {
                 title: String::new(),
-                head: ["#", "model", "device", "overall", "accuracy", "speed", "p50 ms", "AP50"]
-                    .map(String::from)
-                    .to_vec(),
+                head: [
+                    "#", "model", "device", "overall", "accuracy", "speed", "p50 ms", "AP50",
+                    "ROC AUC",
+                ]
+                .map(String::from)
+                .to_vec(),
                 rows: ranking
                     .iter()
                     .map(|k| {
@@ -464,6 +512,7 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                             k.speed.to_string(),
                             msf(k.p50_ms),
                             pct(k.ap50),
+                            pct(k.roc_auc),
                         ]
                     })
                     .collect(),
@@ -504,6 +553,7 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                 "req/s",
                 "AP50",
                 "AP50-95",
+                "ROC AUC",
                 "P",
                 "R",
                 "overall",
@@ -552,6 +602,34 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                         })
                         .collect(),
                 });
+                if let Some(roc) = &a.frame_roc {
+                    paragraphs.push(format!(
+                        "Frame-level ROC AUC of {}: macro {}, micro {} ({} positive and {} negative frame samples; a frame counts once per class).",
+                        run.requested_device,
+                        pct(roc.auc),
+                        pct(roc.micro_auc),
+                        roc.positives,
+                        roc.negatives
+                    ));
+                    tables.push(Table {
+                        title: "Frame-level ROC by class".into(),
+                        head: ["class", "frames with", "frames without", "ROC AUC"]
+                            .map(String::from)
+                            .to_vec(),
+                        rows: roc
+                            .per_class
+                            .iter()
+                            .map(|c| {
+                                vec![
+                                    c.class.clone(),
+                                    c.positives.to_string(),
+                                    c.negatives.to_string(),
+                                    pct(c.auc),
+                                ]
+                            })
+                            .collect(),
+                    });
+                }
                 tables.push(Table {
                     title: "Recall by object size".into(),
                     head: ["size", "objects", "recall"].map(String::from).to_vec(),
@@ -622,9 +700,17 @@ fn sections(r: &BenchmarkResults) -> Vec<Section> {
                 SPEED_THRESHOLDS_MS[0], SPEED_THRESHOLDS_MS[1], SPEED_THRESHOLDS_MS[2], SPEED_THRESHOLDS_MS[3]
             ),
             format!(
-                "Accuracy: AP@0.5 over the CCTV classes the model has (person, bicycle, car, motorcycle, bus, truck, dog, cat, bird, horse; IPcam 'vehicle' = car/truck/bus), blended {:.0}% with small-object recall when there are small objects: A >= {:.2}, B >= {:.2}, C >= {:.2}, D >= {:.2}, else F. * = relative to a reference model, not ground truth.",
+                "Accuracy is graded by {} (config benchmark.accuracy_metric).",
+                metric.label()
+            ),
+            format!(
+                "Accuracy, AP50 metric: AP@0.5 over the CCTV classes the model has (person, bicycle, car, motorcycle, bus, truck, dog, cat, bird, horse; IPcam 'vehicle' = car/truck/bus), blended {:.0}% with small-object recall when there are small objects: A >= {:.2}, B >= {:.2}, C >= {:.2}, D >= {:.2}, else F. * = relative to a reference model, not ground truth.",
                 SMALL_RECALL_WEIGHT * 100.0,
                 ACCURACY_THRESHOLDS[0], ACCURACY_THRESHOLDS[1], ACCURACY_THRESHOLDS[2], ACCURACY_THRESHOLDS[3]
+            ),
+            format!(
+                "Accuracy, ROC AUC metric: macro frame-level ROC AUC over the same classes (no small-object component): A >= {:.2}, B >= {:.2}, C >= {:.2}, D >= {:.2}, else F (0.5 is chance).",
+                ROC_AUC_THRESHOLDS[0], ROC_AUC_THRESHOLDS[1], ROC_AUC_THRESHOLDS[2], ROC_AUC_THRESHOLDS[3]
             ),
             "Overall: weighted mean of the grade points (A=4 .. F=0), default 60% accuracy, 40% speed (config benchmark.weights). Devices whose detections disagree with the CPU reference are never recommended.".into(),
         ],
@@ -783,6 +869,12 @@ mod tests {
                 },
                 4,
             )
+            .with_frame(Some(super::super::roc::FrameRates::new(
+                (8.0 * (1.0 - t)) as usize,
+                (4.0 * (1.0 - t)) as usize,
+                8,
+                4,
+            )))
         };
         let pick = |t: f32, o: &str, met: bool| Pick {
             objective: o.into(),
@@ -806,6 +898,7 @@ mod tests {
                 pick(0.37, "f1", true),
                 pick(0.21, "f2", true),
                 pick(0.9, "precision:0.9", false),
+                pick(0.33, "youden", true),
             ],
             curve: SWEEP_THRESHOLDS.iter().map(|&t| pt(t)).collect(),
             exact: vec![],
@@ -816,17 +909,36 @@ mod tests {
                 relative: false,
                 configured: pt(0.5),
                 best: Some(pick(0.25, "f1", true)),
+                roc_auc: Some(0.912),
             }],
             by_tag: vec![],
             per_class: vec![],
             by_device: vec![],
+            roc: Some(super::super::roc::FrameRoc {
+                auc: Some(0.934),
+                ..Default::default()
+            }),
         });
         let r = BenchmarkResults::new(Default::default(), Default::default(), vec![m]);
         let md = markdown(&r);
         assert!(md.contains("## Best confidence threshold"), "{md}");
         assert!(md.contains("| yolo26n | ort:coreml | f1 | 0.50 |"), "{md}");
+        // f2, precision:0.9 and youden picks, AUC, frame TPR / FPR at configured (0.50: 4 of 8,
+        // 2 of 4) and best (0.37: 5 of 8, 2 of 4), night.
         assert!(
-            md.contains("| 0.21 | 0.90 (target not reached) | exdark-night 0.25 |"),
+            md.contains(
+                "| 0.21 | 0.90 (target not reached) | 0.33 | 93.4 | 50.0 / 50.0 | 62.5 / 50.0 | exdark-night 0.25 |"
+            ),
+            "{md}"
+        );
+        assert!(
+            md.contains("Frame TPR / FPR: 62.5 / 50.0 at the best"),
+            "{md}"
+        );
+        assert!(md.contains("| configured F1 | ROC AUC |"), "{md}");
+        assert!(md.contains("| 91.2 |"), "{md}");
+        assert!(
+            md.contains("ROC AUC metric: macro frame-level ROC AUC"),
             "{md}"
         );
         assert!(md.contains("**Confidence threshold on ort:coreml (%, IoU 0.5)**"));

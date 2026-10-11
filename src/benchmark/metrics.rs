@@ -27,6 +27,7 @@
 //! (see `Bench::time`): greedy NMS keeps or drops a box based only on more confident boxes, and
 //! the DETR top-Q selection keeps a prefix of the confidence order.
 
+use super::roc::{FrameRates, FrameSample, FrameSteps, frame_samples};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -650,6 +651,10 @@ pub struct ThresholdPoint {
     pub f2: Option<f64>,
     /// False positives per image (0 without images).
     pub fp_per_image: f64,
+    /// Frame-level alert rates at this threshold (see [`super::roc`]); None when the curve has
+    /// no frame samples (small-object scope, results of older versions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameRates>,
 }
 
 impl ThresholdPoint {
@@ -666,7 +671,14 @@ impl ThresholdPoint {
             } else {
                 counts.fp as f64 / images as f64
             },
+            frame: None,
         }
+    }
+
+    /// With frame-level rates.
+    pub fn with_frame(mut self, frame: Option<FrameRates>) -> Self {
+        self.frame = frame;
+        self
     }
 }
 
@@ -689,6 +701,9 @@ pub struct SweepImage {
     /// Non-ignored ground truth: (class, small).
     pub gt: Vec<(String, bool)>,
     pub preds: Vec<SweepPred>,
+    /// Frame samples of the classes annotated in the image ([`super::roc`]); empty unless added
+    /// with [`SweepImage::with_frames`].
+    pub frames: Vec<FrameSample>,
 }
 
 impl SweepImage {
@@ -728,7 +743,15 @@ impl SweepImage {
                 .map(|g| (g.label.clone(), is_small(&g.bbox)))
                 .collect(),
             preds,
+            frames: Vec::new(),
         }
+    }
+
+    /// With the frame samples of `img` for `classes` (the scored classes its dataset
+    /// annotates).
+    pub fn with_frames(mut self, img: &EvalImage, classes: &[String]) -> Self {
+        self.frames = frame_samples(img, classes);
+        self
     }
 }
 
@@ -756,6 +779,16 @@ impl SweepScope<'_> {
 
     fn pred(&self, p: &SweepPred) -> bool {
         self.gt(&p.class, p.small)
+    }
+
+    /// Frame samples in scope: every class, or one; none for small objects (a frame-level
+    /// alert has no object size).
+    fn frame(&self, f: &FrameSample) -> bool {
+        match self {
+            SweepScope::All => true,
+            SweepScope::Class(c) => *c == f.class,
+            SweepScope::Small => false,
+        }
     }
 }
 
@@ -806,6 +839,9 @@ pub struct Breakpoints {
     /// `(confidence, TP, FP)` with every prediction at or above `confidence`, by descending
     /// confidence (one entry per distinct confidence).
     pub steps: Vec<(f32, usize, usize)>,
+    /// Frame-level steps of the scope's frame samples, pooled over classes (None without
+    /// samples).
+    pub frames: Option<FrameSteps>,
 }
 
 impl Breakpoints {
@@ -835,11 +871,23 @@ impl Breakpoints {
                 steps.push((c, tp, fp));
             }
         }
+        let frames = FrameSteps::new(
+            images
+                .iter()
+                .flat_map(|i| i.frames.iter())
+                .filter(|f| scope.frame(f)),
+        );
         Self {
             npos,
             images: images.len(),
             steps,
+            frames,
         }
+    }
+
+    /// Frame rates at `t` (None without frame samples).
+    pub fn frame_at(&self, t: f32) -> Option<FrameRates> {
+        self.frames.as_ref().map(|f| f.rates_at(t))
     }
 
     /// Counts with the predictions at or above `t` (binary search over the steps).
@@ -857,7 +905,7 @@ impl Breakpoints {
     }
 
     pub fn point_at(&self, t: f32) -> ThresholdPoint {
-        ThresholdPoint::new(t, self.counts_at(t), self.images)
+        ThresholdPoint::new(t, self.counts_at(t), self.images).with_frame(self.frame_at(t))
     }
 
     /// The exact curve (one point per distinct confidence, ascending threshold) thinned to at

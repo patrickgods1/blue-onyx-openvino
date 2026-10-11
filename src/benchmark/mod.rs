@@ -26,6 +26,7 @@ pub mod grade;
 pub mod images;
 pub mod metrics;
 pub mod report;
+pub mod roc;
 pub mod search;
 pub mod service;
 pub mod threshold;
@@ -211,10 +212,13 @@ pub struct Breakdown {
     pub ap50_95: Option<f64>,
     /// Against pseudo ground truth.
     pub relative: bool,
+    /// Frame-level ROC AUC (macro over classes, see [`roc`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roc_auc: Option<f64>,
 }
 
 impl Breakdown {
-    fn of(key: &str, s: &Summary, relative: bool) -> Self {
+    fn of(key: &str, s: &Summary, relative: bool, roc_auc: Option<f64>) -> Self {
         Self {
             key: key.to_string(),
             images: s.images,
@@ -225,6 +229,7 @@ impl Breakdown {
             ap50: s.ap50,
             ap50_95: s.ap50_95,
             relative,
+            roc_auc,
         }
     }
 }
@@ -250,6 +255,34 @@ pub struct AccuracyReport {
     /// have none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sweep: Option<threshold::ThresholdSweep>,
+    /// Frame-level ROC of the overall images (per class AUC, macro and micro; no curve: the
+    /// sweep has it). Results of older versions have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_roc: Option<roc::FrameRoc>,
+}
+
+impl AccuracyReport {
+    /// The accuracy score `metric` grades: AP@0.5 blended with small-object recall
+    /// ([`grade::accuracy_score`]), or the macro frame ROC AUC.
+    pub fn score(&self, metric: grade::AccuracyMetric) -> Option<f64> {
+        match metric {
+            grade::AccuracyMetric::Ap50 => {
+                let small = self
+                    .overall
+                    .by_size
+                    .iter()
+                    .find(|b| b.bucket == "small" && b.gt > 0)
+                    .and_then(|b| b.recall);
+                self.overall.ap50.map(|ap| grade::accuracy_score(ap, small))
+            }
+            grade::AccuracyMetric::RocAuc => self.roc_auc(),
+        }
+    }
+
+    /// Macro frame ROC AUC.
+    pub fn roc_auc(&self) -> Option<f64> {
+        self.frame_roc.as_ref().and_then(|r| r.auc)
+    }
 }
 
 /// AP over all of a model's classes.
@@ -259,6 +292,16 @@ pub struct AllClasses {
     pub classes: usize,
     pub ap50: Option<f64>,
     pub ap50_95: Option<f64>,
+}
+
+/// The scored classes a dataset annotates: every class of `map`, or those of the set's
+/// `scored_labels` (`allowed`, from [`eval_input`]). Frame samples exist only for these.
+pub(crate) fn frame_classes(map: &ClassMap, allowed: Option<&[String]>) -> Vec<String> {
+    map.classes
+        .iter()
+        .filter(|c| allowed.is_none_or(|a| a.contains(c)))
+        .cloned()
+        .collect()
 }
 
 /// One image in a class map's label space: ground truth per original object (None = not
@@ -650,6 +693,8 @@ pub struct Bench<'a> {
     pub weights: Weights,
     /// What the best confidence threshold optimizes (exact picks are computed per run).
     pub threshold_objective: threshold::Objective,
+    /// What the accuracy grade is computed from.
+    pub accuracy_metric: grade::AccuracyMetric,
 }
 
 /// One request's timings (decode, preprocess, infer, postprocess; ms).
@@ -702,6 +747,7 @@ impl<'a> Bench<'a> {
             progress: None,
             weights: Weights::default(),
             threshold_objective: threshold::Objective::default(),
+            accuracy_metric: grade::AccuracyMetric::default(),
         }
     }
 
@@ -972,17 +1018,17 @@ impl<'a> Bench<'a> {
             threshold,
             self.threshold_objective,
         );
-        let accuracy_score = accuracy.as_ref().and_then(|a| {
-            let small = a
-                .overall
-                .by_size
-                .iter()
-                .find(|b| b.bucket == "small" && b.gt > 0)
-                .and_then(|b| b.recall);
-            a.overall.ap50.map(|ap| grade::accuracy_score(ap, small))
-        });
+        let accuracy_score = accuracy
+            .as_ref()
+            .and_then(|a| a.score(self.accuracy_metric));
         let relative = accuracy.as_ref().is_some_and(|a| a.relative);
-        let grades = Grades::new(accuracy_score, total.p50, self.weights, relative);
+        let grades = Grades::with_metric(
+            self.accuracy_metric,
+            accuracy_score,
+            total.p50,
+            self.weights,
+            relative,
+        );
         let first_dets = per_image
             .first()
             .map(|r| r.preds.iter().map(Detection::from).collect())
@@ -1077,13 +1123,17 @@ fn score(
     }
     // Per image: mapped ground truth (with the original index) and the eval input.
     let mut evals: Vec<Option<EvalImage>> = Vec::with_capacity(all.len());
+    // Per image: the classes its dataset annotates (frame samples).
+    let mut fclasses: Vec<Vec<String>> = Vec::with_capacity(all.len());
     for (k, (set, img)) in all.iter().enumerate() {
         let Some(gt) = &img.gt else {
             evals.push(None);
+            fclasses.push(Vec::new());
             continue;
         };
         let (mapped, eval, allowed) =
             eval_input(&map, set.scored_labels.as_deref(), gt, &eval_preds[k]);
+        fclasses.push(frame_classes(&map, allowed.as_deref()));
         let gt_list = eval.gt.clone();
         // Drill-down flags on the stored (production) predictions.
         let run = &mut per_image[k];
@@ -1141,6 +1191,18 @@ fn score(
     };
     let subset =
         |ks: &[usize]| -> Vec<EvalImage> { ks.iter().filter_map(|&k| evals[k].clone()).collect() };
+    let frames: Vec<Vec<roc::FrameSample>> = evals
+        .iter()
+        .zip(&fclasses)
+        .map(|(e, c)| e.as_ref().map_or(Vec::new(), |e| roc::frame_samples(e, c)))
+        .collect();
+    let frame_roc = |ks: &[usize], curve: usize| {
+        roc::FrameRoc::of(
+            ks.iter().flat_map(|&k| frames[k].iter()),
+            &map.classes,
+            curve,
+        )
+    };
     let overall = metrics::evaluate(&subset(&chosen), &map.classes, threshold);
     let all_map = ClassMap::all_classes(&job.classes);
     let all_classes = (all_map.classes.len() > map.classes.len()).then(|| {
@@ -1195,7 +1257,12 @@ fn score(
             continue;
         }
         let sum = metrics::evaluate(&subset(&ks), &map.classes, threshold);
-        by_dataset.push(Breakdown::of(&s.id, &sum, !s.ground_truth.is_real()));
+        by_dataset.push(Breakdown::of(
+            &s.id,
+            &sum,
+            !s.ground_truth.is_real(),
+            frame_roc(&ks, 0).auc,
+        ));
     }
     // Per tag, over the images of the overall score.
     let mut tags: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
@@ -1208,12 +1275,13 @@ fn score(
         .into_iter()
         .map(|(t, ks)| {
             let sum = metrics::evaluate(&subset(&ks), &map.classes, threshold);
-            Breakdown::of(t, &sum, relative)
+            Breakdown::of(t, &sum, relative, frame_roc(&ks, 0).auc)
         })
         .collect();
     let sweep = threshold_sweep(
         all,
         &evals,
+        &fclasses,
         &chosen,
         relative,
         &map.classes,
@@ -1231,6 +1299,7 @@ fn score(
             by_tag,
             all_classes,
             sweep: Some(sweep),
+            frame_roc: Some(frame_roc(&chosen, 0)),
         }),
         None,
     )
@@ -1239,21 +1308,31 @@ fn score(
 /// Threshold curves of a run from its evaluation inputs (`evals`, None = image not scored):
 /// overall (over `chosen`, the images of the overall score), per dataset, per tag of
 /// [`threshold::SWEEP_TAGS`], for small objects and per class.
+#[allow(clippy::too_many_arguments)]
 fn threshold_sweep(
     all: &[(&ImageSet, &images::SetImage)],
     evals: &[Option<EvalImage>],
+    frame_classes: &[Vec<String>],
     chosen: &[usize],
     relative: bool,
     classes: &[String],
     configured: f32,
     objective: threshold::Objective,
 ) -> threshold::ThresholdSweep {
-    use metrics::{SWEEP_THRESHOLDS, SweepImage, SweepScope, ThresholdPoint};
+    use metrics::{SWEEP_THRESHOLDS, SweepImage, SweepScope};
     let matched: Vec<Option<SweepImage>> = evals
         .iter()
-        .map(|e| e.as_ref().map(SweepImage::of))
+        .zip(frame_classes)
+        .map(|(e, c)| e.as_ref().map(|e| SweepImage::of(e).with_frames(e, c)))
         .collect();
     let objectives = threshold::objectives(objective);
+    let roc_of = |imgs: &[&SweepImage], scope: SweepScope, curve: usize| {
+        let cls: Vec<String> = match scope {
+            SweepScope::Class(c) => vec![c.to_string()],
+            _ => classes.to_vec(),
+        };
+        roc::FrameRoc::of(imgs.iter().flat_map(|i| i.frames.iter()), &cls, curve)
+    };
     let curve = |key: &str, ks: &[usize], scope: SweepScope, relative: bool| {
         let imgs: Vec<&SweepImage> = ks.iter().filter_map(|&k| matched[k].as_ref()).collect();
         let bp = metrics::Breakpoints::new(&imgs, scope);
@@ -1263,12 +1342,16 @@ fn threshold_sweep(
             gt: bp.npos,
             relative,
             points: SWEEP_THRESHOLDS.iter().map(|&t| bp.point_at(t)).collect(),
-            configured: ThresholdPoint::new(configured, bp.counts_at(configured), imgs.len()),
+            configured: bp.point_at(configured),
             picks: objectives
                 .iter()
                 .filter_map(|o| threshold::exact_pick(&bp, *o))
                 .collect(),
             exact: Vec::new(),
+            roc_auc: match scope {
+                SweepScope::Small => None,
+                _ => roc_of(&imgs, scope, 0).auc,
+            },
         }
     };
     let mut by_dataset = Vec::new();
@@ -1309,16 +1392,31 @@ fn threshold_sweep(
     let imgs: Vec<&SweepImage> = chosen.iter().filter_map(|&k| matched[k].as_ref()).collect();
     overall.exact =
         metrics::Breakpoints::new(&imgs, SweepScope::All).decimated(threshold::EXACT_POINTS);
+    let roc = roc_of(&imgs, SweepScope::All, roc::ROC_POINTS);
+    let mut per_class: Vec<threshold::Curve> = classes
+        .iter()
+        .map(|c| curve(c, chosen, SweepScope::Class(c), relative))
+        .filter(|c| c.gt > 0)
+        .collect();
+    // Group curves keep frame rates at the configured threshold and in their picks; their 0.05
+    // grids drop them (only the overall grid is charted and tabled with frame rates), which
+    // keeps `benchmark.json` small.
+    for c in by_dataset
+        .iter_mut()
+        .chain(by_tag.iter_mut())
+        .chain(per_class.iter_mut())
+    {
+        for p in &mut c.points {
+            p.frame = None;
+        }
+    }
     threshold::ThresholdSweep {
         configured,
         overall,
         by_dataset,
         by_tag,
-        per_class: classes
-            .iter()
-            .map(|c| curve(c, chosen, SweepScope::Class(c), relative))
-            .filter(|c| c.gt > 0)
-            .collect(),
+        per_class,
+        roc: Some(roc),
     }
 }
 
@@ -1355,6 +1453,7 @@ pub fn pseudo_ground_truth(
         progress: bench.progress,
         weights: bench.weights,
         threshold_objective: bench.threshold_objective,
+        accuracy_metric: bench.accuracy_metric,
     };
     let run = pb
         .run_exact(runtimes, &job, device)
@@ -1939,8 +2038,163 @@ mod tests {
         assert_eq!(best.plateau, Some([0.3, 0.9]));
         assert_eq!(best.threshold, 0.6);
         assert_eq!(best.point.f1, Some(1.0));
-        // Every standard objective has an exact pick.
-        assert_eq!(sw.overall.picks.len(), 3);
+        // Every standard objective has an exact pick (Youden too: the car frame is positive,
+        // the motorcycle frame negative).
+        assert_eq!(sw.overall.picks.len(), 4);
+        // Frame samples only for the set's scored labels: person is not a sample at all.
+        let roc = acc.frame_roc.as_ref().unwrap();
+        let keys: Vec<(&str, usize, usize)> = roc
+            .per_class
+            .iter()
+            .map(|c| (c.class.as_str(), c.positives, c.negatives))
+            .collect();
+        assert_eq!(keys, [("car", 1, 0), ("motorcycle", 0, 1)]);
+        // One-sided per class: undefined, so no macro AUC.
+        assert_eq!(roc.auc, None);
+    }
+
+    /// Frame-level ROC through scoring: an IPcam-style model (person + vehicle group), ignore
+    /// regions, and a vehicles-only set.
+    #[test]
+    fn frame_roc_through_scoring() {
+        let g = |l: &str, ignore: bool| GtBox {
+            label: l.into(),
+            bbox: [0.0, 0.0, 100.0, 100.0],
+            ignore,
+        };
+        let p = |l: &str, c: f32| PredBox {
+            label: l.into(),
+            confidence: c,
+            bbox: [0.0, 0.0, 100.0, 100.0],
+        };
+        let img = |file: &str, gt: Vec<GtBox>| images::SetImage {
+            file: file.into(),
+            path: None,
+            width: 640,
+            height: 480,
+            tags: vec!["night".into()],
+            gt: Some(gt),
+        };
+        let mut set = ImageSet::sample();
+        set.id = "s".into();
+        set.ground_truth = GroundTruth::Manifest;
+        set.images = vec![
+            img("a", vec![g("person", false), g("truck", false)]), // person+, vehicle+ (truck)
+            img("b", vec![g("car", false)]),                       // person-, vehicle+
+            img("c", vec![]),                                      // person-, vehicle-
+            img("d", vec![g("person", true)]),                     // person excluded, vehicle-
+        ];
+        // Vehicles-only set: person is not annotated there, so never a negative.
+        let mut cars = set.clone();
+        cars.id = "cars".into();
+        cars.scored_labels = Some(vec!["car".into(), "truck".into(), "bus".into()]);
+        cars.images = vec![img("e", vec![g("bus", false)]), img("f", vec![])];
+        let job = Job {
+            name: "ipcam".into(),
+            path: "m.onnx".into(),
+            family: ModelFamilyKind::Yolo5,
+            classes: vec!["person".into(), "vehicle".into(), "unknown".into()],
+            device: "auto".into(),
+            gpu_precision: None,
+            confidence_threshold: None,
+            object_filter: None,
+        };
+        let eval = vec![
+            vec![p("person", 0.9), p("vehicle", 0.4)],
+            vec![p("person", 0.6), p("vehicle", 0.8)],
+            vec![p("vehicle", 0.5)],
+            vec![p("person", 0.95)],
+            vec![p("person", 0.99), p("vehicle", 0.7)],
+            vec![p("person", 0.99), p("vehicle", 0.2)],
+        ];
+        let all: Vec<(&ImageSet, &images::SetImage)> = set
+            .images
+            .iter()
+            .map(|i| (&set, i))
+            .chain(cars.images.iter().map(|i| (&cars, i)))
+            .collect();
+        let mut pi: Vec<ImageRun> = all
+            .iter()
+            .map(|(s, i)| ImageRun {
+                set: s.id.clone(),
+                file: i.file.clone(),
+                total_ms: 1.0,
+                infer_ms: 1.0,
+                preds: vec![],
+                gt_matched: vec![],
+                counts: None,
+            })
+            .collect();
+        let (acc, _) = score(
+            &job,
+            &all,
+            &mut pi,
+            &eval,
+            0.5,
+            threshold::Objective::Youden,
+        );
+        let acc = acc.unwrap();
+        let roc = acc.frame_roc.clone().unwrap();
+        // person: positives {a .9}; negatives {b .6, c 0}; d excluded (ignore only); the cars
+        // set has no person samples -> AUC 1.
+        let person = &roc.per_class[0];
+        assert_eq!((person.positives, person.negatives), (1, 2));
+        assert_eq!(person.auc, Some(1.0));
+        // vehicle: positives {a .4, b .8, e .7}; negatives {c .5, d 0, f .2}:
+        // pairs won: .4>{0,.2} 2, .8>all 3, .7>all 3 -> 8 / 9.
+        let vehicle = &roc.per_class[1];
+        assert_eq!((vehicle.positives, vehicle.negatives), (3, 3));
+        assert!((vehicle.auc.unwrap() - 8.0 / 9.0).abs() < 1e-12);
+        assert!((roc.auc.unwrap() - (1.0 + 8.0 / 9.0) / 2.0).abs() < 1e-12);
+        assert!((acc.roc_auc().unwrap() - roc.auc.unwrap()).abs() < 1e-15);
+        assert_eq!(
+            acc.score(grade::AccuracyMetric::RocAuc),
+            acc.roc_auc(),
+            "the ROC AUC metric grades on the macro AUC"
+        );
+        // Per dataset and per tag.
+        let s = acc.by_dataset.iter().find(|b| b.key == "s").unwrap();
+        // s alone: person 1.0; vehicle positives {.4, .8} vs negatives {.5, 0}: 3 / 4.
+        assert!((s.roc_auc.unwrap() - (1.0 + 0.75) / 2.0).abs() < 1e-12);
+        assert!(
+            acc.by_tag
+                .iter()
+                .any(|b| b.key == "night" && b.roc_auc.is_some())
+        );
+        // Sweep: pooled frame rates and a Youden pick; the curve ends at (1, 1).
+        let sw = acc.sweep.as_ref().unwrap();
+        let curve = &sw.roc.as_ref().unwrap().curve;
+        assert_eq!(
+            (curve.last().unwrap().tpr, curve.last().unwrap().fpr),
+            (1.0, 1.0)
+        );
+        let f = sw.overall.configured.frame.unwrap();
+        // At 0.5: positives a.person .9, b.vehicle .8, e.vehicle .7 alert, a.vehicle .4 does
+        // not (3 of 4); negatives b.person .6, c.vehicle .5 alert (2 of 5).
+        assert_eq!((f.tp, f.positives, f.fp, f.negatives), (3, 4, 2, 5));
+        let y = sw.overall.best(threshold::Objective::Youden).unwrap();
+        assert!(y.met);
+        // Brute force over the 0.01 grid: no threshold beats the exact optimum.
+        let bp_best = y.exact_score.unwrap();
+        for k in 5..=100 {
+            let t = k as f32 / 100.0;
+            let j = sw
+                .overall
+                .points
+                .iter()
+                .find(|p| (p.threshold - t).abs() < 1e-6)
+                .and_then(|p| p.frame?.youden());
+            if let Some(j) = j {
+                assert!(j <= bp_best + 1e-12, "{t}: {j} > {bp_best}");
+            }
+        }
+        // Per class curves carry the class AUC.
+        let pc = sw.per_class.iter().find(|c| c.key == "vehicle").unwrap();
+        assert!((pc.roc_auc.unwrap() - 8.0 / 9.0).abs() < 1e-12);
+        // Group grids carry no frame rates (size); their configured points and picks do.
+        assert!(pc.points.iter().all(|p| p.frame.is_none()));
+        assert!(pc.configured.frame.is_some());
+        assert!(sw.overall.points.iter().all(|p| p.frame.is_some()));
     }
 
     #[test]

@@ -415,9 +415,22 @@ the CLI and the UI read and write the same file.
   small objects). Scored classes: person, bicycle, car, motorcycle, bus, truck, dog, cat, bird, horse
   as far as the model has them (IPcam `vehicle` = car/truck/bus); AP over all of a COCO model's classes
   is reported too.
+- **Frame-level ROC AUC** (what Blue Iris decides: alert on this frame or not). Box-level ROC is
+  undefined for detection, so each frame is one sample per scored class: positive when it has a
+  non-ignored object of the class, negative when it has none (frames whose only objects of the class
+  are ignore regions, and classes a dataset does not annotate, are left out); its score is the top
+  confidence of the class in the frame (0 without a detection). AUC is exact (Mann-Whitney U, ties
+  count half), per class, macro over classes (the headline) and micro (pooled), with the ROC curve and
+  frame TPR / FPR (alert rate on frames with an object / false-alert rate on frames without) at the
+  configured and best thresholds. It uses the 0.05+ predictions: lower scores count as 0, which can
+  only understate the AUC slightly.
 - **Grades**: speed from the full-request p50 (A < 50 ms, B < 100, C < 200, D < 400, else F); accuracy
-  from AP@0.5 blended 20% with small-object recall (A >= 0.70, B >= 0.60, C >= 0.50, D >= 0.40);
-  overall = weighted grade points (`benchmark.weights`, default 60% accuracy / 40% speed).
+  by `benchmark.accuracy_metric` / `--accuracy-metric`: `ap50` (default; AP@0.5 blended 20% with
+  small-object recall, A >= 0.70, B >= 0.60, C >= 0.50, D >= 0.40) or `roc_auc` (macro frame ROC AUC,
+  A >= 0.95, B >= 0.90, C >= 0.80, D >= 0.70; 0.5 is chance); overall = weighted grade points
+  (`benchmark.weights`, default 60% accuracy / 40% speed). The metric also drives the ranking and the
+  device recommendation's accuracy tie (0.015 AP50, 0.01 AUC); results kept from earlier runs are
+  re-graded with the current metric when a run is saved.
 - **Recommendation**: the best-graded device whose detections agree with the CPU reference device
   (devices that disagree, e.g. a broken FP16 path, are never recommended); within 5% of the best p50
   the configured device is kept. The page and the report also rank the models ("best model for this
@@ -431,8 +444,10 @@ the CLI and the UI read and write the same file.
   widest range is taken, rounded down to 0.01 (at least 0.05). The objective is
   `benchmark.threshold_objective` / `--threshold-objective`: `f1` (default), `f2` (favor recall: fewer
   missed people), `precision:<p>` (highest recall with precision >= p, e.g. `precision:0.9` for fewer
-  false alerts) or `recall:<r>` (highest precision with recall >= r); ties go to the higher threshold.
-  The recommendation text adds P/R at the best threshold; the accuracy grade stays on AP.
+  false alerts), `recall:<r>` (highest precision with recall >= r), `youden` (highest frame-level
+  TPR - FPR, Youden's J, classes pooled) or `fpr:<x>` (highest frame alert rate with at most x of the
+  frames without an object alerting, e.g. `fpr:0.05`); ties go to the higher threshold. The
+  recommendation text adds P/R (and frame TPR / FPR) at the best threshold.
   The server threshold is what a model reports: Blue Iris may send its own `min_confidence` per
   request (when it does, it replaces the server threshold for that request), and each camera's
   minimum confidence filters the returned objects again on top.
@@ -442,13 +457,16 @@ blue-onyx-prism benchmark --all-devices --apply-threshold    # also write each m
 blue-onyx-prism benchmark --apply --apply-threshold --threshold-objective f2
 blue-onyx-prism benchmark --threshold-search --tag night --threshold-objective recall:0.9   # stored predictions, no inference
 blue-onyx-prism benchmark --threshold-search --dataset exdark-night --class person --iou 0.6 --json
+blue-onyx-prism benchmark --all-devices --accuracy-metric roc_auc --threshold-objective youden
+blue-onyx-prism benchmark --threshold-search --threshold-objective fpr:0.05   # frame ROC from stored predictions
 ```
 
 The predictions behind the search are stored in `benchmark-preds.json` next to `benchmark.json`
 (`[class, confidence, x_min, y_min, x_max, y_max]` per prediction and image, per model and device). The
 Benchmark page's **Confidence search** card runs the same search (models, device, datasets, tags,
 classes, objective with target, IoU) in milliseconds and shows P/R/F1(/F2) vs threshold with hover
-values, the configured and best thresholds marked, a summary and a 0.05-step table, **Apply** /
+values, the configured and best thresholds marked, the frame ROC curve (with ROC AUC per class and frame
+TPR / FPR at the configured and best thresholds), a summary and a 0.05-step table, **Apply** /
 **Apply all** (writes `confidence_threshold`, same restart flow) and CSV copy/download.
 
 The `benchmark` config section holds the defaults (**Save as default** on the page writes it):
@@ -459,7 +477,7 @@ The `benchmark` config section holds the defaults (**Save as default** on the pa
   "max_images_per_dataset": 0, "devices": [], "models": [],
   "warmup": 3, "repeat_per_image": 1, "reference_model": null,
   "weights": {"accuracy": 0.6, "speed": 0.4}, "auto_download_datasets": true,
-  "threshold_objective": "f1"
+  "threshold_objective": "f1", "accuracy_metric": "ap50"
 }
 ```
 

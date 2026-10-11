@@ -12,6 +12,11 @@
 //! (e.g. `night`), scored classes, IoU and objective. Filtering the stored predictions at a
 //! higher threshold is exact for every family (see [`super::metrics`]), so the search equals a
 //! benchmark run at that threshold, without running one.
+//!
+//! The same stored predictions give the frame-level ROC ([`super::roc`]): a frame's score for a
+//! class is its most confident stored prediction of that class, so the search reports frame ROC
+//! AUC (overall, per dataset, per class) and can optimize the frame objectives (`youden`,
+//! `fpr:<x>`) without inference.
 
 use super::images::GroundTruth;
 use super::metrics::{
@@ -19,6 +24,7 @@ use super::metrics::{
     ThresholdPoint, canonical_label,
 };
 use super::report::{BenchmarkResults, ImageInfo, ImageSetInfo, ModelResult};
+use super::roc::{FrameRoc, ROC_POINTS};
 use super::threshold::{GroupPick, Objective, Pick, exact_pick};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -361,6 +367,9 @@ pub struct SearchResult {
     pub exact: Vec<ThresholdPoint>,
     pub by_dataset: Vec<GroupPick>,
     pub per_class: Vec<GroupPick>,
+    /// Frame-level ROC of the searched images (macro / micro / per class AUC and the curve).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roc: Option<FrameRoc>,
 }
 
 /// A search over several models.
@@ -558,8 +567,8 @@ fn search_run(
         }
         v
     };
-    // (set, image info, eval input) of every searched image.
-    let mut inputs: Vec<(&ImageSetInfo, &ImageInfo, EvalImage)> = Vec::new();
+    // (set, image info, eval input, classes annotated) of every searched image.
+    let mut inputs: Vec<(&ImageSetInfo, &ImageInfo, EvalImage, Vec<String>)> = Vec::new();
     for (k, img) in run.images.iter().enumerate() {
         if !req.datasets.is_empty() && !req.datasets.contains(&img.set) {
             continue;
@@ -574,11 +583,13 @@ fn search_run(
             continue;
         }
         let Some(gt) = &info.objects else { continue };
-        let (_, mut eval, _) =
+        let (_, mut eval, allowed) =
             super::eval_input(&map, set.scored_labels.as_deref(), gt, &run.preds(k));
         eval.gt.retain(|g| wanted.contains(&g.label));
         eval.preds.retain(|p| wanted.contains(&p.label));
-        inputs.push((set, info, eval));
+        let mut fc = super::frame_classes(&map, allowed.as_deref());
+        fc.retain(|c| wanted.contains(c));
+        inputs.push((set, info, eval, fc));
     }
     if inputs.is_empty() {
         bail!("no scored images match these filters");
@@ -593,24 +604,32 @@ fn search_run(
     };
     let matched: Vec<SweepImage> = inputs
         .iter()
-        .map(|(_, _, e)| SweepImage::with_iou(e, req.iou))
+        .map(|(_, _, e, fc)| SweepImage::with_iou(e, req.iou).with_frames(e, fc))
         .collect();
+    let roc_of = |ks: &[usize], classes: &[String], points: usize| {
+        FrameRoc::of(
+            ks.iter().flat_map(|&k| matched[k].frames.iter()),
+            classes,
+            points,
+        )
+    };
     let refs = |ks: &[usize]| -> Vec<&SweepImage> { ks.iter().map(|&k| &matched[k]).collect() };
     let overall = Breakpoints::new(&refs(&chosen), SweepScope::All);
     if overall.npos == 0 {
         bail!("no ground-truth objects of these classes in the matching images");
     }
-    let group = |key: &str, bp: &Breakpoints, relative: bool| GroupPick {
+    let group = |key: &str, bp: &Breakpoints, relative: bool, roc_auc: Option<f64>| GroupPick {
         key: key.to_string(),
         images: bp.images,
         gt: bp.npos,
         relative,
         configured: bp.point_at(run.configured),
         best: exact_pick(bp, req.objective),
+        roc_auc,
     };
     let mut by_dataset = Vec::new();
     let mut seen: Vec<&str> = Vec::new();
-    for (s, _, _) in &inputs {
+    for (s, _, _, _) in &inputs {
         if seen.contains(&s.id.as_str()) {
             continue;
         }
@@ -620,14 +639,16 @@ fn search_run(
             .collect();
         let bp = Breakpoints::new(&refs(&ks), SweepScope::All);
         if bp.npos > 0 {
-            by_dataset.push(group(&s.id, &bp, !s.ground_truth.is_real()));
+            let auc = roc_of(&ks, &wanted, 0).auc;
+            by_dataset.push(group(&s.id, &bp, !s.ground_truth.is_real(), auc));
         }
     }
+    let roc = roc_of(&chosen, &wanted, ROC_POINTS);
     let per_class = wanted
         .iter()
         .map(|c| (c, Breakpoints::new(&refs(&chosen), SweepScope::Class(c))))
         .filter(|(_, bp)| bp.npos > 0)
-        .map(|(c, bp)| group(c, &bp, relative))
+        .map(|(c, bp)| group(c, &bp, relative, roc.class_auc(c)))
         .collect();
     let ground_truth = if relative {
         let refs: std::collections::BTreeSet<String> = chosen
@@ -670,19 +691,23 @@ fn search_run(
         exact: overall.decimated(SEARCH_EXACT_POINTS),
         by_dataset,
         per_class,
+        roc: (roc.positives + roc.negatives > 0).then_some(roc),
     })
 }
 
 /// CSV of the search summary and each model's 0.05 grid.
 pub fn to_csv(out: &SearchOutput) -> String {
     let f = |v: Option<f64>| v.map_or(String::new(), |v| format!("{v:.4}"));
+    let ft = |p: Option<&ThresholdPoint>| p.and_then(|p| p.frame).and_then(|f| f.tpr);
+    let ff = |p: Option<&ThresholdPoint>| p.and_then(|p| p.frame).and_then(|f| f.fpr);
     let mut s = String::from(
-        "model,device,objective,configured,configured_precision,configured_recall,configured_f1,best,best_precision,best_recall,best_f1,f1_gain\n",
+        "model,device,objective,configured,configured_precision,configured_recall,configured_f1,best,best_precision,best_recall,best_f1,f1_gain,roc_auc,roc_auc_micro,configured_frame_tpr,configured_frame_fpr,best_frame_tpr,best_frame_fpr\n",
     );
     for r in &out.results {
         let b = r.best.as_ref();
+        let roc = r.roc.as_ref();
         s.push_str(&format!(
-            "{},{},{},{:.2},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_field(&r.model),
             r.device,
             r.objective,
@@ -695,13 +720,21 @@ pub fn to_csv(out: &SearchOutput) -> String {
             f(b.and_then(|b| b.point.recall)),
             f(b.and_then(|b| b.point.f1)),
             f(b.and_then(|b| Some(b.point.f1? - r.configured.f1?))),
+            f(roc.and_then(|x| x.auc)),
+            f(roc.and_then(|x| x.micro_auc)),
+            f(ft(Some(&r.configured))),
+            f(ff(Some(&r.configured))),
+            f(ft(b.map(|b| &b.point))),
+            f(ff(b.map(|b| &b.point))),
         ));
     }
-    s.push_str("\nmodel,threshold,tp,fp,fn,precision,recall,f1,f2,fp_per_image\n");
+    s.push_str(
+        "\nmodel,threshold,tp,fp,fn,precision,recall,f1,f2,fp_per_image,frame_tpr,frame_fpr\n",
+    );
     for r in &out.results {
         for p in &r.grid {
             s.push_str(&format!(
-                "{},{:.2},{},{},{},{},{},{},{},{:.4}\n",
+                "{},{:.2},{},{},{},{},{},{},{},{:.4},{},{}\n",
                 csv_field(&r.model),
                 p.threshold,
                 p.counts.tp,
@@ -711,7 +744,22 @@ pub fn to_csv(out: &SearchOutput) -> String {
                 f(p.recall),
                 f(p.f1),
                 f(p.f2),
-                p.fp_per_image
+                p.fp_per_image,
+                f(ft(Some(p))),
+                f(ff(Some(p))),
+            ));
+        }
+    }
+    s.push_str("\nmodel,class,positive_frames,negative_frames,roc_auc\n");
+    for r in &out.results {
+        for c in r.roc.iter().flat_map(|x| &x.per_class) {
+            s.push_str(&format!(
+                "{},{},{},{},{}\n",
+                csv_field(&r.model),
+                csv_field(&c.class),
+                c.positives,
+                c.negatives,
+                f(c.auc)
             ));
         }
     }
@@ -946,6 +994,65 @@ pub(crate) mod tests {
         let csv = to_csv(&out_of(&results, &preds));
         assert!(csv.starts_with("model,device,objective,configured"));
         assert!(csv.contains("\nm,0.05,"), "{csv}");
+    }
+
+    /// Frame ROC and the frame objectives from the stored predictions alone.
+    #[test]
+    fn search_frame_roc_and_youden() {
+        let (results, preds) = fixture();
+        let none = |_: &str| None;
+        let req = SearchRequest {
+            objective: Objective::Youden,
+            ..Default::default()
+        };
+        let r = &search(&results, &preds, &req, &none).unwrap().results[0];
+        // Frames (real set, coreml): a person+ .85 (max of .85, the .7 in the ignore region and
+        // the .3 FP), a car+ .4, b person+ .6, b car- 0. Person has no negative frame:
+        // undefined; car 1.0.
+        let roc = r.roc.as_ref().unwrap();
+        let person = roc.per_class.iter().find(|c| c.class == "person").unwrap();
+        assert_eq!(
+            (person.positives, person.negatives, person.auc),
+            (2, 0, None)
+        );
+        assert_eq!(roc.class_auc("car"), Some(1.0));
+        assert_eq!((roc.auc, roc.micro_auc), (Some(1.0), Some(1.0)));
+        assert_eq!((roc.positives, roc.negatives), (3, 1));
+        let b = r.best.as_ref().unwrap();
+        assert_eq!((b.threshold, b.exact_threshold), (0.22, Some(0.4)));
+        assert_eq!(b.plateau, Some([0.05, 0.4]));
+        let f = b.point.frame.unwrap();
+        assert_eq!((f.tpr, f.fpr), (Some(1.0), Some(0.0)));
+        // At the configured 0.5 the car frame (.4) does not alert: TPR 2/3.
+        let c = r.configured.frame.unwrap();
+        assert_eq!((c.tp, c.positives), (2, 3));
+        // Youden is among the alternatives of every search.
+        assert!(r.alternatives.iter().any(|p| p.objective == "youden"));
+        // Per class / per dataset AUC.
+        let car = r.per_class.iter().find(|g| g.key == "car").unwrap();
+        assert_eq!(car.roc_auc, Some(1.0));
+        assert_eq!(r.by_dataset[0].roc_auc, Some(1.0));
+        // Class filter: person only has no negative frames -> no Youden pick, no AUC.
+        let req = SearchRequest {
+            objective: Objective::Youden,
+            classes: vec!["person".into()],
+            ..Default::default()
+        };
+        let r = &search(&results, &preds, &req, &none).unwrap().results[0];
+        assert!(r.best.is_none());
+        assert_eq!(r.roc.as_ref().unwrap().auc, None);
+        // fpr:0 -> the highest TPR without false alerts: everything (the negative scores 0).
+        let req = SearchRequest {
+            objective: Objective::Fpr(0.0),
+            ..Default::default()
+        };
+        let r = &search(&results, &preds, &req, &none).unwrap().results[0];
+        let f = r.best.as_ref().unwrap().point.frame.unwrap();
+        assert_eq!((f.tpr, f.fpr), (Some(1.0), Some(0.0)));
+        // CSV carries the AUC and the frame rates.
+        let csv = to_csv(&out_of(&results, &preds));
+        assert!(csv.contains(",roc_auc,roc_auc_micro,"), "{csv}");
+        assert!(csv.contains("\nm,car,1,1,1.0000\n"), "{csv}");
     }
 
     fn out_of(results: &BenchmarkResults, preds: &StoredPreds) -> SearchOutput {
